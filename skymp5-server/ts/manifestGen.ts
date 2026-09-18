@@ -15,12 +15,14 @@ interface Manifest {
   loadOrder: Array<string>;
 }
 
-const getBsaNameByEspmName = (espmName: string) => {
-  if (espmName.endsWith(".esp") || espmName.endsWith(".esm")) {
-    const nameNoExt = espmName.split(".").slice(0, -1).join(".");
-    return nameNoExt + ".bsa";
+// An .esl is a plugin like any other and can ship its own .bsa. Returning null
+// for anything else keeps a stray filename from taking the whole server down
+// during startup, which is what throwing here used to do.
+const getBsaNameByEspmName = (espmName: string): string | null => {
+  if (/\.(esp|esm|esl)$/i.test(espmName)) {
+    return espmName.replace(/\.[^.]+$/, "") + ".bsa";
   }
-  throw new Error(`'${espmName}' is not a valid esp or esm name`);
+  return null;
 };
 
 export const generateManifest = (settings: Settings): void => {
@@ -39,6 +41,11 @@ export const generateManifest = (settings: Settings): void => {
       ? loadOrderElement
       : path.join(settings.dataDir, espmName);
 
+    if (!fs.existsSync(espmPath)) {
+      console.error(`generateManifest: '${espmName}' is in the load order but not on disk, skipping`);
+      return;
+    }
+
     const buf: Uint8Array = fs.readFileSync(espmPath);
     manifest.mods.push({
       crc32: crc32.buf(buf),
@@ -47,6 +54,16 @@ export const generateManifest = (settings: Settings): void => {
     });
 
     const bsaName = getBsaNameByEspmName(espmName);
+    if (!bsaName) {
+      console.error(`generateManifest: no plugin extension on '${espmName}', not looking for a bsa`);
+      return;
+    }
+    // Deliberately dataDir, not the plugin's own folder. loadOrderVerification
+    // on the client compares this array POSITIONALLY against its own list from
+    // Game.getModName, which is plugins only. Every bsa pushed in here shifts
+    // the entries after it and makes the client report load order mismatches
+    // that are not real. Resolving archives next to their plugins finds all of
+    // them and breaks that comparison for the whole list.
     const bsaPath = path.join(settings.dataDir, bsaName);
     if (fs.existsSync(bsaPath)) {
       const buf: Uint8Array = fs.readFileSync(bsaPath);

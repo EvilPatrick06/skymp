@@ -570,6 +570,61 @@ export class RemoteServer extends ClientListener {
       once('tick', () => {
         once('tick', () => {
           if (!spawnTask.running) {
+            /*
+              THORNSWOOD PATCH. Let the other spawn path have it.
+
+              There are two ways to spawn here and they race. The one above
+              uses moveRefrToPosition and is what the comment on it calls the
+              one to use if possible, not in the main menu. This one loads a
+              save that SkyrimPlatform writes on the spot, carrying the
+              server's load order and appearance, which is how a stock SkyMP
+              install builds a character out of nothing at the main menu.
+
+              Both are guarded by the same flag, so whichever fires first
+              wins. tick fires during a loading screen and update does not, so
+              this one wins on this build every time.
+
+              It should not. po3_StartOnSave has already loaded the real save
+              before the server ever answers, so the character is in the world
+              with their own face and their own pack, and this asks Skyrim to
+              revert all of it and load a synthetic save on top. Papyrus gets
+              as far as 'Reverting game' and stops. That is the infinite
+              loading screen.
+
+              So when there is already a game to be in, this stands down and
+              the update above moves the character instead. At an actual main
+              menu, which is the case this was written for, nothing changes.
+            */
+            /*
+              Asked without calling into the game, which is the whole reason
+              the first version of this never fired.
+
+              This runs from a tick handler, and tick handlers are dispatched
+              without a Papyrus virtual machine, so Ui.isMenuOpen and
+              Game.getPlayer do not answer here, they throw. The catch turned
+              every throw into 'not in a game', which is the answer that lets
+              the save reload through, so the check could never once have said
+              yes.
+
+              Both flags below are plain JavaScript, written by code that does
+              run with a virtual machine.
+            */
+            let alreadyInAGame = false;
+            try {
+              const g = globalThis as any;
+              alreadyInAGame = !!g.__thornswoodInWorld ||
+                               (Number(g.__thornswoodUncausedLoad) || 0) > 0;
+            } catch (e) {
+              alreadyInAGame = false;
+            }
+            if (alreadyInAGame) {
+              try {
+                (globalThis as any).__thornswoodSpawnedByMove =
+                  ((globalThis as any).__thornswoodSpawnedByMove || 0) + 1;
+              } catch (e) { }
+              return;
+            }
+
             spawnTask.running = true;
 
             let loadOrder = new Array<string>();

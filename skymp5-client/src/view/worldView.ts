@@ -70,10 +70,17 @@ export class WorldView extends ClientListener {
 
   private resetAllFormViewsIfPlayerChangedWorld() {
     const state = this.state;
-    const pc = this.sp.Game.getPlayer()!;
-    const pcWorldOrCell = (
-      (pc.getWorldSpace() || pc.getParentCell()) as Form
-    ).getFormID();
+    const pc = this.sp.Game.getPlayer();
+    // During a load screen the player has neither a worldspace nor a cell, and
+    // this runs every update tick. Casting null to Form and calling getFormID
+    // on it threw once per tick, and because the whole update callback aborts
+    // there, no form view got updated for as long as it lasted: other players
+    // simply do not appear.
+    const worldOrCell = pc ? pc.getWorldSpace() || pc.getParentCell() : null;
+    if (!worldOrCell) {
+      return;
+    }
+    const pcWorldOrCell = (worldOrCell as Form).getFormID();
     if (state.pcWorldOrCell !== pcWorldOrCell) {
       if (state.pcWorldOrCell) {
         logTrace(this, 'Reset all form views');

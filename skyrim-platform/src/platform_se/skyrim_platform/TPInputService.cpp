@@ -152,15 +152,23 @@ void ProcessKeyboard(uint16_t aKey, uint16_t aScanCode,
 
   const auto active = pRenderer->IsVisible();
 
-  if (aType == KEYEVENT_KEYDOWN && aKey == VK_RCONTROL) {
-#if defined(TP_SKYRIM)
-    CEFUtils::DInputHook::Get().SetEnabled(
-      !CEFUtils::DInputHook::Get().IsEnabled());
-#else
-    pRenderer->SetVisible(!active);
-#endif
-    ShowCursor(!active);
-  } else if (active) {
+  /*
+    Right Control used to switch DirectInput off here, and it is gone.
+
+    It reads as a developer toggle and it is a one way kill switch. SetEnabled
+    false calls Update, Update calls Unacquire on every device the game owns
+    and then calls RegisterRawInputDevices with RIDEV_REMOVE without ever
+    putting the registration back. So the game stops getting keys, and the
+    only thing that could switch it on again is this branch, which cannot run
+    any more, because raw input is what feeds it. Press it once by accident
+    and the keyboard is dead for the rest of the session, which is the report
+    that has come back here over and over in exactly those words.
+
+    Nothing on this build wants it. Nobody sitting down to play wants the
+    keyboard turned off, and if a toggle is ever needed it should not be one
+    keystroke away from a modifier people hold by habit.
+  */
+  if (active) {
     pApp->InjectKey(aType, GetCefModifiers(aKey), aKey, aScanCode);
   }
 }

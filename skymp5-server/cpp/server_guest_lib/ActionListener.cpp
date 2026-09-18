@@ -256,7 +256,19 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
   std::array<uint32_t, static_cast<size_t>(SpellSlotId::kCount)>
     spellIdsToRemove = {};
 
-  if (leftSpell > 0 && !actor->IsSpellLearned(leftSpell)) {
+  // THORNSWOOD. The two gates below are why mod gear and mod spells will not
+  // stay on. Both are settings now, both still default to upstream behaviour.
+  //
+  // equipmentSpellCheckEnabled: a spell the server did not grant is refused
+  // and a RemoveSpell snippet is sent back. Every spell out of Odin,
+  // Apocalypse and Triumvirate learned from a tome in the world is one the
+  // server never saw, so it comes straight back off the hand.
+  //
+  // equipmentSlotCheckEnabled: see further down. That one is the gear strip.
+  const bool tsSpellCheck =
+    !actor->GetParent() || actor->GetParent()->equipmentSpellCheckEnabled;
+
+  if (tsSpellCheck && leftSpell > 0 && !actor->IsSpellLearned(leftSpell)) {
     spdlog::warn("ActionListener::OnUpdateEquipment {:x} - rejected equipment "
                  "update: spell {:x} is not learned",
                  actorFormId, leftSpell);
@@ -264,7 +276,7 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
     spellIdsToRemove[static_cast<size_t>(SpellSlotId::Left)] = leftSpell;
   }
 
-  if (rightSpell > 0 && !actor->IsSpellLearned(rightSpell)) {
+  if (tsSpellCheck && rightSpell > 0 && !actor->IsSpellLearned(rightSpell)) {
     spdlog::warn("ActionListener::OnUpdateEquipment {:x} - rejected equipment "
                  "update: spell {:x} is not learned",
                  actorFormId, rightSpell);
@@ -272,7 +284,7 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
     spellIdsToRemove[static_cast<size_t>(SpellSlotId::Right)] = rightSpell;
   }
 
-  if (voiceSpell > 0 && !actor->IsSpellLearned(voiceSpell)) {
+  if (tsSpellCheck && voiceSpell > 0 && !actor->IsSpellLearned(voiceSpell)) {
     spdlog::warn("ActionListener::OnUpdateEquipment {:x} - rejected equipment "
                  "update: spell {:x} is not learned",
                  actorFormId, voiceSpell);
@@ -280,7 +292,8 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
     spellIdsToRemove[static_cast<size_t>(SpellSlotId::Voice)] = voiceSpell;
   }
 
-  if (instantSpell > 0 && !actor->IsSpellLearned(instantSpell)) {
+  if (tsSpellCheck && instantSpell > 0 &&
+      !actor->IsSpellLearned(instantSpell)) {
     spdlog::warn("ActionListener::OnUpdateEquipment {:x} - rejected equipment "
                  "update: spell {:x} is not learned",
                  actorFormId, instantSpell);
@@ -302,7 +315,22 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
     }
   }
 
-  if (isAllowed) {
+  // THORNSWOOD. The gear strip.
+  //
+  // This ORs together the biped slot flags of everything worn and refuses the
+  // whole update the moment two items share a single bit, then sends an
+  // UnequipItem for EVERY item involved. Vanilla Skyrim already uses slots 44
+  // to 47, and cloak, scarf and backpack mods all reach for the same handful
+  // of free-looking ones, so on a modded load order this fires constantly and
+  // reads as "looting armour takes off what I am wearing and will not let me
+  // put it back on".
+  //
+  // It is an anti-cheat against wearing five chest pieces. On a server that
+  // wants its armour mods to work it costs more than it earns.
+  if (isAllowed && actor->GetParent() &&
+      !actor->GetParent()->equipmentSlotCheckEnabled) {
+    // gate off, nothing to check
+  } else if (isAllowed) {
     auto worldState = actor->GetParent();
     if (worldState) {
       uint32_t occupiedSlots = 0;

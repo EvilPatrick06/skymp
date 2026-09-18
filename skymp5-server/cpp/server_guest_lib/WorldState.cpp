@@ -469,7 +469,9 @@ bool WorldState::AttachEspmRecord(const espm::CombineBrowser& br,
     auto npcData =
       reinterpret_cast<const espm::NPC_*>(base.rec)->GetData(cache);
 
-    if (npcData.isEssential || npcData.isProtected || npcData.isUnique) {
+    // THORNSWOOD. Was unconditional. Now a setting, npcAllowEssential.
+    if (!npcAllowEssential &&
+        (npcData.isEssential || npcData.isProtected || npcData.isUnique)) {
       if (optionalOutTrace) {
         *optionalOutTrace << fmt::format("Skip NPC due to its flags")
                           << std::endl;
@@ -477,31 +479,36 @@ bool WorldState::AttachEspmRecord(const espm::CombineBrowser& br,
       return false;
     }
 
-    enum class ListType : uint32_t
-    {
-      CrimeFactionsList = 0x26953
-    };
+    // THORNSWOOD. Was unconditional. Now a setting, npcAllowCrimeFaction.
+    // Every guard and most townsfolk are in a crime faction, so this gate on
+    // its own empties the holds.
+    if (!npcAllowCrimeFaction) {
+      enum class ListType : uint32_t
+      {
+        CrimeFactionsList = 0x26953
+      };
 
-    auto factionBaseId = static_cast<std::underlying_type_t<ListType>>(
-      ListType::CrimeFactionsList);
-    espm::LookupResult res = br.LookupById(factionBaseId);
-    auto* formList = reinterpret_cast<const espm::FLST*>(res.rec);
-    std::vector<uint32_t> factionFormIds = formList->GetData(cache).formIds;
-    for (auto& formId : factionFormIds) {
-      formId = res.ToGlobalId(formId);
-    }
+      auto factionBaseId = static_cast<std::underlying_type_t<ListType>>(
+        ListType::CrimeFactionsList);
+      espm::LookupResult res = br.LookupById(factionBaseId);
+      auto* formList = reinterpret_cast<const espm::FLST*>(res.rec);
+      std::vector<uint32_t> factionFormIds = formList->GetData(cache).formIds;
+      for (auto& factionFormId : factionFormIds) {
+        factionFormId = res.ToGlobalId(factionFormId);
+      }
 
-    for (auto fact : npcData.factions) {
-      auto it = std::find(factionFormIds.begin(), factionFormIds.end(),
-                          base.ToGlobalId(fact.formId));
-      if (it != factionFormIds.end()) {
-        logger->info("Skipping actor {:#x} because it's in faction {:#x}",
-                     record->GetId(), *it);
-        if (optionalOutTrace) {
-          *optionalOutTrace << fmt::format("Skip NPC due to faction")
-                            << std::endl;
+      for (auto fact : npcData.factions) {
+        auto it = std::find(factionFormIds.begin(), factionFormIds.end(),
+                            base.ToGlobalId(fact.formId));
+        if (it != factionFormIds.end()) {
+          logger->info("Skipping actor {:#x} because it's in faction {:#x}",
+                       record->GetId(), *it);
+          if (optionalOutTrace) {
+            *optionalOutTrace << fmt::format("Skip NPC due to faction")
+                              << std::endl;
+          }
+          return false;
         }
-        return false;
       }
     }
 

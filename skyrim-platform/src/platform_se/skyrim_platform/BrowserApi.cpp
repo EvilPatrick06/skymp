@@ -85,6 +85,12 @@ void Register(Napi::Env env, Napi::Object& exports)
                   }));
       browser.Set("executeJavaScript",
                   Napi::Function::New(env, [](const Napi::CallbackInfo&) {}));
+      // THORNSWOOD. This break was missing, so "off" fell straight through
+      // into the tilted bindings and overwrote every stub it had just set.
+      // BackendName = off therefore reported itself as tilted and, worse,
+      // setFocused still raised ChromeFocus and blanked the keyboard, with no
+      // browser on screen to explain why.
+      break;
     case Backend::kTilted:
       browser.Set(
         "getBackend",

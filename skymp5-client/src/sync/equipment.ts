@@ -80,8 +80,33 @@ const removeUnnecessaryExtra = (inv: Inventory, ignoreAmmo: boolean): Inventory 
 };
 
 export const getEquipment = (ac: Actor, numChanges: number): Equipment => {
+  /*
+    THORNSWOOD PATCH. Nothing with a count of zero or less goes over the wire.
+
+    getInventory is sumInventories over the base container and the changes on
+    top of it, and sumInventories makes a count negative on purpose when an
+    entry is in one side and not the other. Correct for a diff, meaningless as
+    a statement of what somebody is carrying, and it happens the moment you
+    drop or store something the base container has.
+
+    The server's Inventory::Entry count is unsigned, so one negative number
+    kills the whole message:
+
+      failed to call custom Serialize for type struct Equipment: failed to get
+      key 'inv': ... Entry: failed to get key 'count': NUMBER_OUT_OF_RANGE
+
+    The server then never hears about that pack again. It keeps the last
+    inventory it managed to read, which is the starter kit, and hands it back
+    every session.
+  */
+  const inv = getInventory(ac);
+  const clean = {
+    entries: (inv?.entries ?? []).filter(
+      (e) => e && typeof e.count === 'number' && isFinite(e.count) && e.count > 0),
+  };
+
   return {
-    inv: getInventory(ac),
+    inv: clean,
     leftSpell: getEquipedSpell(ac, SpellType.Left),
     rightSpell: getEquipedSpell(ac, SpellType.Right),
     voiceSpell: getEquipedSpell(ac, SpellType.Voice),

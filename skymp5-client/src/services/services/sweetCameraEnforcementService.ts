@@ -157,6 +157,31 @@ export class SweetCameraEnforcementService extends ClientListener {
     }
 
     private onSendAnimationEventLeave(ctx: { animEventName: string, animationSucceeded: boolean }) {
+        /*
+          THORNSWOOD PATCH. This whole branch is switched off.
+
+          What it does: any animation whose name starts with idle, sent while
+          the console happens to be open, forces third person and calls
+          disablePlayerControls with movement and camera switching turned off.
+          The comment below says what it is for, and it is honest: somebody
+          typing player.playidle into the console on a SkyMP server.
+
+          Nobody does that here. The emote wheel sends idle animations through
+          Debug.sendAnimationEvent dozens of times a session, and the console
+          on this build opens by itself, twice a session in the logs. When the
+          two coincide, movement is switched off and the only thing that turns
+          it back on is an exit animation that nothing sends. From the chair
+          that is the keyboard dying for no reason, with the character stuck in
+          third person and sometimes stuck running, which is the report that
+          has come back here for days.
+
+          The server driven path, tryInvokeAnim through a custom packet, is
+          untouched. It turns controls off on purpose and has an exit animation
+          to turn them back on. This one had neither.
+        */
+        return;
+
+        // eslint-disable-next-line no-unreachable
         const animLowerCase = ctx.animEventName.toLowerCase();
         if (animLowerCase.startsWith("idle") && !animLowerCase.startsWith("idleforcedefaultstate")) {
             this.controller.once("update", () => {

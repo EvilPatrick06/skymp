@@ -253,14 +253,39 @@ public:
 
   bool disableVanillaScriptsInExterior = true;
 
+  // THORNSWOOD. The three gates below decide which of the world's NPCs the
+  // server is willing to take ownership of, and all three used to be settled
+  // in C++ with no way to reach them. That meant a rebuild to answer a
+  // question, which is the wrong price for a question you have to ask several
+  // times before you get the answer right. They are read out of
+  // server-settings.json now: see ScampServer.cpp.
+  //
+  // npcAllowEssential   essential, protected and unique actors. Off by
+  //                     default, because these are the quest critical ones and
+  //                     the server respawns them at their editor location with
+  //                     a fresh inventory rather than letting them bleed out
+  //                     the way the game does.
+  // npcAllowCrimeFaction  members of any crime faction, which is every guard
+  //                     and most townsfolk. Off by default: guards want a
+  //                     crime system to react to and the server has none.
+  bool npcAllowEssential = false;
+  bool npcAllowCrimeFaction = false;
+
+  // THORNSWOOD. Equipment validation, see ActionListener::OnUpdateEquipment.
+  // Both default to upstream behaviour; a modded load order will want them
+  // off, because both reject on grounds mod content trips by design.
+  bool equipmentSlotCheckEnabled = true;
+  bool equipmentSpellCheckEnabled = true;
+
+  // Races the server refuses to take over. The playable ten are deliberately
+  // NOT in this default any more. They were, and since every human, elf, orc,
+  // khajiit and argonian in the game is one of them, that single line was the
+  // whole reason a world with npcEnabled turned on still had nobody in it.
+  // The only upstream test for this feature is a cow, which is the tell.
   std::vector<uint32_t> bannedEspmCharacterRaceIds = {
     0x000e7713, 0x00012e82, 0x001052a3, 0x00088884, 0x0008883a, 0x00088846,
     0x00108272, 0x000a82b9, 0x0008883c, 0x00088794, 0x00088845, 0x0008883d,
     0x00088844, 0x00088840, 0x000a82ba,
-
-    /* Playable races from ArgonianRace to WoodElfRace */
-    0x00013740, 0x00013741, 0x00013742, 0x00013743, 0x00013744, 0x00013745,
-    0x00013746, 0x00013747, 0x00013748, 0x00013749,
 
     /* Mannequin */
     0x0010760a

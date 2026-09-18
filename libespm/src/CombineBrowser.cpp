@@ -3,18 +3,42 @@
 #include "libespm/RecordHeader.h"
 #include "libespm/Utils.h"
 #include <array>
+#include <cctype>
 #include <fmt/format.h>
 #include <memory>
+#include <string>
 #include <unordered_set>
 
 namespace espm {
+
+namespace {
+// Plugin file names are case-insensitive. Windows treats them that way, Skyrim
+// treats them that way, and authors are inconsistent: CFTO.esp lists its master
+// as 'Hearthfires.esm' while the file on disk is 'HearthFires.esm'. Comparing
+// with == rejected those outright and took the whole load order down with them.
+bool NamesEqual(const std::string& a, const char* b) noexcept
+{
+  size_t i = 0;
+  for (; i < a.size(); ++i) {
+    if (b[i] == '\0') {
+      return false;
+    }
+    const auto x = static_cast<unsigned char>(a[i]);
+    const auto y = static_cast<unsigned char>(b[i]);
+    if (std::tolower(x) != std::tolower(y)) {
+      return false;
+    }
+  }
+  return b[i] == '\0';
+}
+}
 
 int32_t CombineBrowser::Impl::GetFileIndex(const char* fileName) const noexcept
 {
   // returns index of sources array or -1 if not found
   if (fileName[0] != '\0') {
     for (size_t i = 0; i < sources.size(); ++i) {
-      if (sources[i].fileName == fileName) {
+      if (NamesEqual(sources[i].fileName, fileName)) {
         return i;
       }
     }

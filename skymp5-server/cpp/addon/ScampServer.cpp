@@ -246,15 +246,73 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
         "Disabling NPCs by default");
     }
 
+    // THORNSWOOD. The three NPC gates, reachable from the config at last.
+    //
+    // Which races the server will take over. Absent, the built-in list
+    // applies. Present, it replaces it outright, so an empty array means the
+    // server will take on anybody.
+    if (serverSettings.find("bannedEspmCharacterRaceIds") !=
+        serverSettings.end()) {
+      auto& node = serverSettings.at("bannedEspmCharacterRaceIds");
+      if (node.is_array()) {
+        std::vector<uint32_t> banned;
+        for (const auto& entry : node) {
+          banned.push_back(entry.get<uint32_t>());
+        }
+        partOne->worldState.bannedEspmCharacterRaceIds = banned;
+        spdlog::info("bannedEspmCharacterRaceIds overridden, {} races banned",
+                     banned.size());
+      } else {
+        spdlog::error("bannedEspmCharacterRaceIds must be an array, ignoring");
+      }
+    }
+
+    if (serverSettings.find("npcAllowEssential") != serverSettings.end()) {
+      bool v = serverSettings.at("npcAllowEssential").get<bool>();
+      partOne->worldState.npcAllowEssential = v;
+      spdlog::info("essential, protected and unique NPCs are {}",
+                   v ? "allowed" : "skipped");
+    }
+
+    if (serverSettings.find("equipmentSlotCheckEnabled") !=
+        serverSettings.end()) {
+      bool v = serverSettings.at("equipmentSlotCheckEnabled").get<bool>();
+      partOne->worldState.equipmentSlotCheckEnabled = v;
+      spdlog::info("armour slot conflict check is {}", v ? "on" : "off");
+    }
+
+    if (serverSettings.find("equipmentSpellCheckEnabled") !=
+        serverSettings.end()) {
+      bool v = serverSettings.at("equipmentSpellCheckEnabled").get<bool>();
+      partOne->worldState.equipmentSpellCheckEnabled = v;
+      spdlog::info("equipped spell must be server granted: {}",
+                   v ? "yes" : "no");
+    }
+
+    if (serverSettings.find("npcAllowCrimeFaction") != serverSettings.end()) {
+      bool v = serverSettings.at("npcAllowCrimeFaction").get<bool>();
+      partOne->worldState.npcAllowCrimeFaction = v;
+      spdlog::info("crime faction NPCs, guards included, are {}",
+                   v ? "allowed" : "skipped");
+    }
+
     if (serverSettings.find("npcSettings") != serverSettings.end()) {
       if (serverSettings.at("npcSettings").is_object()) {
         std::unordered_map<std::string, WorldState::NpcSettingsEntry>
           npcSettings;
-        if (serverSettings.find("default") != serverSettings.end()) {
+        // THORNSWOOD. This read "default", "spawnInInterior" and
+        // "spawnInExterior" from the root of the settings document rather than
+        // from inside npcSettings, which is plainly not what was meant and
+        // which throws on startup the moment anyone adds a root level
+        // "default" key without two more beside it. Looked up where they
+        // belong now.
+        auto& npcSettingsNode = serverSettings.at("npcSettings");
+        if (npcSettingsNode.find("default") != npcSettingsNode.end()) {
+          auto& def = npcSettingsNode.at("default");
           partOne->worldState.defaultSetting.spawnInInterior =
-            serverSettings.at("spawnInInterior").get<bool>();
+            def.value("spawnInInterior", true);
           partOne->worldState.defaultSetting.spawnInExterior =
-            serverSettings.at("spawnInExterior").get<bool>();
+            def.value("spawnInExterior", true);
           partOne->worldState.defaultSetting.overriden = true;
         }
         for (const auto& field : serverSettings["npcSettings"].items()) {

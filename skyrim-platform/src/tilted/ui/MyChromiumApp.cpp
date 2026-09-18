@@ -306,5 +306,55 @@ void MyChromiumApp::RunTasks()
 void MyChromiumApp::OnBeforeCommandLineProcessing(
   const CefString& aProcessType, CefRefPtr<CefCommandLine> aCommandLine)
 {
+  // Give the page a microphone.
+  //
+  // This browser is the Alloy runtime, and nothing here implements
+  // CefPermissionHandler or CefRequestHandler. cef_permission_handler.h is
+  // explicit about what that means:
+  //
+  //     With the Alloy runtime, default handling will deny the request.
+  //     This method will not be called if the --enable-media-stream
+  //     command-line switch is used to grant all permissions.
+  //
+  // So every getUserMedia call was refused with NotAllowedError before it
+  // ever reached Windows, and no prompt could appear because there is no
+  // handler to raise one. Appending the switch here rather than asking
+  // whoever starts the game to pass it means it cannot be lost by a
+  // shortcut, a mod manager, or a launcher that was rebuilt without it.
+  //
+  // aProcessType is empty for the browser process, which is the one that
+  // evaluates media requests. Appending for every process is harmless and
+  // avoids depending on that.
+  if (!aCommandLine->HasSwitch("enable-media-stream")) {
+    aCommandLine->AppendSwitch("enable-media-stream");
+  }
+
+  /*
+    Let incoming voice actually play.
+
+    Granting the microphone was only half of it. Chromium refuses to start
+    audio playback until somebody has clicked something on the page, which is
+    a sensible rule for web pages and an impossible one here: this page is an
+    overlay drawn over a game and nobody ever clicks it. So every voice that
+    arrived was decoded, attached to an audio element, and then refused at the
+    last step.
+
+    It failed silently too. The page does
+
+        a.play().catch(function () { });
+
+    so the rejection went nowhere and the symptom was two people standing two
+    metres apart, both microphones open, both names and distances correct, and
+    neither able to hear a word.
+
+    The switch is the documented way to say this page is not a web page. It is
+    appended here rather than passed in by whoever starts the game, for the
+    same reason as the one above: a shortcut, a mod manager or a rebuilt
+    launcher cannot lose it.
+  */
+  if (!aCommandLine->HasSwitch("autoplay-policy")) {
+    aCommandLine->AppendSwitchWithValue("autoplay-policy",
+                                        "no-user-gesture-required");
+  }
 }
 }
