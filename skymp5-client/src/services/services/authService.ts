@@ -741,7 +741,10 @@ export class AuthService extends ClientListener {
   // awaited; the fallback is the settings' profileId, used after a minute.
   private menuChoiceWaitingSince = 0;
   private menuChoiceFallback = 0;
-  private static readonly menuChoiceFallbackMs = 60000;
+  // Three minutes: a minute was short for somebody reading the slots, and it
+  // logged them in as the last character mid-thought. Thornswood's front
+  // plugin reloads a page that goes silent, so this is the last resort.
+  private static readonly menuChoiceFallbackMs = 180000;
 
   private menuChoiceTick() {
     if (!this.menuChoiceWaitingSince) return;
