@@ -14,7 +14,14 @@ export class DisableDifficultySelectionService extends ClientListener {
         }
     }
 
-    private readonly difficulty = 5;
+    /*
+      THORNSWOOD PATCH. Expert, not Legendary.
+
+      Upstream pins iDifficulty every sixty updates so nobody turns it down
+      mid game. The pin stays; the number is Expert.
+      0 Novice, 1 Apprentice, 2 Adept, 3 Expert, 4 Master, 5 Legendary.
+    */
+    private readonly difficulty = 3;
 
     private counter = 0;
 }

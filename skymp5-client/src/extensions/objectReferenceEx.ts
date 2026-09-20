@@ -43,20 +43,32 @@ export class ObjectReferenceEx {
     // See also modelApplyUtils.ts
     const caveGSecretDoor01 = 0x6f703;
 
-    // You can also block for t === FormType.Flora || t === FormType.Tree, but I don't think it's necessary.
-    if (t === FormType.Furniture
-      || t === FormType.Activator
-      || t === FormType.Container
+    /*
+      THORNSWOOD PATCH. A locked door or chest keeps Skyrim's own handling
+      until it is open.
+
+      Upstream unlocked every tracked reference and blocked activation on it,
+      and locked plus blocked is unopenable by any means, so every lock in the
+      world was simply gone. The unlock is removed and a locked reference is
+      left unblocked, which is what makes the lockpicking mini game appear.
+
+      Activators and furniture are not blocked either: levers, chains, bars,
+      chairs and shrines are Skyrim's to run and the server has no scripts for
+      them. Containers, doors, items and actors still go through the server
+      exactly as before.
+
+      activationService has the other half: while a reference is locked it is
+      not announced to the server at all.
+    */
+    if (self.isLocked()) {
+      self.blockActivation(false);
+    } else if (t === FormType.Container
       || isItem
       || t === FormType.NPC
       || (t === FormType.Door && self.getBaseObject()?.getFormID() !== caveGSecretDoor01)) {
       self.blockActivation(true);
     } else {
       self.blockActivation(false);
-    }
-
-    if (self.isLocked()) {
-      self.lock(false, false);
     }
 
     if (isItem) {

@@ -59,6 +59,26 @@ export class ActivationService extends ClientListener {
             return;
         }
 
+        /*
+          THORNSWOOD PATCH. A locked door or chest is Skyrim's until it opens.
+
+          dealWithRef leaves a locked reference unblocked on purpose so Skyrim
+          runs its own handling and the lockpicking mini game appears. This
+          function did not know that and sent the activation up anyway, and the
+          server has no lock state at all, so its door branch simply opened the
+          door. Both happened on the one press: the mini game came up and the
+          door swung open behind it, and a load door pulled the person through.
+
+          While it is locked the server is told nothing. The moment it is not,
+          this sends as it always did and the server owns it again.
+        */
+        try {
+            if (e.target.isLocked()) {
+                logTrace(this, "Not announcing a locked reference; Skyrim has it until it is open");
+                return;
+            }
+        } catch (_thornswoodLock) { }
+
         this.controller.emitter.emit("sendMessage", {
             message: {
                 t: MsgType.Activate,
