@@ -129,6 +129,21 @@ export class AuthService extends ClientListener {
     logTrace(this, `Received authNeeded event`);
 
     const settingsGameData = this.sp.settings["skymp5-client"]["gameData"] as any;
+
+    // THORNSWOOD PATCH: the character is chosen at the main menu, not in the
+    // settings file. With gameData.chooseAtMenu set, wait for the page to say
+    // which profile ('thornswood', 'select', profileId over browserMessage),
+    // and only fall back to gameData.profileId after a long silence, so an old
+    // page or a page that never loaded still gets somebody into the game.
+    if (settingsGameData?.chooseAtMenu) {
+      logTrace(this, `chooseAtMenu is set, waiting for the menu's choice`);
+      this.menuChoiceWaitingSince = Date.now();
+      this.menuChoiceFallback = Number.isInteger(settingsGameData.profileId) && settingsGameData.profileId > 0
+        ? settingsGameData.profileId : 0;
+      this.setListenBrowserMessage(true, 'chooseAtMenu set in settings');
+      return;
+    }
+
     const isOfflineMode = Number.isInteger(settingsGameData?.profileId);
     if (isOfflineMode) {
       logTrace(this, `Offline mode detected in settings, emitting auth event with authGameData.local`);
@@ -266,6 +281,20 @@ export class AuthService extends ClientListener {
     const settingsService = this.controller.lookupListener(SettingsService);
 
     logTrace(this, `onBrowserMessage:`, JSON.stringify(e.arguments));
+
+    // THORNSWOOD PATCH: the menu's choice. Matched before the switch below so
+    // the online widgets' default case never swallows it.
+    if (this.menuChoiceWaitingSince && e.arguments[0] === 'thornswood' && e.arguments[1] === 'select') {
+      const chosen = Number(e.arguments[2]);
+      if (Number.isInteger(chosen) && chosen > 0) {
+        this.menuChoiceWaitingSince = 0;
+        logTrace(this, `Menu choice received, profileId =`, chosen);
+        this.controller.emitter.emit("authAttempt", { authGameData: { local: { profileId: chosen } } });
+      } else {
+        logTrace(this, `Menu choice ignored, not a profile id:`, JSON.stringify(e.arguments[2]));
+      }
+      return;
+    }
 
     const eventKey = e.arguments[0];
     switch (eventKey) {
@@ -651,6 +680,7 @@ export class AuthService extends ClientListener {
   };
 
   private onTick() {
+    this.menuChoiceTick();
     // TODO: Should be no hardcoded/magic-number limit
     // TODO: Busy waiting is bad. Should be replaced with some kind of event
     const maxLoggingDelay = 15000;
@@ -706,6 +736,24 @@ export class AuthService extends ClientListener {
   }
 
   private _isListenBrowserMessage = false;
+
+  // THORNSWOOD PATCH: see onAuthNeeded. Non-zero while the menu's choice is
+  // awaited; the fallback is the settings' profileId, used after a minute.
+  private menuChoiceWaitingSince = 0;
+  private menuChoiceFallback = 0;
+  private static readonly menuChoiceFallbackMs = 60000;
+
+  private menuChoiceTick() {
+    if (!this.menuChoiceWaitingSince) return;
+    if (Date.now() - this.menuChoiceWaitingSince < AuthService.menuChoiceFallbackMs) return;
+    this.menuChoiceWaitingSince = 0;
+    if (this.menuChoiceFallback > 0) {
+      logTrace(this, `No menu choice after a minute, falling back to the settings' profileId =`, this.menuChoiceFallback);
+      this.controller.emitter.emit("authAttempt", { authGameData: { local: { profileId: this.menuChoiceFallback } } });
+    } else {
+      logError(this, `No menu choice after a minute and no profileId in the settings to fall back to; nobody is logged in`);
+    }
+  }
 
   private trigger = {
     authNeededFired: false,
