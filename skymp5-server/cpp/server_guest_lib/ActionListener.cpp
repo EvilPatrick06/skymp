@@ -237,8 +237,12 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
 
   bool isAllowed = true;
   const auto actorFormId = actor->GetFormId();
-  const Equipment& data = msg.data;
-  const Inventory& equipmentInv = data.inv;
+  // THORNSWOOD. A copy, not a reference. SetEquipment further down stores
+  // `data` itself, so anything dropped out of a separate filtered view would
+  // have been logged as dropped and then saved anyway. Filtering has to happen
+  // in the thing that gets stored.
+  Equipment data = msg.data;
+  Inventory& equipmentInv = data.inv;
   uint32_t leftSpell = data.leftSpell.value_or(0);
   uint32_t rightSpell = data.rightSpell.value_or(0);
   uint32_t voiceSpell = data.voiceSpell.value_or(0);
@@ -303,16 +307,74 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
 
   std::vector<uint32_t> itemIdsToUnequip;
 
+  // THORNSWOOD. One unknown item used to take everything else off with it.
+  //
+  // Upstream sets isAllowed = false and breaks the moment any worn item is one
+  // the server has no record of, so the whole update is thrown away. Measured
+  // on the live server on 20 September: 24 refusals across two days, every one
+  // of them the same item, 0x13790 IronWarAxe, on every character within
+  // seconds of spawning. Skyrim Unbound is in the load order and hands out
+  // starting gear inside the client's own game; the server never sees that
+  // happen, so the first equipment update a new character sends names an item
+  // the server does not have and is refused, and so is every one after it.
+  //
+  // What that costs is not one axe. The server's equipment record stays empty
+  // for the whole session, and on the next spawn the client's applyEquipment
+  // does removeAllItems, unequipAll, removeAllItems and then sets the pack to
+  // the worn set it was given, which is nothing. So the pack is emptied and
+  // refilled four times in a second and a half and ends up bare. That is the
+  // 'everything flashed into my inventory and none of it is actually there'
+  // and the 'I came in with no clothes on', and they are one defect.
+  //
+  // With the check off, the unknown item is dropped from the update and
+  // everything else is kept, so an axe the server cannot account for costs the
+  // axe and nothing else. The item is still not granted: it is simply not
+  // allowed to veto the rest. Left as a setting defaulting to upstream, the
+  // same as the two above, so this is a decision a server makes rather than
+  // one this fork makes for everybody.
+  const bool tsInventoryCheck =
+    !actor->GetParent() || actor->GetParent()->equipmentInventoryCheckEnabled;
+
   const auto& inventory = actor->GetInventory();
+  std::unordered_set<uint32_t> unknownItemIds;
   for (auto& entry : equipmentInv.entries) {
     if (!inventory.HasItem(entry.baseId)) {
-      spdlog::warn(
-        "ActionListener::OnUpdateEquipment {:x} - rejected equipment "
-        "update: inventory does not contain item {:x}",
-        actorFormId, entry.baseId);
-      isAllowed = false;
-      break;
+      if (tsInventoryCheck) {
+        spdlog::warn(
+          "ActionListener::OnUpdateEquipment {:x} - rejected equipment "
+          "update: inventory does not contain item {:x}",
+          actorFormId, entry.baseId);
+        isAllowed = false;
+        break;
+      }
+      unknownItemIds.insert(entry.baseId);
     }
+  }
+
+  if (!tsInventoryCheck && !unknownItemIds.empty()) {
+    // Whole entries, not AddItem(baseId, count). An entry carries the worn
+    // flag and that flag IS the equipment update, so rebuilding one from its
+    // base id and count would hand back a pack where nothing is worn, which is
+    // the same empty result by a longer road.
+    Inventory kept;
+    for (const auto& entry : equipmentInv.entries) {
+      if (unknownItemIds.count(entry.baseId) == 0) {
+        kept.entries.push_back(entry);
+      }
+    }
+    std::stringstream dropped;
+    bool firstDropped = true;
+    for (uint32_t id : unknownItemIds) {
+      if (!firstDropped) {
+        dropped << ", ";
+      }
+      firstDropped = false;
+      dropped << std::hex << id;
+    }
+    spdlog::info("ActionListener::OnUpdateEquipment {:x} - kept the equipment "
+                 "update and dropped {} item(s) the server has no record of: {}",
+                 actorFormId, unknownItemIds.size(), dropped.str());
+    equipmentInv = kept;
   }
 
   // THORNSWOOD. The gear strip.

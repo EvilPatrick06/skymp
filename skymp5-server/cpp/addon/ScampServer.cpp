@@ -287,6 +287,15 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
       partOne->worldState.equipmentSpellCheckEnabled = v;
       spdlog::info("equipped spell must be server granted: {}",
                    v ? "yes" : "no");
+    }
+
+    if (serverSettings.find("equipmentInventoryCheckEnabled") !=
+        serverSettings.end()) {
+      bool v =
+        serverSettings.at("equipmentInventoryCheckEnabled").get<bool>();
+      partOne->worldState.equipmentInventoryCheckEnabled = v;
+      spdlog::info("an unknown worn item refuses the whole update: {}",
+                   v ? "yes" : "no, it is dropped and the rest is kept");
     }
 
     if (serverSettings.find("npcAllowCrimeFaction") != serverSettings.end()) {
