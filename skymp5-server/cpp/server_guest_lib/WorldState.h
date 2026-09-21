@@ -277,6 +277,21 @@ public:
   bool equipmentSlotCheckEnabled = true;
   bool equipmentSpellCheckEnabled = true;
 
+  // THORNSWOOD. The third one, and the one that actually fires here. Upstream
+  // refuses the WHOLE equipment update when any single worn item is one the
+  // server has no record of, so one unknown item takes everything else off
+  // with it. Measured on the live server on 20 September: 24 refusals over two
+  // days, every one of them the same item, 0x13790 IronWarAxe, on every
+  // character within seconds of spawning. Skyrim Unbound is in the load order
+  // and hands out starting gear inside the client's own game, which the server
+  // never learns about, so the very first equipment update a new character
+  // sends is refused and every one after it is too.
+  //
+  // With this off, an item the server does not know about is dropped from the
+  // update and the rest of it is accepted, which is the difference between
+  // wearing everything but the axe and wearing nothing at all.
+  bool equipmentInventoryCheckEnabled = true;
+
   // Races the server refuses to take over. The playable ten are deliberately
   // NOT in this default any more. They were, and since every human, elf, orc,
   // khajiit and argonian in the game is one of them, that single line was the
