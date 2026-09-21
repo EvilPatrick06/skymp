@@ -7,6 +7,8 @@
 #include "Validators.h"
 #include "WindowsConsolePrinter.h"
 
+#include <spdlog/spdlog.h>
+
 std::shared_ptr<IConsolePrinter> g_printer(new InGameConsolePrinter);
 std::shared_ptr<IConsolePrinter> g_windowsConsolePrinter = nullptr;
 
@@ -30,10 +32,71 @@ bool IsNameEqual(const std::string& first, const std::string& second)
     ? stricmp(first.data(), second.data()) == 0
     : false;
 }
+
+// THORNSWOOD PATCH. The same arguments the console printer builds, joined for
+// the log file, and NOT truncated.
+//
+// InGameConsolePrinter cuts everything at 128 characters, which is right for a
+// line of console and wrong for the only record of what happened.
+std::string JoinForLog(const Napi::CallbackInfo& info)
+{
+  std::string s;
+  for (size_t i = 0; i < info.Length(); ++i) {
+    Napi::Value str = info[i];
+
+    if (info[i].IsObject() && !info[i].IsExternal()) {
+      Napi::Object global = info.Env().Global();
+      Napi::Object json = global.Get("JSON").As<Napi::Object>();
+      Napi::Function stringify = json.Get("stringify").As<Napi::Function>();
+      str = stringify.Call(json, { info[i] });
+    }
+
+    if (i > 0) {
+      s += " ";
+    }
+    s += str.ToString().Utf8Value();
+  }
+  return s;
+}
 } // namespace
 
+/*
+  THORNSWOOD PATCH. What a script says goes in the log file as well.
+
+  WHY, MEASURED 21 SEPTEMBER. A tester sat on the main menu and could not get
+  into the world. The server log proved he had connected, been named and been
+  put in the creation hall; our own plugin log proved his choice went out and
+  kept going out. The one thing nobody could see was what the client decided,
+  and the client says exactly that: "Received authNeeded event", "chooseAtMenu
+  is set, waiting for the menu's choice", "Menu choice received", "loading game
+  in world/cell". Every one of those is a logTrace, every logTrace is a
+  printConsole, and printConsole went to the game console and nowhere else.
+
+  So it cost an evening, three rounds of asking a tester for files and two
+  hypotheses built out of reading code, one of which was wrong. And the console
+  is not a fallback either: the Thornswood front plugin shuts one it did not
+  open, so asking somebody to open it and screenshot it does not work.
+
+  skyrim-platform.log already exists and already has a level that comes from
+  settings. It was carrying 3,984 lines of VirtualMachine::Bind trace and not
+  one line from any script, which is the worst of both: it looks like a log
+  that works. At info the Bind noise is gone and this is what is left.
+
+  FIRST, BEFORE THE CONSOLE, on purpose. InGameConsolePrinter::Print throws
+  when there is no ConsoleLog singleton, which is exactly the main menu, which
+  is exactly where this was needed. Logging first means the line survives even
+  when the console cannot take it.
+*/
 Napi::Value ConsoleApi::PrintConsole(const Napi::CallbackInfo& info)
 {
+  // Nothing a script prints may take a session down, so this swallows
+  // everything. A missing line in a log is a nuisance; a throw from inside
+  // printConsole lands in whatever was logging and is not.
+  try {
+    spdlog::info("[Script] {}", JoinForLog(info));
+  } catch (...) {
+  }
+
   g_printer->Print(info);
 
   if (g_windowsConsolePrinter) {
