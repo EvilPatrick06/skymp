@@ -1,6 +1,7 @@
 // @ts-expect-error (TODO: Remove in 2.10.0)
 import { Actor, Form, FormType, Menu, interruptCast, castSpellImmediate, printConsole, applyAnimationVariablesToActor, ActorAnimationVariables } from 'skyrimPlatform';
 import {
+  Ammo,
   Armor,
   Cell,
   Game,
@@ -433,6 +434,51 @@ export class RemoteServer extends ClientListener {
 
     const numSetInventory = this.numSetInventory;
 
+    /*
+      THORNSWOOD. DID THE EQUIPMENT ACTUALLY GO ON.
+
+      applyEquipment answers true unconditionally: it removes everything,
+      unequips everything and hands the worn items to the setInventory native,
+      and none of that reports back. So there has never been a way to know
+      whether somebody ended up dressed, and the only two attempts were on a
+      fixed clock, a second and 1.3 seconds after the spawn update.
+
+      This reads the game instead. Every entry the server says was worn is
+      looked up and asked whether it is equipped. Ammo is left out: a quiver
+      reads as equipped or not depending on what else is in hand, and being
+      wrong about arrows is not worth refusing to settle over.
+    */
+    const equipmentIsOn = (): boolean => {
+      const eq = msg.equipment;
+      if (!eq || !eq.inv || !eq.inv.entries) {
+        return true;   // nothing to put on is not a failure
+      }
+      const pc = Game.getPlayer();
+      if (!pc) {
+        return false;
+      }
+      const ac = Actor.from(pc);
+      if (!ac) {
+        return false;
+      }
+      for (const e of eq.inv.entries) {
+        if (!e.worn && !e.wornLeft) {
+          continue;
+        }
+        const f = Game.getFormEx(e.baseId);
+        if (!f) {
+          continue;
+        }
+        if (Ammo.from(f)) {
+          continue;
+        }
+        if (!ac.isEquipped(f)) {
+          return false;
+        }
+      }
+      return true;
+    };
+
     const applyPcInv = () => {
       if (msg.equipment) {
         applyEquipment(Game.getPlayer()!, msg.equipment)
@@ -524,9 +570,47 @@ export class RemoteServer extends ClientListener {
               }
             }
           })();
-          // Unfortunatelly it requires two calls to work
-          Utility.wait(1).then(applyPcInv);
-          Utility.wait(1.3).then(applyPcInv);
+          /*
+            THORNSWOOD. KEEP PUTTING THE CLOTHES ON UNTIL THEY ARE ON.
+
+            Patrick, 21 September: "I still spawned in with my clothes not on
+            when I left the server with them on". The server's record was
+            right; it was this that never landed.
+
+            THIS USED TO BE TWO FIXED WAITS, a second and 1.3 seconds after the
+            spawn update, with the comment "Unfortunatelly it requires two
+            calls to work", which is an admission that it is timing and not a
+            rule. Three lines above, the spawn itself is a `while (true)` that
+            calls moveRefrToPosition once a second until the person is within
+            256 units of where they belong. On a machine that loads slowly, and
+            slow loads are most of what the testers have, both attempts land
+            while the person is still being teleported, applyEquipment removes
+            everything and hands the worn items over to a body that is then
+            moved out from under it, and nothing tries again. The person stands
+            there with nothing on and the server still holding the right
+            record.
+
+            So it retries until equipmentIsOn agrees, and stops. Fifteen goes
+            at a second apart covers a load far slower than anything measured
+            here and ends by itself rather than fighting somebody who takes
+            their own coat off a minute later. Each go is logged with its
+            number, because "dressed on attempt 9" and "gave up after 15" are
+            different problems and the log could not tell them apart before.
+          */
+          (async () => {
+            for (let attempt = 1; attempt <= 15; attempt++) {
+              applyPcInv();
+              await Utility.wait(attempt === 1 ? 0.3 : 1);
+              if (equipmentIsOn()) {
+                if (attempt > 1) {
+                  logTrace(this, 'equipment went on at attempt', attempt);
+                }
+                return;
+              }
+            }
+            logError(this, 'equipment never went on after 15 attempts; the '
+              + 'person is standing there undressed and the server record is fine');
+          })();
           // Note: appearance part was copy-pasted
           if (msg.appearance) {
             applyAppearanceToPlayer(msg.appearance);
