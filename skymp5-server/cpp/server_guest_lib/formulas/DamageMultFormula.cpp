@@ -20,13 +20,30 @@ DamageMultFormula::Settings ParseConfig(const nlohmann::json& config)
     return settings;
   }
 
-  if (!config.contains("multiplier")) {
-    spdlog::warn("Unable to get multiplier from config. Using default damage "
-                 "mult formula settings");
-    return settings;
+  /*
+    THORNSWOOD. Each key is read on its own, and a missing one is not a reason
+    to throw the other away.
+
+    This returned the whole default settings object the moment "multiplier" was
+    absent, so a file that set only playerMultiplier would have been ignored
+    entirely and silently. Read what is there, keep the default for what is not,
+    and say which is which.
+  */
+  if (config.contains("multiplier")) {
+    settings.multiplier = config.at("multiplier").get<float>();
+  } else {
+    spdlog::warn("Unable to get multiplier from config. NPC hits on a person "
+                 "are multiplied by the default {}",
+                 settings.multiplier);
   }
 
-  settings.multiplier = config.at("multiplier").get<float>();
+  if (config.contains("playerMultiplier")) {
+    settings.playerMultiplier = config.at("playerMultiplier").get<float>();
+  }
+
+  spdlog::info("DamageMultFormula: an NPC hitting a person is multiplied by "
+               "{}, a person hitting an NPC by {}",
+               settings.multiplier, settings.playerMultiplier);
 
   return settings;
 }
@@ -51,8 +68,14 @@ float DamageMultFormula::CalculateDamage(const MpActor& aggressor,
     return baseDamage;
   }
 
+  /*
+    THORNSWOOD. Both directions, each with its own number. See the note in the
+    header for what Patrick measured and why the second one has to exist.
+  */
   if (IsNonPlayerBaseId(aggressor) && !IsNonPlayerBaseId(target)) {
     baseDamage *= settings.multiplier;
+  } else if (!IsNonPlayerBaseId(aggressor) && IsNonPlayerBaseId(target)) {
+    baseDamage *= settings.playerMultiplier;
   }
 
   return baseDamage;
@@ -70,8 +93,11 @@ float DamageMultFormula::CalculateDamage(
     return baseDamage;
   }
 
+  // THORNSWOOD. The same two directions as the weapon path above.
   if (IsNonPlayerBaseId(aggressor) && !IsNonPlayerBaseId(target)) {
     baseDamage *= settings.multiplier;
+  } else if (!IsNonPlayerBaseId(aggressor) && IsNonPlayerBaseId(target)) {
+    baseDamage *= settings.playerMultiplier;
   }
 
   return baseDamage;
