@@ -36,9 +36,12 @@ private:
     std::optional<std::vector<uint32_t>> workbenchKeywordIds,
     const espm::LookupResult& lookupRes);
 
+  // workbenchId is carried through to the gamemode as onCraft's fifth
+  // argument. See CraftEvent.h.
   void UseCraftRecipe(MpActor* me, const espm::COBJ* recipeUsed,
                       espm::CompressedFieldsCache& cache,
-                      const espm::CombineBrowser& br, int espmIdx);
+                      const espm::CombineBrowser& br, int espmIdx,
+                      uint32_t workbenchId = 0);
 
   bool EvaluateCraftRecipeConditions(MpActor* me,
                                      const espm::COBJ::Data& recipeData);

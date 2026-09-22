@@ -57,10 +57,42 @@ void CraftService::OnCraftItem(const RawMessageData& rawMsgData,
     FindRecipe(me, workbenchKeywordIds, br, inputObjects, resultObjectId);
 
   if (recipesList.empty()) {
-    return spdlog::error(
-      "Recipe not found: inputObjects={}, workbenchId={:#x}, "
-      "resultObjectId={:#x}",
+    /*
+      THORNSWOOD PATCH. A craft with no recipe is asked about rather than
+      dropped.
+
+      ALCHEMY AND ENCHANTING HAVE NO COBJ RECORD AT ALL. A potion is worked
+      out from the effects the ingredients share, inside a menu, with nothing
+      in the files to match against, and enchanting is the same shape. So
+      FindRecipe comes back empty for every brew and every enchantment, and
+      what happened next was this log line and nothing else: the inputs were
+      never removed and the output was never added, so the potion the person
+      watched themselves make was undone by the next inventory the server
+      sent. Measured by reading this file on 21 September, after
+      Check-Balance.ps1 reported "the Alchemist owns no recipe in this build
+      at all, so there is nothing for anybody to supply it". Two of the eight
+      professions could be picked and could make nothing.
+
+      THE GAMEMODE DECIDES, NOT THIS. Without a COBJ there is no record to
+      check the claim against, so the server is taking the client's word for
+      what went in and what came out. That is exactly why this asks instead
+      of acting: recipeId is 0 to say there was no recipe, the bench is
+      named, and mp.onCraft returning false refuses it and costs the person
+      nothing. A gamemode that does not answer, or answers false, leaves
+      behaviour exactly as it was before this patch.
+
+      OnFireSuccess needs no recipe either: it removes the entries and adds
+      the output from the event's own data, which is all a brew has.
+    */
+    spdlog::info(
+      "Recipe not found, asking the gamemode: inputObjects={}, "
+      "workbenchId={:#x}, resultObjectId={:#x}",
       inputObjects.ToJson().dump(), workbenchId, resultObjectId);
+
+    CraftEvent craftEvent(me, resultObjectId, 1, 0, inputObjects.entries,
+                          workbenchId);
+    craftEvent.Fire(me->GetParent());
+    return;
   }
 
   if (recipesList.size() > 1) {
@@ -69,7 +101,7 @@ void CraftService::OnCraftItem(const RawMessageData& rawMsgData,
   }
 
   UseCraftRecipe(me, reinterpret_cast<const espm::COBJ*>(recipesList[0].rec),
-                 cache, br, recipesList[0].fileIdx);
+                 cache, br, recipesList[0].fileIdx, workbenchId);
 }
 
 bool CraftService::RecipeItemsMatch(const espm::LookupResult& lookupRes,
@@ -195,7 +227,8 @@ bool CraftService::ConsiderRecipeCandidate(
 
 void CraftService::UseCraftRecipe(MpActor* me, const espm::COBJ* recipeUsed,
                                   espm::CompressedFieldsCache& cache,
-                                  const espm::CombineBrowser& br, int espmIdx)
+                                  const espm::CombineBrowser& br, int espmIdx,
+                                  uint32_t workbenchId)
 {
   auto recipeData = recipeUsed->GetData(cache);
   auto mapping = br.GetCombMapping(espmIdx);
@@ -224,7 +257,7 @@ void CraftService::UseCraftRecipe(MpActor* me, const espm::COBJ* recipeUsed,
   auto recipeId = espm::utils::GetMappedId(recipeUsed->GetId(), *mapping);
 
   CraftEvent craftEvent(me, outputFormId, recipeData.outputCount, recipeId,
-                        entries);
+                        entries, workbenchId);
 
   craftEvent.Fire(me->GetParent());
 }

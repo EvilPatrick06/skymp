@@ -4,11 +4,13 @@
 
 CraftEvent::CraftEvent(MpActor* actor_, uint32_t craftedItemBaseId_,
                        uint32_t count_, uint32_t recipeId_,
-                       const std::vector<Inventory::Entry>& entries_)
+                       const std::vector<Inventory::Entry>& entries_,
+                       uint32_t workbenchId_)
   : actor(actor_)
   , craftedItemBaseId(craftedItemBaseId_)
   , count(count_)
   , recipeId(recipeId_)
+  , workbenchId(workbenchId_)
   , entries(entries_)
 {
 }
@@ -29,6 +31,8 @@ std::string CraftEvent::GetArgumentsJsonArray() const
   result += std::to_string(count);
   result += ",";
   result += std::to_string(recipeId);
+  result += ",";
+  result += std::to_string(workbenchId);
   result += "]";
   return result;
 }
