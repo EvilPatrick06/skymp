@@ -24,7 +24,7 @@ import { nameof } from '../../lib/nameof';
 import { setActorValuePercentage } from '../../sync/actorvalues';
 import { applyAppearanceToPlayer } from '../../sync/appearance';
 import { applyEquipment, isBadMenuShown } from '../../sync/equipment';
-import { Inventory, applyInventory } from '../../sync/inventory';
+import { Inventory, applyInventory, getDiff, getInventory } from '../../sync/inventory';
 import { Movement } from '../../sync/movement';
 import { learnSpells, removeAllSpells } from '../../sync/spell';
 import { ModelApplyUtils } from '../../view/modelApplyUtils';
@@ -77,18 +77,86 @@ const setPcInventory = (inv: Inventory): void => {
   storage['pcInv'] = inv;
 };
 
+/*
+  THORNSWOOD PATCH: stop re-applying a difference that is never going to close.
+
+  This ran applyInventory every five seconds, for ever, whatever the state of
+  the inventory. That is right when the server has sent something new and the
+  game has not caught up. It is a disaster when the difference CANNOT be
+  resolved, because then it is re-added every five seconds for the rest of the
+  session, and Skyrim announces every single add.
+
+  Reported by a tester on 22 September, three separate times and in three
+  different words before anybody connected them:
+    "I just logged back in, not touching a thing, just notifications of
+     looting boots keeps popping up"
+    "exiting the bench caused a whole bunch of notifcations for picking up
+     boots, but my player inventory doesn't show that many boots"
+  and a third clip of the same list scrolling past while standing still. The
+  notifications were real and the items were not: every five seconds the same
+  unresolvable entry was handed over again.
+
+  So the diff is computed first and three things follow from it. Nothing to do
+  means nothing is done, which is the common case and now costs one comparison
+  instead of a full apply. Something to do is done, as before. And THE SAME
+  THING TO DO, three times running, is a difference that applying does not
+  fix: it is reported once and then left alone until it changes.
+
+  Deliberately not a permanent give-up: the signature is compared, so the
+  moment the server sends anything different, or the player picks something
+  up, it starts working again. What it cannot do any more is spend the rest of
+  somebody's evening telling them they found the same boots.
+*/
 let pcInvLastApply = 0;
+let pcInvStuckSig = '';
+let pcInvStuckFor = 0;
+const PC_INV_GIVE_UP_AFTER = 3;
+
 on('update', () => {
   if (isBadMenuShown()) {
     return;
   }
-  if (Date.now() - pcInvLastApply > 5000) {
-    pcInvLastApply = Date.now();
-    const pcInv = getPcInventory();
-    if (pcInv) {
-      applyInventory(Game.getPlayer()!, pcInv, false, true);
-    }
+  if (Date.now() - pcInvLastApply <= 5000) {
+    return;
   }
+  pcInvLastApply = Date.now();
+
+  const pcInv = getPcInventory();
+  if (!pcInv) {
+    return;
+  }
+  const pl = Game.getPlayer();
+  if (!pl) {
+    return;
+  }
+
+  // ignoreWorn true, to match the apply below: what is equipped is the
+  // equipment sync's business and not this one's.
+  const diff = getDiff(pcInv, getInventory(pl), true).entries;
+  if (diff.length === 0) {
+    pcInvStuckSig = '';
+    pcInvStuckFor = 0;
+    return;
+  }
+
+  const sig = JSON.stringify(diff);
+  if (sig === pcInvStuckSig) {
+    pcInvStuckFor++;
+    if (pcInvStuckFor >= PC_INV_GIVE_UP_AFTER) {
+      if (pcInvStuckFor === PC_INV_GIVE_UP_AFTER) {
+        printConsole(
+          `[thornswood] the inventory difference has not closed after ` +
+          `${PC_INV_GIVE_UP_AFTER} tries, so it is left alone until it changes: ${sig}`
+        );
+      }
+      return;
+    }
+  } else {
+    pcInvStuckSig = sig;
+    pcInvStuckFor = 0;
+  }
+
+  applyInventory(pl, pcInv, false, true);
 });
 
 const unequipIronHelmet = () => {
