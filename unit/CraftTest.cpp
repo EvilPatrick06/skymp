@@ -6,6 +6,8 @@
 #include "PartOneListener.h"
 #include <memory>
 #include <nlohmann/json.hpp>
+#include "SetInventoryMessage.h"
+#include "gamemode_events/GameModeEvent.h"
 
 using Catch::Matchers::ContainsSubstring;
 
@@ -246,4 +248,216 @@ TEST_CASE("DLC Hearthfires recipes are working", "[Craft][espm]")
     Inventory().AddItem(0x0005ACE4, 1), 0x300300F);
   REQUIRE(form.size() > 0);
   REQUIRE(form[0].rec->GetId() == 0x0200306d);
+}
+
+/*
+  THORNSWOOD PATCH. A craft that does not go through sends the client its
+  inventory back, whichever way it failed. See CraftService::OnCraftItem.
+*/
+namespace {
+// Every inventory the server sent to userId since Messages() was cleared.
+std::vector<Inventory> SentInventories(PartOne& p, Networking::UserId userId)
+{
+  std::vector<Inventory> res;
+  for (auto& m : p.Messages()) {
+    auto setInventory = dynamic_cast<SetInventoryMessage*>(m.message.get());
+    if (setInventory && m.userId == userId) {
+      res.push_back(setInventory->inventory);
+    }
+  }
+  return res;
+}
+
+// Says no to every craft, the way mp.onCraft returning false does.
+class RefuseCraftListener : public PartOneListener
+{
+public:
+  void OnConnect(Networking::UserId) override {}
+  void OnDisconnect(Networking::UserId) override {}
+  void OnCustomPacket(Networking::UserId,
+                      const simdjson::dom::element&) override
+  {
+  }
+  bool OnMpApiEvent(const GameModeEvent& event) override
+  {
+    if (event.GetName() == std::string("onCraft")) {
+      ++numRefused;
+      return false;
+    }
+    return true;
+  }
+
+  int numRefused = 0;
+};
+
+constexpr uint32_t kIronIngot = 0x5ace4;
+constexpr uint32_t kLeatherStrips = 0x800e4;
+constexpr uint32_t kSteelIngot = 0x5ace5;
+constexpr uint32_t kSteelWarhammer = 0x1398a;
+constexpr uint32_t kForge = 0x1ad6e;
+
+MpActor& MakeCrafter(PartOne& p, uint32_t nearRefrId)
+{
+  auto& refr = p.worldState.GetFormAt<MpObjectReference>(nearRefrId);
+  DoConnect(p, 0);
+  p.CreateActor(0xff000000, refr.GetPos(), 0,
+                refr.GetCellOrWorld().ToFormId(p.worldState.espmFiles));
+  p.SetUserActor(0, 0xff000000);
+  return p.worldState.GetFormAt<MpActor>(0xff000000);
+}
+}
+
+TEST_CASE("A craft the server cannot carry out sends the client its "
+          "inventory back",
+          "[Craft][espm]")
+{
+  // The shape measured on the dev server on 23 September: the client listed
+  // an input the server does not hold, so taking the inputs away throws, and
+  // by then the client has already shown the result.
+  const uint32_t notHeld = 0x1be1a;
+
+  PartOne& p = GetPartOne();
+  auto& ac = MakeCrafter(p, kForge);
+  ac.AddItem(kIronIngot, 3);
+  const Inventory before = ac.GetInventory();
+
+  p.Tick();
+  p.Messages().clear();
+
+  CraftItemMessage msg;
+  msg.data.craftInputObjects =
+    Inventory().AddItem(notHeld, 1).AddItem(kIronIngot, 3);
+  msg.data.workbench = kForge;
+  msg.data.resultObjectId = kSteelWarhammer;
+
+  RawMessageData msgData;
+  msgData.userId = 0;
+  REQUIRE_THROWS_WITH(
+    p.GetActionListener().OnCraftItem(msgData, msg),
+    ContainsSubstring("Source inventory doesn't have enough 0x1be1a"));
+
+  // Nothing was taken and nothing was made.
+  REQUIRE(ac.GetInventory() == before);
+
+  p.Tick(); // send deferred inventory update messages
+  auto sent = SentInventories(p, 0);
+  REQUIRE(sent.size() == 1);
+  REQUIRE(sent[0] == before);
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
+
+TEST_CASE("A craft the gamemode refuses sends the client its inventory back",
+          "[Craft][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto listener = std::make_shared<RefuseCraftListener>();
+  p.AddListener(listener);
+
+  auto& ac = MakeCrafter(p, kForge);
+  const Inventory recipe = Inventory()
+                             .AddItem(kIronIngot, 1)
+                             .AddItem(kLeatherStrips, 3)
+                             .AddItem(kSteelIngot, 4);
+  for (auto& entry : recipe.entries) {
+    ac.AddItem(entry.baseId, entry.count);
+  }
+  const Inventory before = ac.GetInventory();
+
+  p.Tick();
+  p.Messages().clear();
+
+  CraftItemMessage msg;
+  msg.data.craftInputObjects = recipe;
+  msg.data.workbench = kForge;
+  msg.data.resultObjectId = kSteelWarhammer;
+
+  RawMessageData msgData;
+  msgData.userId = 0;
+  p.GetActionListener().OnCraftItem(msgData, msg);
+
+  REQUIRE(listener->numRefused == 1);
+  REQUIRE(ac.GetInventory() == before);
+  REQUIRE(ac.GetInventory().GetItemCount(kSteelWarhammer) == 0);
+
+  p.Tick(); // send deferred inventory update messages
+  auto sent = SentInventories(p, 0);
+  REQUIRE(sent.size() == 1);
+  REQUIRE(sent[0] == before);
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
+
+TEST_CASE("A craft at something that is not a workbench sends the client its "
+          "inventory back",
+          "[Craft][espm]")
+{
+  PartOne& p = GetPartOne();
+  const uint32_t barrel = ToUnderlying(Constants::kBarrelInWhiterun);
+
+  auto& ac = MakeCrafter(p, barrel);
+  ac.AddItem(kIronIngot, 1);
+  const Inventory before = ac.GetInventory();
+
+  p.Tick();
+  p.Messages().clear();
+
+  CraftItemMessage msg;
+  msg.data.craftInputObjects = Inventory().AddItem(kIronIngot, 1);
+  msg.data.workbench = barrel;
+  msg.data.resultObjectId = kSteelWarhammer;
+
+  RawMessageData msgData;
+  msgData.userId = 0;
+  p.GetActionListener().OnCraftItem(msgData, msg);
+
+  REQUIRE(ac.GetInventory() == before);
+
+  p.Tick(); // send deferred inventory update messages
+  auto sent = SentInventories(p, 0);
+  REQUIRE(sent.size() == 1);
+  REQUIRE(sent[0] == before);
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
+
+TEST_CASE("A craft that goes through still sends the inventory with the "
+          "result in it",
+          "[Craft][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& ac = MakeCrafter(p, kForge);
+  const Inventory recipe = Inventory()
+                             .AddItem(kIronIngot, 1)
+                             .AddItem(kLeatherStrips, 3)
+                             .AddItem(kSteelIngot, 4);
+  for (auto& entry : recipe.entries) {
+    ac.AddItem(entry.baseId, entry.count);
+  }
+
+  p.Tick();
+  p.Messages().clear();
+
+  CraftItemMessage msg;
+  msg.data.craftInputObjects = recipe;
+  msg.data.workbench = kForge;
+  msg.data.resultObjectId = kSteelWarhammer;
+
+  RawMessageData msgData;
+  msgData.userId = 0;
+  p.GetActionListener().OnCraftItem(msgData, msg);
+
+  REQUIRE(ac.GetInventory().GetItemCount(kSteelWarhammer) == 1);
+  REQUIRE(ac.GetInventory().GetItemCount(kIronIngot) == 0);
+
+  p.Tick(); // send deferred inventory update messages
+  auto sent = SentInventories(p, 0);
+  REQUIRE(sent.size() == 1);
+  REQUIRE(sent[0] == ac.GetInventory());
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
 }
