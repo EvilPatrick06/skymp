@@ -311,9 +311,12 @@ TEST_CASE("A craft the server cannot carry out sends the client its "
           "inventory back",
           "[Craft][espm]")
 {
-  // The shape measured on the dev server on 23 September: the client listed
-  // an input the server does not hold, so taking the inputs away throws, and
-  // by then the client has already shown the result.
+  // The shape of the first craft measured on the dev server on 23 September,
+  // at 20:46:05: the client listed an input the server does not hold, so
+  // taking the inputs away throws, and by then the client has already shown
+  // the result. This tests that the inventory is sent. When the client
+  // applies it is the client's business, and for that craft it was the same
+  // frame with or without this; see CraftService::OnCraftItem.
   const uint32_t notHeld = 0x1be1a;
 
   PartOne& p = GetPartOne();

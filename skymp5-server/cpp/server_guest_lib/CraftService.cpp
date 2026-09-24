@@ -37,17 +37,8 @@ void CraftService::OnCraftItem(const RawMessageData& rawMsgData,
     this runs, the client has already taken the materials out of the pack,
     put the result in, and is showing that. So when the server does not carry
     the craft out, for any reason, the person is left looking at an item the
-    server does not have, and missing materials the server still has. Nothing
-    told the client so. It found out only when it next re-applied the last
-    inventory the server had sent, on a five second timer, and anything built
-    on the phantom item in the meantime was refused as well.
-
-    Reported by a tester on the dev server on 23 September: "Made a helmet
-    twice only got one". The log showed the first helmet refused on the
-    inventory check ("Source inventory doesn't have enough 0x1be1a"), and four
-    seconds later that same helmet, which the server never had, sent in as the
-    input to another craft and refused the same way. The helmet was made
-    again, went through, and one helmet is what there was.
+    server does not have, and missing materials the server still has, until
+    the client next puts the server's last inventory back.
 
     So every way out of a craft that is not a success ends here: a bench that
     is not a bench, the gamemode saying no, and the removal that throws
@@ -55,13 +46,56 @@ void CraftService::OnCraftItem(const RawMessageData& rawMsgData,
     removal changes nothing unless all of it succeeds, see
     Inventory::RemoveItems). What is sent is the server's own inventory, in
     the same message every other change to it sends. Nothing is added or
-    taken away here; the client is only told what is true, and it drops the
-    phantom the next frame it is out of the inventory and crafting menus
-    (onSetInventoryMessage in remoteServer.ts) instead of on the timer.
+    taken away here; the client is only told what is true. An exception still
+    goes on up once the inventory is sent, so it is logged where and how it
+    always was. This does not make a refused craft succeed.
 
-    This does not make the refused craft succeed. Why it was refused is a
-    separate question. An exception still goes on up once the inventory is
-    sent, so it is logged where and how it always was.
+    HOW LITTLE THIS CHANGES ON THE SCREEN, read off the client code rather
+    than assumed. The client puts the server's inventory back in one place,
+    the update handler in remoteServer.ts. That handler does nothing while
+    the Crafting Menu (or the inventory, container, favourites or magic menu)
+    is open, and otherwise runs at most once every five seconds, counted from
+    the last time it ran. Since it never runs with a menu open, the five
+    seconds are always up once a menu has been open that long. Before this
+    patch, then, a refused craft was already undone on the first frame after
+    the Crafting Menu closed whenever the menu had been open five seconds or
+    more, which is nearly always. This message cannot bring that forward,
+    because nothing is applied with the menu open. What it changes is the
+    short case: a menu closed less than five seconds after it opened is now
+    put right on that first frame too, instead of up to five seconds later.
+
+    It made no difference to the case that prompted it. A tester on the dev
+    server on 23 September: "Made a helmet twice only got one" (Thornswood
+    To Do 347). At 20:46:05 the first helmet was refused on the inventory
+    check ("Source inventory doesn't have enough 0x1be1a"). The forge was
+    used at 20:45:14; the correction, which cannot run with the menu open,
+    came at 20:46:09; and the forge was used again at 20:46:18, so the person
+    had left it in between. The menu had been open for most of a minute, and
+    the helmet was taken back on the first frame after it closed, with or
+    without this.
+
+    The line at 20:46:09, "craft 0x5ace4" with the helmet as its one input,
+    was not the person doing anything with the helmet. It was that
+    correction, run while the character was still seated at the forge.
+    craftService.ts on the client counts everything that goes out of the
+    pack while the character is at a piece of furniture as an input, and the
+    next thing that comes in as the result, and applyInventory makes its
+    removals first. So taking the phantom helmet out and putting the iron
+    ingots back went to the server as a craft of an ingot from the helmet,
+    which the server did not hold and refused. With this patch that happens
+    the same way, followed by one more inventory message that changes
+    nothing.
+
+    ONE WAY THIS CAN MAKE THINGS WORSE, for the record. In the short case the
+    old timer could let the character stand up before the correction ran,
+    and then it was not read as a craft. Now it runs while they are still
+    seated, so it is read as one there too. That craft is normally refused,
+    because the server does not hold the phantom, and is harmless. When the
+    person already held one of what they made, the server does hold it, and
+    the gamemode lets through a craft of a plugin item that no recipe
+    matches, so one real item becomes one material. That already happens
+    whenever the menu was open five seconds or more. The fix for it is on
+    the client, which should not read its own correction as a craft.
   */
   bool crafted = false;
   try {
