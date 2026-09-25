@@ -296,6 +296,17 @@ export class AuthService extends ClientListener {
       return;
     }
 
+    // THORNSWOOD PATCH: the scroll's Continue. The page sends
+    // ('thornswood', 'choosing') once, when the person leaves the sealed scroll
+    // for the character choice, so the time spent reading the scroll does not
+    // count against the fallback. A page with no scroll never sends it, and the
+    // clock keeps running from the menu as before.
+    if (this.menuChoiceWaitingSince && e.arguments[0] === 'thornswood' && e.arguments[1] === 'choosing') {
+      this.menuChoiceWaitingSince = Date.now();
+      logTrace(this, `The scroll's Continue was pressed, the menu choice clock starts again`);
+      return;
+    }
+
     const eventKey = e.arguments[0];
     switch (eventKey) {
       case events.openDiscordOauth:
@@ -738,7 +749,7 @@ export class AuthService extends ClientListener {
   private _isListenBrowserMessage = false;
 
   // THORNSWOOD PATCH: see onAuthNeeded. Non-zero while the menu's choice is
-  // awaited; the fallback is the settings' profileId, used after a minute.
+  // awaited; the fallback is the settings' profileId, used after three minutes.
   private menuChoiceWaitingSince = 0;
   private menuChoiceFallback = 0;
   // Three minutes: a minute was short for somebody reading the slots, and it
@@ -751,10 +762,10 @@ export class AuthService extends ClientListener {
     if (Date.now() - this.menuChoiceWaitingSince < AuthService.menuChoiceFallbackMs) return;
     this.menuChoiceWaitingSince = 0;
     if (this.menuChoiceFallback > 0) {
-      logTrace(this, `No menu choice after a minute, falling back to the settings' profileId =`, this.menuChoiceFallback);
+      logTrace(this, `No menu choice after three minutes, falling back to the settings' profileId =`, this.menuChoiceFallback);
       this.controller.emitter.emit("authAttempt", { authGameData: { local: { profileId: this.menuChoiceFallback } } });
     } else {
-      logError(this, `No menu choice after a minute and no profileId in the settings to fall back to; nobody is logged in`);
+      logError(this, `No menu choice after three minutes and no profileId in the settings to fall back to; nobody is logged in`);
     }
   }
 
