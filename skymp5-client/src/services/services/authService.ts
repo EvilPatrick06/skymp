@@ -307,6 +307,21 @@ export class AuthService extends ClientListener {
       return;
     }
 
+    // THORNSWOOD PATCH: no fallback while the scroll is on, Djinn, 25 September.
+    // The fallback to the last character is only for somebody who ticked
+    // "Start without the scroll next time". The page sends ('thornswood',
+    // 'stay') every few seconds while it shows the scroll, and from the first
+    // one this session never falls back: whoever sits at the menu for five
+    // hours is still at the menu, choosing. A page with the scroll off never
+    // sends it, and the three minute fallback works as before.
+    if (this.menuChoiceWaitingSince && e.arguments[0] === 'thornswood' && e.arguments[1] === 'stay') {
+      if (!this.menuChoiceNoFallback) {
+        this.menuChoiceNoFallback = true;
+        logTrace(this, `The scroll is on, so there is no fallback to the last character this session`);
+      }
+      return;
+    }
+
     const eventKey = e.arguments[0];
     switch (eventKey) {
       case events.openDiscordOauth:
@@ -752,6 +767,8 @@ export class AuthService extends ClientListener {
   // awaited; the fallback is the settings' profileId, used after three minutes.
   private menuChoiceWaitingSince = 0;
   private menuChoiceFallback = 0;
+  // THORNSWOOD PATCH: set by the page's ('thornswood', 'stay'); see onBrowserMessage.
+  private menuChoiceNoFallback = false;
   // Three minutes: a minute was short for somebody reading the slots, and it
   // logged them in as the last character mid-thought. Thornswood's front
   // plugin reloads a page that goes silent, so this is the last resort.
@@ -759,6 +776,7 @@ export class AuthService extends ClientListener {
 
   private menuChoiceTick() {
     if (!this.menuChoiceWaitingSince) return;
+    if (this.menuChoiceNoFallback) return;
     if (Date.now() - this.menuChoiceWaitingSince < AuthService.menuChoiceFallbackMs) return;
     this.menuChoiceWaitingSince = 0;
     if (this.menuChoiceFallback > 0) {
