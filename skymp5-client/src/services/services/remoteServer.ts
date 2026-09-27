@@ -369,7 +369,13 @@ export class RemoteServer extends ClientListener {
 
             ModelApplyUtils.applyModelNodeTextureSet(refr, msg.props.setNodeTextureSet);
 
-            ModelApplyUtils.applyModelIsDisabled(refr, !!msg.props['disabled']);
+            // THORNSWOOD PATCH (#495). The server writes this flag as
+            // "isDisabled" (CreateActorMessage.h, MpObjectReference.cpp) and
+            // this read "disabled", so it was always false: a reference the
+            // server holds disabled was never disabled here, and one a client
+            // plugin had disabled was enabled again on every stream.
+            // "disabled" is still read for a server that ever sends it.
+            ModelApplyUtils.applyModelIsDisabled(refr, !!(msg.props['isDisabled'] || msg.props['disabled']));
 
             // TODO: move to a separate module
             const animation = msg.props.lastAnimation;
@@ -950,7 +956,7 @@ export class RemoteServer extends ClientListener {
           ModelApplyUtils.applyModelIsOpen(refr, !!msgData);
         } else if (msg.propName === 'isHarvested') {
           ModelApplyUtils.applyModelIsHarvested(refr, !!msgData);
-        } else if (msg.propName === 'disabled') {
+        } else if (msg.propName === 'disabled' || msg.propName === 'isDisabled') {
           ModelApplyUtils.applyModelIsDisabled(refr, !!msgData);
         }
       });

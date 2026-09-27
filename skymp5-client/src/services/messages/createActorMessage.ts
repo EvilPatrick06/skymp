@@ -45,6 +45,9 @@ export interface CreateActorMessageAdditionalProps {
     isHarvested?: boolean;
     setNodeTextureSet?: SetNodeTextureSetEntry[];
     setNodeScale?: SetNodeScaleEntry[];
+    // THORNSWOOD PATCH (#495): the server sends "isDisabled"
+    // (CreateActorMessage.h). "disabled" is kept in case a server sends it.
+    isDisabled?: boolean;
     disabled?: boolean;
     lastAnimation?: string;
     displayName?: string;
