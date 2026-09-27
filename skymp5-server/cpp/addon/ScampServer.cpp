@@ -287,8 +287,8 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
       partOne->worldState.equipmentSpellCheckEnabled = v;
       spdlog::info("equipped spell must be server granted: {}",
                    v ? "yes" : "no");
-    }
-
+    }
+
     if (serverSettings.find("equipmentInventoryCheckEnabled") !=
         serverSettings.end()) {
       bool v =
@@ -1255,9 +1255,13 @@ Napi::Value ScampServer::GetNeighborsByPosition(const Napi::CallbackInfo& info)
     auto& refs = partOne->worldState.GetNeighborsByPosition(
       cellOrWorldDesc.ToFormId(partOne->worldState.espmFiles), cellX, cellY);
 
+    // THORNSWOOD PATCH (#529): the array is made at its full length, so it is
+    // filled by index. Appending at arr.Length() put every id after as many
+    // empty slots as there were ids.
     Napi::Array arr = Napi::Array::New(info.Env(), refs.size());
+    uint32_t i = 0;
     for (auto ref : refs) {
-      arr.Set(arr.Length(), Napi::Number::New(info.Env(), ref->GetFormId()));
+      arr.Set(i++, Napi::Number::New(info.Env(), ref->GetFormId()));
     }
     return arr;
   } catch (std::exception& e) {
