@@ -3,10 +3,54 @@
 
 #include "CraftItemMessage.h"
 #include "PacketParser.h"
+#include "PartOneListener.h"
+#include <memory>
+#include <nlohmann/json.hpp>
 
 using Catch::Matchers::ContainsSubstring;
 
 PartOne& GetPartOne();
+
+namespace {
+// THORNSWOOD PATCH. The gamemode's part in a craft with no recipe.
+//
+// Since 8bce01a0 a craft that matches no COBJ is not dropped here: onCraft
+// fires with recipeId 0 and the bench as a fifth argument, and the gamemode
+// decides (alchemy and enchanting have no COBJ at all). A listener that
+// answers false refuses it and nothing moves; with no listener it goes
+// through. This stands in for a gamemode that refuses, and records what it
+// was asked. PartOne is shared by every test in the run and has no way to
+// remove a listener, so it only acts while `armed` is set.
+class RefuseRecipelessCraft : public PartOneListener
+{
+public:
+  void OnConnect(Networking::UserId) override {}
+  void OnDisconnect(Networking::UserId) override {}
+  void OnCustomPacket(Networking::UserId,
+                      const simdjson::dom::element&) override
+  {
+  }
+  bool OnMpApiEvent(const GameModeEvent& event) override
+  {
+    if (!armed || event.GetName() != std::string("onCraft")) {
+      return true;
+    }
+    auto args = nlohmann::json::parse(event.GetArgumentsJsonArray());
+    if (args.at(3).get<uint32_t>() != 0) {
+      return true;
+    }
+    asked++;
+    askedResult = args.at(1).get<uint32_t>();
+    askedBench = args.at(4).get<uint32_t>();
+    return false;
+  }
+
+  bool armed = false;
+  int asked = 0;
+  uint32_t askedResult = 0;
+  uint32_t askedBench = 0;
+};
+}
 
 TEST_CASE("CraftItem packet is parsed", "[Craft][espm]")
 {
@@ -140,16 +184,32 @@ TEST_CASE(
 
   Inventory previousInventory = ac.GetInventory();
 
-  // Must result in "Recipe not found" in logs
+  // THORNSWOOD PATCH. The fork asks the gamemode about a craft with no recipe
+  // (8bce01a0) instead of refusing it here, so "unable" is the gamemode's
+  // answer: this one refuses, as Thornswood's does for anything that is not a
+  // brew or an enchantment.
+  auto gamemode = std::make_shared<RefuseRecipelessCraft>();
+  p.AddListener(gamemode);
+  gamemode->armed = true;
+
+  // Must result in "Recipe not found, asking the gamemode" in logs
   CraftItemMessage msg3;
   msg3.data.craftInputObjects = requiredItems;
   msg3.data.workbench = workbenchId;
   msg3.data.resultObjectId = wrongResultObject;
   p.GetActionListener().OnCraftItem(msgData, msg3);
 
+  gamemode->armed = false;
+
   Inventory newInventory = ac.GetInventory();
 
+  REQUIRE(gamemode->asked == 1);
+  REQUIRE(gamemode->askedResult == wrongResultObject);
+  REQUIRE(gamemode->askedBench == workbenchId);
   REQUIRE(previousInventory == newInventory);
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
 }
 
 TEST_CASE("DLC Dragonborn recipes are working", "[Craft][espm]")
