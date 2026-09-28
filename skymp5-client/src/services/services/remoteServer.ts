@@ -671,7 +671,22 @@ export class RemoteServer extends ClientListener {
             number, because "dressed on attempt 9" and "gave up after 15" are
             different problems and the log could not tell them apart before.
           */
+          /*
+            THORNSWOOD. APPEARANCE BEFORE EQUIPMENT (#614).
+
+            Appearance calls queueNiNodeUpdate. If worn armor is applied first
+            (or in parallel), Riekling/Goblin armor addons remount on the wrong
+            neck and go transparent after rejoin / cell load, while isEquipped
+            still says they are on. Humans rarely show it.
+
+            Apply the face/race first, give the NiNode a beat, then settle
+            equipment, then rebuild once more so AA bind to the race body.
+          */
           (async () => {
+            if (msg.appearance) {
+              applyAppearanceToPlayer(msg.appearance);
+              await Utility.wait(0.25);
+            }
             for (let attempt = 1; attempt <= 15; attempt++) {
               applyPcInv();
               await Utility.wait(attempt === 1 ? 0.3 : 1);
@@ -679,16 +694,15 @@ export class RemoteServer extends ClientListener {
                 if (attempt > 1) {
                   logTrace(this, 'equipment went on at attempt', attempt);
                 }
+                try {
+                  Game.getPlayer()?.queueNiNodeUpdate();
+                } catch (_e) { }
                 return;
               }
             }
             logError(this, 'equipment never went on after 15 attempts; the '
               + 'person is standing there undressed and the server record is fine');
           })();
-          // Note: appearance part was copy-pasted
-          if (msg.appearance) {
-            applyAppearanceToPlayer(msg.appearance);
-          }
         }
 
         if (msg.props) {
@@ -818,12 +832,19 @@ export class RemoteServer extends ClientListener {
               { minutes: 0, seconds: 0, hours: this.controller.lookupListener(TimeService).getTime().newGameHourValue }
             );
             once('update', () => {
-              applyPcInv();
-              Utility.wait(0.3).then(applyPcInv);
-              // Note: appearance part was copy-pasted
-              if (msg.appearance) {
-                applyAppearanceToPlayer(msg.appearance);
-              }
+              // #614: appearance before equipment so race AA remount cleanly.
+              (async () => {
+                if (msg.appearance) {
+                  applyAppearanceToPlayer(msg.appearance);
+                  await Utility.wait(0.25);
+                }
+                applyPcInv();
+                await Utility.wait(0.3);
+                applyPcInv();
+                try {
+                  Game.getPlayer()?.queueNiNodeUpdate();
+                } catch (_e) { }
+              })();
             });
           }
         });
