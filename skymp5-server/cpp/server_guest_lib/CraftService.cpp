@@ -82,20 +82,17 @@ void CraftService::OnCraftItem(const RawMessageData& rawMsgData,
     next thing that comes in as the result, and applyInventory makes its
     removals first. So taking the phantom helmet out and putting the iron
     ingots back went to the server as a craft of an ingot from the helmet,
-    which the server did not hold and refused. With this patch that happens
-    the same way, followed by one more inventory message that changes
-    nothing.
+    which the server did not hold and refused.
 
-    ONE WAY THIS CAN MAKE THINGS WORSE, for the record. In the short case the
-    old timer could let the character stand up before the correction ran,
-    and then it was not read as a craft. Now it runs while they are still
-    seated, so it is read as one there too. That craft is normally refused,
-    because the server does not hold the phantom, and is harmless. When the
-    person already held one of what they made, the server does hold it, and
-    the gamemode lets through a craft of a plugin item that no recipe
-    matches, so one real item becomes one material. That already happens
-    whenever the menu was open five seconds or more. The fix for it is on
-    the client, which should not read its own correction as a craft.
+    THE CLIENT HALF LANDED LATER. The first version of this comment said
+    that in the short case the correction now runs while the character is
+    still seated and so is read as a craft, and that the fix for that is on
+    the client. It is: fork commit 9732d2cc (Thornswood #523) counts a
+    craft only while the Crafting Menu is open and clears the streak when
+    that menu opens and when it closes, and the client never applies the
+    server's inventory while that menu is open. So the inventory this sends
+    is applied after the menu closes and is not read as a craft, in the
+    short case or the long one.
   */
   bool crafted = false;
   try {
