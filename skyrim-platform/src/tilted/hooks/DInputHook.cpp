@@ -6,6 +6,7 @@
 #include <dinput.h>
 
 #include <FunctionHook.hpp>
+#include <HeldKeyRelease.h>
 #include <array>
 #include <cstdio>
 #include <iostream>
@@ -43,9 +44,14 @@ struct InputMeter
   unsigned long long dataCalls, stateCalls, kbdReads;
   unsigned long long lostData, lostState, lostKbd;
   unsigned long long chromeAte, minimisedAte, keyChanges;
+  unsigned long long keyUpsLetThrough;
   long lastData, lastState, lastKbd;
 };
 static InputMeter g_meter = {};
+
+// The keys the game has been told are down (Thornswood #898, the note in
+// GetDeviceData).
+static HeldKeyRelease g_heldKeys;
 
 static FILE* InputLog()
 {
@@ -112,13 +118,14 @@ static void ReportInput(bool chromeFocus, bool readable, void* gameWindow)
           "[input] +%llums  getData %llu (lost %llu, last 0x%08lX)  "
           "getState %llu (lost %llu, last 0x%08lX)  "
           "kbdRead %llu (lost %llu, last 0x%08lX)  keys %llu  "
-          "chromeAte %llu  minimisedAte %llu  chromeFocus %s  readable %s  "
+          "chromeAte %llu  minimisedAte %llu  keyUpsLetThrough %llu  "
+          "chromeFocus %s  readable %s  "
           "window %p  focus %p  active %p  fg %p\n",
           span, g_meter.dataCalls, g_meter.lostData, g_meter.lastData,
           g_meter.stateCalls, g_meter.lostState, g_meter.lastState,
           g_meter.kbdReads, g_meter.lostKbd, g_meter.lastKbd,
           g_meter.keyChanges, g_meter.chromeAte, g_meter.minimisedAte,
-          chromeFocus ? "yes" : "no", readable ? "yes" : "no", gameWindow,
+          g_meter.keyUpsLetThrough, chromeFocus ? "yes" : "no", readable ? "yes" : "no", gameWindow,
           (void*)GetFocus(), (void*)GetActiveWindow(),
           (void*)GetForegroundWindow());
   fflush(f);
@@ -720,15 +727,39 @@ HRESULT _stdcall FakeIDirectInputDevice8A::GetDeviceData(
       ProcessKeyboardData(rawData);
       memset(rawData, 0, 256);
     }
-    if (DInputHook::ChromeFocus() || !ShouldReadInput()) {
-      if (DInputHook::ChromeFocus()) {
+    /*
+      THORNSWOOD PATCH (Thornswood #898). Key ups for held keys still reach
+      the game while it is not listening.
+
+      This used to hand the game an empty buffer whenever the browser had
+      focus or the game was not in front, so a key held when that started
+      never came up in the game and was held for the rest of the session. The
+      buffer is now filtered by HeldKeyRelease (platform_lib, with its own
+      unit test): while the game listens everything goes through and the keys
+      it is told are down are remembered; while it does not, only the key ups
+      for those keys go through, and every key down and every other event is
+      still withheld exactly as before.
+    */
+    const bool chrome = DInputHook::ChromeFocus();
+    const bool listening = !chrome && ShouldReadInput();
+    if (!listening) {
+      if (chrome) {
         g_meter.chromeAte++;
       } else {
         g_meter.minimisedAte++;
       }
-      *outDataLen = 0;
-
-      return result;
+    }
+    if (outDataLen) {
+      if (SUCCEEDED(result)) {
+        const size_t before = *outDataLen;
+        const size_t kept = g_heldKeys.Filter(
+          reinterpret_cast<uint8_t*>(outData), dataSize, before, listening);
+        if (!listening)
+          g_meter.keyUpsLetThrough += kept;
+        *outDataLen = static_cast<DWORD>(kept);
+      } else if (!listening) {
+        *outDataLen = 0;
+      }
     }
   }
 
