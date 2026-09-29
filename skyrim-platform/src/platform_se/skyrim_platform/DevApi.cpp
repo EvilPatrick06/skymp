@@ -1,5 +1,6 @@
 #include "DevApi.h"
 #include "FileUtils.h"
+#include "MenuOpenKeyBlocks.h"
 #include "InvalidArgumentException.h"
 #include "NullPointerException.h"
 #include "PapyrusTESModPlatform.h"
@@ -186,6 +187,34 @@ Napi::Value DevApi::BlockPapyrusEvents(const Napi::CallbackInfo& info)
 {
   bool block = NapiHelper::ExtractBoolean(info[0], "block");
   TESModPlatform::BlockPapyrusEvents(nullptr, -1, nullptr, block);
+  return info.Env().Undefined();
+}
+
+/*
+  THORNSWOOD PATCH (Thornswood #1016).
+
+    setMenuOpenKeyBlocked(userEvent, code, blocked, exceptMenus?)
+
+  While blocked, the game's menu opener does not see keyboard key `code`
+  (a DirectX scan code) going down as `userEvent` (the game's name for the
+  press, "Journal" for J), unless one of `exceptMenus` is open. Plugins still
+  hear the key in buttonEvent. blocked=false takes it off the list.
+*/
+Napi::Value DevApi::SetMenuOpenKeyBlocked(const Napi::CallbackInfo& info)
+{
+  auto userEvent = NapiHelper::ExtractString(info[0], "userEvent");
+  auto code = NapiHelper::ExtractUInt32(info[1], "code");
+  bool blocked = NapiHelper::ExtractBoolean(info[2], "blocked");
+  std::vector<std::string> exceptMenus;
+  if (info.Length() > 3 && !info[3].IsUndefined() && !info[3].IsNull()) {
+    auto arr = NapiHelper::ExtractArray(info[3], "exceptMenus");
+    for (uint32_t i = 0; i < arr.Length(); ++i) {
+      exceptMenus.push_back(
+        NapiHelper::ExtractString(arr.Get(i), "exceptMenus[i]"));
+    }
+  }
+  MenuOpenKeyBlocks::GetSingleton().Set(userEvent, code, blocked,
+                                        std::move(exceptMenus));
   return info.Env().Undefined();
 }
 
