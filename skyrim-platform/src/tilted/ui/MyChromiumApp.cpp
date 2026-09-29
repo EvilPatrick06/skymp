@@ -89,11 +89,19 @@ void MyChromiumApp::Initialize(bool initChromium) noexcept
   settings.multi_threaded_message_loop = true;
   settings.windowless_rendering_enabled = true;
 
+  /*
+    THORNSWOOD PATCH. DevTools only in a debug build (Thornswood #919).
+
+    Release builds used to open DevTools on 127.0.0.1:9000. CEF binds it to
+    loopback in this process, so Windows never asked about it, but any program
+    on the machine could drive the game's browser through it. Nothing in
+    Thornswood uses it.
+  */
 #ifdef DEBUG
   settings.log_severity = LOGSEVERITY_VERBOSE;
+  settings.remote_debugging_port = 9000;
 #else
   settings.log_severity = LOGSEVERITY_VERBOSE;
-  settings.remote_debugging_port = 9000;
 #endif
 
   // We want different CEFTemp paths for the different game installations
@@ -355,6 +363,39 @@ void MyChromiumApp::OnBeforeCommandLineProcessing(
   if (!aCommandLine->HasSwitch("autoplay-policy")) {
     aCommandLine->AppendSwitchWithValue("autoplay-policy",
                                         "no-user-gesture-required");
+  }
+
+  /*
+    THORNSWOOD PATCH. No mDNS responder for WebRTC (Thornswood #919).
+
+    When the voice page opens a peer connection, Chromium hides this
+    machine's address behind a random .local name and starts an mDNS
+    responder in the network service to answer for it. That responder
+    listens on UDP 5353 on every network, in SkyrimPlatformCEF.exe.hidden,
+    and a program listening on the network is what makes Windows Firewall
+    ask. cef_debug.log shows "Starting mDNS responder manager" in the same
+    60 ms as every in-game peer connection. Edge and Chrome ship a firewall
+    rule for exactly this listener; this helper has none.
+
+    With the feature off, host candidates carry the machine's address and
+    nothing binds 5353. The page talks only to Thornswood's voice service and
+    the people in the room, who already see the public address through STUN.
+    The launcher's WebView2 voice turns the same feature off (#920).
+
+    Merged into any disable-features value already on the command line,
+    never replacing it.
+  */
+  {
+    const std::string kFeature = "WebRtcHideLocalIpsWithMdns";
+    std::string features =
+      aCommandLine->GetSwitchValue("disable-features").ToString();
+    if (features.find(kFeature) == std::string::npos) {
+      if (!features.empty()) {
+        features += ",";
+      }
+      features += kFeature;
+      aCommandLine->AppendSwitchWithValue("disable-features", features);
+    }
   }
 }
 }
