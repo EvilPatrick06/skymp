@@ -1,5 +1,6 @@
 #include "Hooks.h"
 #include "EventHandler.h"
+#include "MenuOpenKeyBlockHook.h"
 #include <mutex>
 
 namespace hook::internal {
@@ -125,6 +126,8 @@ void Hooks::Install()
   // InstallOnFrameUpdateHook();
   InstallOnConsoleVPrintHook();
   HookVirtualMachineBind();
+  // THORNSWOOD PATCH (Thornswood #1016)
+  MenuOpenKeyBlockHook::Install();
 
   logger::info("CommonLib hooks installed.");
 }
