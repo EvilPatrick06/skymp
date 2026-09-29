@@ -42,7 +42,9 @@ if(MSVC)
   file(GLOB_RECURSE hooks_src "${tilted}/hooks/*")
   add_library(hooks STATIC ${hooks_src})
   target_include_directories(hooks PUBLIC "${tilted}/hooks")
-  target_link_libraries(hooks PUBLIC core_library reverse)
+  # platform_lib for HeldKeyRelease (Thornswood #898), the key ups DInputHook
+  # still hands the game while a panel has the keyboard.
+  target_link_libraries(hooks PUBLIC core_library reverse platform_lib)
 
   file(GLOB_RECURSE ui_src "${tilted}/ui/*")
   add_library(ui STATIC ${ui_src})
