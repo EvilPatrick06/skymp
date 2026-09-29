@@ -268,7 +268,10 @@ std::vector<Inventory> SentInventories(PartOne& p, Networking::UserId userId)
   return res;
 }
 
-// Says no to every craft, the way mp.onCraft returning false does.
+// Says no to every craft, the way mp.onCraft returning false does, while
+// `armed` is set. PartOne is shared by every test in the run and has no way
+// to remove a listener, so an unarmed one would refuse every craft in every
+// test after this one.
 class RefuseCraftListener : public PartOneListener
 {
 public:
@@ -280,13 +283,14 @@ public:
   }
   bool OnMpApiEvent(const GameModeEvent& event) override
   {
-    if (event.GetName() == std::string("onCraft")) {
+    if (armed && event.GetName() == std::string("onCraft")) {
       ++numRefused;
       return false;
     }
     return true;
   }
 
+  bool armed = false;
   int numRefused = 0;
 };
 
@@ -357,6 +361,7 @@ TEST_CASE("A craft the gamemode refuses sends the client its inventory back",
   PartOne& p = GetPartOne();
   auto listener = std::make_shared<RefuseCraftListener>();
   p.AddListener(listener);
+  listener->armed = true;
 
   auto& ac = MakeCrafter(p, kForge);
   const Inventory recipe = Inventory()
@@ -380,6 +385,7 @@ TEST_CASE("A craft the gamemode refuses sends the client its inventory back",
   msgData.userId = 0;
   p.GetActionListener().OnCraftItem(msgData, msg);
 
+  listener->armed = false;
   REQUIRE(listener->numRefused == 1);
   REQUIRE(ac.GetInventory() == before);
   REQUIRE(ac.GetInventory().GetItemCount(kSteelWarhammer) == 0);
