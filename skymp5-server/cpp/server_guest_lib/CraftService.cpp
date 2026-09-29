@@ -21,33 +21,137 @@ void CraftService::OnCraftItem(const RawMessageData& rawMsgData,
                                const Inventory& inputObjects,
                                uint32_t workbenchId, uint32_t resultObjectId)
 {
-  auto& workbench =
-    partOne.worldState.GetFormAt<MpObjectReference>(workbenchId);
-
-  auto& br = partOne.worldState.GetEspm().GetBrowser();
-  auto& cache = partOne.worldState.GetEspmCache();
-  auto base = br.LookupById(workbench.GetBaseId());
-
   spdlog::info("User {} tries to craft {:#x} on workbench {:#x}",
                rawMsgData.userId, resultObjectId, workbenchId);
-
-  bool isFurnitureOrActivator =
-    base.rec->GetType() == "FURN" || base.rec->GetType() == "ACTI";
-  if (!isFurnitureOrActivator) {
-    return spdlog::error("Unable to use {} as workbench",
-                         base.rec->GetType().ToString());
-  }
 
   MpActor* me = partOne.serverState.ActorByUser(rawMsgData.userId);
   if (!me) {
     return spdlog::error("Unable to craft without Actor attached");
   }
 
+  /*
+    THORNSWOOD PATCH. A craft that does not go through sends the client its
+    inventory back.
+
+    The game makes the thing before the server hears about it. By the time
+    this runs, the client has already taken the materials out of the pack,
+    put the result in, and is showing that. So when the server does not carry
+    the craft out, for any reason, the person is left looking at an item the
+    server does not have, and missing materials the server still has, until
+    the client next puts the server's last inventory back.
+
+    So every way out of a craft that is not a success ends here: a bench that
+    is not a bench, the gamemode saying no, and the removal that throws
+    because the server does not hold what the client says went in (that
+    removal changes nothing unless all of it succeeds, see
+    Inventory::RemoveItems). What is sent is the server's own inventory, in
+    the same message every other change to it sends. Nothing is added or
+    taken away here; the client is only told what is true. An exception still
+    goes on up once the inventory is sent, so it is logged where and how it
+    always was. This does not make a refused craft succeed.
+
+    HOW LITTLE THIS CHANGES ON THE SCREEN, read off the client code rather
+    than assumed. The client puts the server's inventory back in one place,
+    the update handler in remoteServer.ts. That handler does nothing while
+    the Crafting Menu (or the inventory, container, favourites or magic menu)
+    is open, and otherwise runs at most once every five seconds, counted from
+    the last time it ran. Since it never runs with a menu open, the five
+    seconds are always up once a menu has been open that long. Before this
+    patch, then, a refused craft was already undone on the first frame after
+    the Crafting Menu closed whenever the menu had been open five seconds or
+    more, which is nearly always. This message cannot bring that forward,
+    because nothing is applied with the menu open. What it changes is the
+    short case: a menu closed less than five seconds after it opened is now
+    put right on that first frame too, instead of up to five seconds later.
+
+    It made no difference to the case that prompted it. A tester on the dev
+    server on 23 September: "Made a helmet twice only got one" (Thornswood
+    To Do 347). At 20:46:05 the first helmet was refused on the inventory
+    check ("Source inventory doesn't have enough 0x1be1a"). The forge was
+    used at 20:45:14; the correction, which cannot run with the menu open,
+    came at 20:46:09; and the forge was used again at 20:46:18, so the person
+    had left it in between. The menu had been open for most of a minute, and
+    the helmet was taken back on the first frame after it closed, with or
+    without this.
+
+    The line at 20:46:09, "craft 0x5ace4" with the helmet as its one input,
+    was not the person doing anything with the helmet. It was that
+    correction, run while the character was still seated at the forge.
+    craftService.ts on the client counts everything that goes out of the
+    pack while the character is at a piece of furniture as an input, and the
+    next thing that comes in as the result, and applyInventory makes its
+    removals first. So taking the phantom helmet out and putting the iron
+    ingots back went to the server as a craft of an ingot from the helmet,
+    which the server did not hold and refused.
+
+    THE CLIENT HALF LANDED LATER. The first version of this comment said
+    that in the short case the correction now runs while the character is
+    still seated and so is read as a craft, and that the fix for that is on
+    the client. It is: fork commit 9732d2cc (Thornswood #523) counts a
+    craft only while the Crafting Menu is open and clears the streak when
+    that menu opens and when it closes, and the client never applies the
+    server's inventory while that menu is open. So the inventory this sends
+    is applied after the menu closes and is not read as a craft, in the
+    short case or the long one.
+  */
+  bool crafted = false;
+  try {
+    crafted = CraftItem(me, inputObjects, workbenchId, resultObjectId);
+  } catch (const std::exception& e) {
+    SendInventoryBack(me, workbenchId, resultObjectId, e.what());
+    throw;
+  }
+
+  if (!crafted) {
+    SendInventoryBack(me, workbenchId, resultObjectId, "it was refused");
+  }
+}
+
+void CraftService::SendInventoryBack(MpActor* me, uint32_t workbenchId,
+                                     uint32_t resultObjectId,
+                                     const std::string& why)
+{
+  spdlog::warn("CraftService::OnCraftItem - the craft of {:#x} on workbench "
+               "{:#x} did not go through ({}), so actor {:#x} is sent the "
+               "inventory the server holds",
+               resultObjectId, workbenchId, why, me->GetFormId());
+
+  // A failure to send must not hide the reason the craft failed, which the
+  // caller throws on as soon as this returns.
+  try {
+    me->SendInventoryUpdate();
+  } catch (const std::exception& e) {
+    spdlog::error("CraftService::OnCraftItem - could not send actor {:#x} its "
+                  "inventory: {}",
+                  me->GetFormId(), e.what());
+  }
+}
+
+bool CraftService::CraftItem(MpActor* me, const Inventory& inputObjects,
+                             uint32_t workbenchId, uint32_t resultObjectId)
+{
+  auto& workbench =
+    partOne.worldState.GetFormAt<MpObjectReference>(workbenchId);
+
+  auto& br = partOne.worldState.GetEspm().GetBrowser();
+  auto& cache = partOne.worldState.GetEspmCache();
   auto workbenchBase = br.LookupById(workbench.GetBaseId());
 
+  // THORNSWOOD PATCH: checked before it is used rather than after. The type
+  // check below used to dereference it first, which is a crash, not a
+  // refusal.
   if (!workbenchBase.rec) {
-    return spdlog::error("Workbench ref without base object {:x}",
-                         workbench.GetFormId());
+    spdlog::error("Workbench ref without base object {:x}",
+                  workbench.GetFormId());
+    return false;
+  }
+
+  bool isFurnitureOrActivator = workbenchBase.rec->GetType() == "FURN" ||
+    workbenchBase.rec->GetType() == "ACTI";
+  if (!isFurnitureOrActivator) {
+    spdlog::error("Unable to use {} as workbench",
+                  workbenchBase.rec->GetType().ToString());
+    return false;
   }
 
   std::vector<uint32_t> workbenchKeywordIds =
@@ -91,8 +195,12 @@ void CraftService::OnCraftItem(const RawMessageData& rawMsgData,
 
     CraftEvent craftEvent(me, resultObjectId, 1, 0, inputObjects.entries,
                           workbenchId);
-    craftEvent.Fire(me->GetParent());
-    return;
+    if (!craftEvent.Fire(me->GetParent())) {
+      spdlog::info("The gamemode refused the craft of {:#x} with no recipe",
+                   resultObjectId);
+      return false;
+    }
+    return true;
   }
 
   if (recipesList.size() > 1) {
@@ -100,8 +208,15 @@ void CraftService::OnCraftItem(const RawMessageData& rawMsgData,
                  recipesList.size());
   }
 
-  UseCraftRecipe(me, reinterpret_cast<const espm::COBJ*>(recipesList[0].rec),
-                 cache, br, recipesList[0].fileIdx, workbenchId);
+  if (!UseCraftRecipe(me,
+                      reinterpret_cast<const espm::COBJ*>(recipesList[0].rec),
+                      cache, br, recipesList[0].fileIdx, workbenchId)) {
+    // THORNSWOOD PATCH: UseCraftRecipe has already logged "crafted" by the
+    // time the gamemode answers, so the log says when the answer was no.
+    spdlog::info("The gamemode refused the craft of {:#x}", resultObjectId);
+    return false;
+  }
+  return true;
 }
 
 bool CraftService::RecipeItemsMatch(const espm::LookupResult& lookupRes,
@@ -225,7 +340,7 @@ bool CraftService::ConsiderRecipeCandidate(
   return finalConsiderationResult;
 }
 
-void CraftService::UseCraftRecipe(MpActor* me, const espm::COBJ* recipeUsed,
+bool CraftService::UseCraftRecipe(MpActor* me, const espm::COBJ* recipeUsed,
                                   espm::CompressedFieldsCache& cache,
                                   const espm::CombineBrowser& br, int espmIdx,
                                   uint32_t workbenchId)
@@ -259,7 +374,7 @@ void CraftService::UseCraftRecipe(MpActor* me, const espm::COBJ* recipeUsed,
   CraftEvent craftEvent(me, outputFormId, recipeData.outputCount, recipeId,
                         entries, workbenchId);
 
-  craftEvent.Fire(me->GetParent());
+  return craftEvent.Fire(me->GetParent());
 }
 
 bool CraftService::EvaluateCraftRecipeConditions(
