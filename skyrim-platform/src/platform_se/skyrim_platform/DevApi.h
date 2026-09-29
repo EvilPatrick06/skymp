@@ -20,6 +20,9 @@ Napi::Value BlockPapyrusEvents(const Napi::CallbackInfo& info);
 
 void DisableCtrlPrtScnHotkey();
 
+// THORNSWOOD PATCH (Thornswood #1016). MenuOpenKeyBlocks.h says what it is.
+Napi::Value SetMenuOpenKeyBlocked(const Napi::CallbackInfo& info);
+
 using NativeExportsMap =
   std::map<std::string, std::function<Napi::Object(const Napi::Object&)>>;
 
@@ -65,6 +68,9 @@ inline void Register(Napi::Env env, Napi::Object& exports,
                             DisableCtrlPrtScnHotkey();
                             return info.Env().Undefined();
                           })));
+  exports.Set("setMenuOpenKeyBlocked",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(SetMenuOpenKeyBlocked)));
   exports.Set("blockPapyrusEvents",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(BlockPapyrusEvents)));

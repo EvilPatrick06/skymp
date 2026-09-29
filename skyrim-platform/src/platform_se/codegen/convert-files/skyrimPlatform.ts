@@ -17,6 +17,8 @@ export declare function writePlugin(pluginName: string, newSources: string, over
 export declare function getPlatformVersion(): string
 export declare function disableCtrlPrtScnHotkey(): void
 export declare function blockPapyrusEvents(block: boolean): void
+// Thornswood #1016: while blocked, the game's menu opener does not see keyboard key `code` (DirectX scan code) going down as `userEvent` (e.g. "Journal"), unless one of exceptMenus is open. Plugins still get the key in buttonEvent.
+export declare function setMenuOpenKeyBlocked(userEvent: string, code: number, blocked: boolean, exceptMenus?: string[]): void
 export declare function sendIpcMessage(targetSystemName: string, message: ArrayBuffer): void
 export declare function encodeUtf8(text: string): ArrayBuffer
 export declare function decodeUtf8(buffer: ArrayBuffer): string
