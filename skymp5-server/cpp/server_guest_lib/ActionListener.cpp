@@ -777,6 +777,12 @@ void ActionListener::OnHostAttempt(const RawMessageData& rawMsgData,
     hoster = me->GetFormId();
     remote.UpdateHoster(hoster);
 
+    // Hosting can start before the first movement creates this actor's slot.
+    if (partOne.worldState.lastMovUpdateByIdx.size() <= remoteIdx) {
+      partOne.worldState.lastMovUpdateByIdx.resize(
+        static_cast<size_t>(remoteIdx) + 1);
+    }
+
     // Prevents too fast host switch
     partOne.worldState.lastMovUpdateByIdx[remoteIdx] =
       std::chrono::system_clock::now();
