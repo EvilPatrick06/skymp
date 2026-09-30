@@ -1865,10 +1865,14 @@ void MpObjectReference::SendInventoryUpdate()
 void MpObjectReference::SendOpenContainer(uint32_t targetId)
 {
   auto actor = AsActor();
-  if (actor) {
+  // OpenContainer has no caster: the client activates its own character.
+  // Forwarding a hosted NPC's activation makes its host sit at the NPC's
+  // furniture or activate the NPC's object. Only connected actors need this
+  // response; NPC occupancy and other shared state are handled separately.
+  if (actor && actor->GetUserId() != Networking::InvalidUserId) {
     OpenContainerMessage msg;
     msg.target = targetId;
-    actor->GetActorToSendTo().SendToUser(msg, true);
+    actor->SendToUser(msg, true);
   }
 }
 
