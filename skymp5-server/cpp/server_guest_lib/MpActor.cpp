@@ -37,6 +37,7 @@
 #include "TeleportMessage.h"
 #include "UpdateEquipmentMessage.h"
 #include "UpdateMovementMessage.h"
+#include "UpdateAnimationMessage.h"
 #include "HostStopMessage.h"
 
 // for PlaceAtMe used in MpActor::DropItem
@@ -78,6 +79,8 @@ struct MpActor::Impl
   std::vector<std::pair<uint32_t, MpObjectReference*>> droppedItemsQueue;
   std::optional<AnimationData> animationData;
   float serverMovementSpeed = 0;
+  uint32_t serverCombatTarget = 0;
+  std::chrono::steady_clock::time_point serverCombatUntil{};
 
   // this is a hot fix attempt to make permanent restoration potions work
   std::chrono::system_clock::time_point nextRestorationTime{};
@@ -123,6 +126,10 @@ void MpActor::SetServerControlled(bool controlled)
     SetPropertyValueDump("_skympServerControlled", controlled ? "true" : "false",
                          false, false);
   }
+  if (!controlled) {
+    pImpl->serverCombatTarget = 0;
+    pImpl->serverMovementSpeed = 0;
+  }
   if (controlled) {
     auto& hosters = GetParent()->hosters;
     auto it = hosters.find(GetFormId());
@@ -141,6 +148,7 @@ void MpActor::SetServerControlled(bool controlled)
     }
   }
   UpdateHoster(0);
+  if (controlled) ForceSubscriptionsUpdate();
 }
 
 void MpActor::UpdateServerMovement(const NiPoint3& pos, const NiPoint3& angle,
@@ -162,7 +170,17 @@ void MpActor::UpdateServerMovement(const NiPoint3& pos, const NiPoint3& angle,
     SetAngle(angle, SetAngleMode::CalledByUpdateMovement);
   }
   pImpl->serverMovementSpeed = speed;
-  SendMessageToActorListeners(GetServerMovementMessage(), false);
+  SendServerStateToObservers(GetServerMovementMessage(), false);
+}
+
+void MpActor::StopServerMovement()
+{
+  if (!IsServerControlled()) {
+    throw std::invalid_argument("Stopping movement requires server NPC authority");
+  }
+  pImpl->serverMovementSpeed = 0;
+  pImpl->serverCombatTarget = 0;
+  SendServerStateToObservers(GetServerMovementMessage(), true);
 }
 
 UpdateMovementMessage MpActor::GetServerMovementMessage() const
@@ -175,14 +193,45 @@ UpdateMovementMessage MpActor::GetServerMovementMessage() const
   msg.data.pos = { pos.x, pos.y, pos.z };
   msg.data.rot = { angle.x, angle.y, angle.z };
   msg.data.healthPercentage = GetActorValues().healthPercentage;
-  msg.data.speed = pImpl->serverMovementSpeed;
-  msg.data.runMode = pImpl->serverMovementSpeed > 0 ? "Walking" : "Standing";
+  msg.data.speed = IsDead() || IsDisabled() ? 0 : pImpl->serverMovementSpeed;
+  msg.data.runMode = msg.data.speed > 0 ? "Walking" : "Standing";
   msg.data.isDead = IsDead();
   msg.data.isWeapDrawn = IsWeaponDrawn();
   msg.data.isInJumpState = GetAnimationVariableBool("bInJumpState");
   msg.data.isSneaking = GetAnimationVariableBool("IsSneaking");
   msg.data.isBlocking = GetAnimationVariableBool("IsBlocking");
   return msg;
+}
+
+uint32_t MpActor::GetServerCombatTarget() const
+{
+  if (!IsServerControlled() || IsDead() || IsDisabled() ||
+      std::chrono::steady_clock::now() >= pImpl->serverCombatUntil) return 0;
+  const auto form = GetParent()->LookupFormByIdNoLoad(pImpl->serverCombatTarget);
+  const auto target = form ? form->AsActor() : nullptr;
+  if (!target || target->IsDead() || target->IsDisabled() ||
+      target->GetCellOrWorld() != GetCellOrWorld() ||
+      (target->GetPos() - GetPos()).Length() > 4096 ||
+      (target->IsCreatedAsPlayer() && target->GetUserId() == Networking::InvalidUserId)) return 0;
+  return target->GetFormId();
+}
+
+void MpActor::RecordServerCombatTarget(uint32_t targetId)
+{
+  if (!IsServerControlled() || targetId == GetFormId() || IsDead()) return;
+  pImpl->serverCombatTarget = targetId;
+  pImpl->serverCombatUntil = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+}
+
+void MpActor::PublishServerAttackAnimation(const AnimationData& animation)
+{
+  if (!IsServerControlled() || IsDead() || IsDisabled()) return;
+  SetAnimationVariableBool(AnimationVariableBool::kVariable__skymp_isWeapDrawn, true);
+  SetLastAnimEvent(animation);
+  UpdateAnimationMessage message;
+  message.idx = GetIdx();
+  message.data = animation;
+  SendServerStateToObservers(message, true);
 }
 
 void MpActor::IncreaseBlockCount() noexcept
@@ -491,6 +540,18 @@ void MpActor::Disable()
   pImpl->snippetPromises.clear();
 }
 
+void MpActor::SendServerStateToObservers(const IMessageBase& message,
+                                        bool reliable) const
+{
+  std::set<Networking::UserId> recipients;
+  for (auto listener : GetActorListeners()) {
+    const auto user = listener->GetUserId();
+    if (user != Networking::InvalidUserId && recipients.insert(user).second) {
+      listener->SendToUser(message, reliable);
+    }
+  }
+}
+
 void MpActor::SendToUser(const IMessageBase& message, bool reliable)
 {
   if (callbacks->sendToUser) {
@@ -789,6 +850,7 @@ void MpActor::NetSendChangeValues(
     message.data.health = actorValues.healthPercentage;
     message.data.magicka = actorValues.magickaPercentage;
     message.data.stamina = actorValues.staminaPercentage;
+    numUpdatedValues = 3;
   } else {
     // Filter actor values based on the provided filter
     for (const auto& av : avFilterRef) {
@@ -812,7 +874,11 @@ void MpActor::NetSendChangeValues(
   }
 
   if (numUpdatedValues > 0) {
-    GetActorToSendTo().SendToUser(message, true);
+    if (IsServerControlled()) {
+      SendServerStateToObservers(message, true);
+    } else {
+      GetActorToSendTo().SendToUser(message, true);
+    }
   }
 }
 
@@ -1084,7 +1150,11 @@ void MpActor::SendAndSetDeathState(bool isDead, bool shouldTeleport)
   auto position = GetSpawnPoint();
 
   auto respawnMsg = GetDeathStateMsg(position, isDead, shouldTeleport);
-  GetActorToSendTo().SendToUser(respawnMsg, true);
+  if (IsServerControlled()) {
+    SendServerStateToObservers(respawnMsg, true);
+  } else {
+    GetActorToSendTo().SendToUser(respawnMsg, true);
+  }
 
   EditChangeForm([&](MpChangeForm& changeForm) {
     changeForm.isDead = isDead;
@@ -1100,6 +1170,11 @@ void MpActor::SendAndSetDeathState(bool isDead, bool shouldTeleport)
     SetCellOrWorldObsolete(position.cellOrWorldDesc);
     SetPos(position.pos);
     SetAngle(position.rot);
+  }
+  pImpl->serverCombatTarget = 0;
+  pImpl->serverMovementSpeed = 0;
+  if (IsServerControlled()) {
+    SendServerStateToObservers(GetServerMovementMessage(), true);
   }
 }
 
@@ -1264,6 +1339,10 @@ void MpActor::AddDeathItem()
 
 void MpActor::LoadFactions()
 {
+  if (GetChangeForm().factions.has_value()) {
+    factionsLoaded = true;
+    return;
+  }
   std::vector<Faction> factions = EvaluateTemplate<espm::NPC_::UseFactions>(
     GetParent(), GetBaseId(), GetTemplateChain(),
     [&](const auto& npcLookupResult, const auto& npcData) {

@@ -27,7 +27,21 @@ export interface ScampServer {
   };
   setNpcServerControlled(formId: number, controlled: boolean): void;
   updateNpcMovement(formId: number, pos: number[], angle: number[], speed: number): void;
-  getNavmeshRecords(cellOrWorldId: number): number[];
+  stopNpcMovement(formId: number): void;
+  getNavmeshRecords(cellOrWorldId: number, pos?: number[]): number[];
+  getNpcAIState(formId: number): {
+    pos: number[]; rot: number[]; cellOrWorld: number;
+    isDead: boolean; isDisabled: boolean; isHuman: boolean; isConnected: boolean;
+    isServerControlled: boolean;
+    canSwim: boolean; canFly: boolean; immobile: boolean;
+    aggression: number; confidence: number; combatTarget: number;
+    factions: { id: number; rank: number }[];
+  };
+  getFactionReactions(factionIds: number[]): {
+    source: number; target: number; reaction: number;
+  }[];
+  serverNpcAttack(aggressorId: number, targetId: number): boolean;
+  getLoadedFormCount(): number;
 
   createActor(
     formId: number,

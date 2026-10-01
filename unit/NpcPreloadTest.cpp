@@ -401,6 +401,24 @@ TEST_CASE("Attaching another ESPM loader invalidates the NPC candidate index",
   REQUIRE(after.actorIds.empty());
 }
 
+TEST_CASE("Unattended server NPC movement cannot recursively populate surrounding chunks",
+          "[NpcAuthority][PartOne][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  p.worldState.npcAllowEssential = true;
+  p.worldState.npcAllowCrimeFaction = true;
+  constexpr uint32_t id = 0x1a66e;
+  p.worldState.LoadNpcBatch(CursorFor(id), 1);
+  auto& npc = p.worldState.GetFormAt<MpActor>(id);
+  npc.SetServerControlled(true);
+  const auto before = p.worldState.GetLoadedFormCount();
+  REQUIRE(before == 1);
+  const auto position = npc.GetPos();
+  npc.UpdateServerMovement(position + NiPoint3{ 4096, 0, 0 }, npc.GetAngle(), 60);
+  REQUIRE(p.worldState.GetLoadedFormCount() == before);
+}
+
 TEST_CASE("Server authority revokes hosting, persists and streams a complete snapshot",
           "[NpcAuthority][PartOne][espm]")
 {

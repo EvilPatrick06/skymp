@@ -125,8 +125,11 @@ public:
 
   const std::set<MpObjectReference*>& GetNeighborsByPosition(
     uint32_t cellOrWorld, int16_t cellX, int16_t cellY);
+  const std::set<MpObjectReference*>& GetLoadedNeighborsByPosition(
+    uint32_t cellOrWorld, int16_t cellX, int16_t cellY);
 
   std::shared_ptr<std::vector<uint32_t>> GetAllForms(uint32_t modIndex);
+  size_t GetLoadedFormCount() const { return forms.size(); }
 
   struct NpcLoadBatch
   {

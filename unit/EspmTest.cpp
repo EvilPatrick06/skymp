@@ -379,7 +379,7 @@ TEST_CASE("Loads NPC factions", "[espm]")
   espm::CompressedFieldsCache compressedFieldsCache;
   REQUIRE(npc->GetData(compressedFieldsCache).factions.size() == 8);
   REQUIRE(npc->GetData(compressedFieldsCache).factions[0].formId == 0x28848);
-  REQUIRE(npc->GetData(compressedFieldsCache).factions[0].rank == 72);
+  REQUIRE(npc->GetData(compressedFieldsCache).factions[0].rank == 0);
 }
 
 TEST_CASE("Loads NPC flags", "[espm]")

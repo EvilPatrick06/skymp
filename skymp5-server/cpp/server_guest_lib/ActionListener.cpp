@@ -1127,6 +1127,67 @@ bool ShouldBeBlocked(const MpActor& aggressor, const MpActor& target)
 }
 }
 
+bool ActionListener::ServerNpcAttack(uint32_t aggressorId, uint32_t targetId)
+{
+  auto aggressorForm = partOne.worldState.LookupFormByIdNoLoad(aggressorId);
+  auto targetForm = partOne.worldState.LookupFormByIdNoLoad(targetId);
+  auto aggressor = aggressorForm ? aggressorForm->AsActor() : nullptr;
+  auto target = targetForm ? targetForm->AsActor() : nullptr;
+  if (!aggressor || !target || aggressor == target ||
+      !aggressor->IsServerControlled() || aggressor->IsCreatedAsPlayer() ||
+      aggressor->GetProfileId() >= 0 ||
+      aggressor->GetUserId() != Networking::InvalidUserId ||
+      ((target->IsCreatedAsPlayer() || target->GetProfileId() >= 0) &&
+       target->GetUserId() == Networking::InvalidUserId) ||
+      aggressor->IsDead() || target->IsDead() ||
+      aggressor->IsDisabled() || target->IsDisabled() ||
+      aggressor->GetCellOrWorld() != target->GetCellOrWorld()) return false;
+
+  HitData hit{};
+  hit.aggressor = aggressorId;
+  hit.target = targetId;
+  hit.source = 0x1f4;
+  for (const auto& equipped : aggressor->GetEquippedWeapon()) {
+    if (!equipped) continue;
+    if (!aggressor->GetInventory().HasItem(equipped->baseId)) return false;
+    const auto record = partOne.GetEspm().GetBrowser().LookupById(equipped->baseId);
+    auto weapon = espm::Convert<espm::WEAP>(record.rec);
+    if (!weapon) continue;
+    const auto data = weapon->GetData(partOne.worldState.GetEspmCache()).weapDNAM;
+    if (!data || !std::isfinite(data->speed) || data->speed <= 0 ||
+        !std::isfinite(data->reach) || data->reach <= 0) return false;
+    // A bow in melee uses a bash; ranged projectile flight is a separate action.
+    hit.isBashAttack = data->animType == espm::WEAP::AnimType::Bow ||
+      data->animType == espm::WEAP::AnimType::Crossbow;
+    hit.source = equipped->baseId;
+    break;
+  }
+  const auto weapon = espm::GetData<espm::WEAP>(hit.source, &partOne.worldState).weapDNAM;
+  if (!weapon || !std::isfinite(weapon->speed) || weapon->speed <= 0) return false;
+  const auto reach = GetReach(*aggressor, hit.source, 1.f);
+  const auto distance = (target->GetPos() - aggressor->GetPos()).Length();
+  // Keep creature bounds finite, instead of the old unlimited PvE reach.
+  const auto bounds = target->GetBounds();
+  const auto allowance = std::min(96.f, std::max(16.f,
+    std::hypot(float(bounds.pos2[0]), float(bounds.pos2[1]))));
+  if (!std::isfinite(reach) || reach <= 0 || !std::isfinite(distance) ||
+      distance > std::min(300.f, reach + allowance)) return false;
+  const std::chrono::duration<float> elapsed =
+    std::chrono::steady_clock::now() - aggressor->GetLastHitTime(std::nullopt);
+  if (!CanHit(*aggressor, hit, elapsed)) return false;
+  const auto previous = aggressor->GetLastHitTime(targetId);
+  OnWeaponHit(aggressor, target, hit, IsUnarmedAttack(hit.source));
+  if (aggressor->GetLastHitTime(targetId) == previous) return false;
+  UpdateAnimationMessage animation;
+  animation.idx = aggressor->GetIdx();
+  animation.data.animEventName = IsUnarmedAttack(hit.source) ? "AttackStartH2HRight" : "attackStart";
+  const auto last = aggressor->GetLastAnimEvent();
+  animation.data.numChanges = last ? last->numChanges + 1 : 1;
+  partOne.animationSystem.Process(aggressor, animation.data);
+  aggressor->PublishServerAttackAnimation(animation.data);
+  return true;
+}
+
 void ActionListener::OnHit(const RawMessageData& rawMsgData,
                            const HitMessage& msg)
 {
@@ -1357,6 +1418,7 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
   }
 
   auto targetActorValues = targetActorPtr->GetChangeForm().actorValues;
+  const auto previousHealth = targetActorValues.healthPercentage;
 
   SpellCastData spellCastData{ aggressor->GetFormId(),
                                targetActorPtr->GetFormId(),
@@ -1377,6 +1439,9 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
 
   targetActorPtr->NetSetPercentages(targetActorValues, aggressor,
                                     kHealthAvFilter);
+  if (damage > 0 && targetActorValues.healthPercentage < previousHealth) {
+    targetActorPtr->RecordServerCombatTarget(aggressor->GetFormId());
+  }
 
   spdlog::info("OnSpellHit - Target {0:x} is hit by {1:x} spell on {2} "
                "damage. By caster: {3:x})",
@@ -1535,6 +1600,9 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
   targetActor.NetSetPercentages(
     currentActorValues, aggressor,
     std::vector<espm::ActorValue>{ espm::ActorValue::Health });
+  if (damage > 0 && currentActorValues.healthPercentage < healthPercentage) {
+    targetActor.RecordServerCombatTarget(aggressor->GetFormId());
+  }
   aggressor->SetLastHitTime(targetActor.GetFormId(), currentHitTime);
 
   spdlog::debug(

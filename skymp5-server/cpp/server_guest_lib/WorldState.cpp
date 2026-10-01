@@ -892,6 +892,16 @@ const std::set<MpObjectReference*>& WorldState::GetNeighborsByPosition(
   return neighbours;
 }
 
+const std::set<MpObjectReference*>& WorldState::GetLoadedNeighborsByPosition(
+  uint32_t cellOrWorld, int16_t cellX, int16_t cellY)
+{
+  auto state = std::make_pair(&pImpl->chunkLoadingInProgress, pImpl->chunkLoadingInProgress);
+  Viet::ScopedTask<decltype(state)> restore(
+    [](decltype(state)& value) { *value.first = value.second; }, state);
+  pImpl->chunkLoadingInProgress = true;
+  return GetNeighborsByPosition(cellOrWorld, cellX, cellY);
+}
+
 size_t WorldState::PrepareNpcLoad()
 {
   if (!pImpl->placedActorIds) {
