@@ -28,6 +28,7 @@
 #include <antigo/ResolvedContext.h>
 #include <cassert>
 #include <cctype>
+#include <cmath>
 #include <database_drivers/DatabaseFactory.h>
 #include <memory>
 #include <napi.h>
@@ -117,6 +118,11 @@ Napi::Object ScampServer::Init(Napi::Env env, Napi::Object exports)
       InstanceMethod("getNeighborsByPosition",
                      &ScampServer::GetNeighborsByPosition),
       InstanceMethod("getAllForms", &ScampServer::GetAllForms),
+      InstanceMethod("loadNpcBatch", &ScampServer::LoadNpcBatch),
+      InstanceMethod("prepareNpcLoad", &ScampServer::PrepareNpcLoad),
+      InstanceMethod("setNpcServerControlled", &ScampServer::SetNpcServerControlled),
+      InstanceMethod("updateNpcMovement", &ScampServer::UpdateNpcMovement),
+      InstanceMethod("getNavmeshRecords", &ScampServer::GetNavmeshRecords),
       InstanceMethod("getDescFromId", &ScampServer::GetDescFromId),
       InstanceMethod("getIdFromDesc", &ScampServer::GetIdFromDesc),
       InstanceMethod("callPapyrusFunction", &ScampServer::CallPapyrusFunction),
@@ -1266,6 +1272,105 @@ Napi::Value ScampServer::GetNeighborsByPosition(const Napi::CallbackInfo& info)
     return arr;
   } catch (std::exception& e) {
     throw Napi::Error::New(info.Env(), std::string(e.what()));
+  }
+}
+
+Napi::Value ScampServer::LoadNpcBatch(const Napi::CallbackInfo& info)
+{
+  try {
+    const auto cursor = NapiHelper::ExtractDouble(info[0], "cursor");
+    const auto limit = NapiHelper::ExtractDouble(info[1], "limit");
+    if (!std::isfinite(cursor) || cursor < 0 || cursor > UINT32_MAX ||
+        cursor != std::floor(cursor) || !std::isfinite(limit) || limit < 1 ||
+        limit > 128 || limit != std::floor(limit)) {
+      throw std::invalid_argument("NPC batch requires an unsigned integer "
+                                  "cursor and limit from 1 to 128");
+    }
+    auto batch = partOne->worldState.LoadNpcBatch(static_cast<size_t>(cursor),
+                                                  static_cast<size_t>(limit));
+    auto result = Napi::Object::New(info.Env());
+    result.Set("nextCursor", Napi::Number::New(info.Env(), batch.nextCursor));
+    result.Set("total", Napi::Number::New(info.Env(), batch.total));
+    auto ids = Napi::Array::New(info.Env(), batch.actorIds.size());
+    for (size_t i = 0; i < batch.actorIds.size(); ++i) {
+      ids.Set(i, Napi::Number::New(info.Env(), batch.actorIds[i]));
+    }
+    result.Set("actorIds", ids);
+    return result;
+  } catch (std::exception& e) {
+    throw Napi::Error::New(info.Env(), std::string(e.what()));
+  }
+}
+
+Napi::Value ScampServer::PrepareNpcLoad(const Napi::CallbackInfo& info)
+{
+  try {
+    return Napi::Number::New(info.Env(), partOne->worldState.PrepareNpcLoad());
+  } catch (const std::exception& e) {
+    throw Napi::Error::New(info.Env(), e.what());
+  }
+}
+
+Napi::Value ScampServer::SetNpcServerControlled(const Napi::CallbackInfo& info)
+{
+  try {
+    auto id = NapiHelper::ExtractUInt32(info[0], "formId");
+    if (!info[1].IsBoolean()) {
+      throw std::invalid_argument("controlled must be boolean");
+    }
+    partOne->worldState.GetFormAt<MpActor>(id).SetServerControlled(
+      info[1].As<Napi::Boolean>().Value());
+    return info.Env().Undefined();
+  } catch (const std::exception& e) {
+    throw Napi::Error::New(info.Env(), e.what());
+  }
+}
+
+Napi::Value ScampServer::UpdateNpcMovement(const Napi::CallbackInfo& info)
+{
+  try {
+    auto id = NapiHelper::ExtractUInt32(info[0], "formId");
+    auto pos = NapiHelper::ExtractNiPoint3(info[1], "pos");
+    auto angle = NapiHelper::ExtractNiPoint3(info[2], "angle");
+    auto speed = NapiHelper::ExtractDouble(info[3], "speed");
+    if (!std::isfinite(speed) || speed < 0 || speed > 300) {
+      throw std::invalid_argument("speed must be finite and from 0 to 300");
+    }
+    partOne->worldState.GetFormAt<MpActor>(id).UpdateServerMovement(
+      pos, angle, static_cast<float>(speed));
+    return info.Env().Undefined();
+  } catch (const std::exception& e) {
+    throw Napi::Error::New(info.Env(), e.what());
+  }
+}
+
+Napi::Value ScampServer::GetNavmeshRecords(const Napi::CallbackInfo& info)
+{
+  try {
+    auto id = NapiHelper::ExtractUInt32(info[0], "cellOrWorldId");
+    auto result = Napi::Array::New(info.Env());
+    size_t count = 0;
+    auto& cache = partOne->worldState.GetEspmCache();
+    for (const auto& lookup : partOne->GetEspm().GetBrowser().GetDistinctRecordsByType("NAVM")) {
+      if (lookup.rec->GetFlags() & 0x20) {
+        continue;
+      }
+      espm::IterateFields_(lookup.rec, [&](const char* type, uint32_t size, const char* data) {
+        if (std::memcmp(type, "NVNM", 4) != 0 || size < 20) {
+          return;
+        }
+        uint32_t world = 0, cell = 0;
+        std::memcpy(&world, data + 8, 4);
+        std::memcpy(&cell, data + 12, 4);
+        auto parent = lookup.ToGlobalId(world ? world : cell);
+        if (parent == id) {
+          result.Set(count++, Napi::Number::New(info.Env(), lookup.ToGlobalId(lookup.rec->GetId())));
+        }
+      }, cache);
+    }
+    return result;
+  } catch (const std::exception& e) {
+    throw Napi::Error::New(info.Env(), e.what());
   }
 }
 
