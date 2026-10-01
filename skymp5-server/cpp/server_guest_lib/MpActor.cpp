@@ -36,6 +36,8 @@
 #include "ChangeValuesMessage.h"
 #include "TeleportMessage.h"
 #include "UpdateEquipmentMessage.h"
+#include "UpdateMovementMessage.h"
+#include "HostStopMessage.h"
 
 // for PlaceAtMe used in MpActor::DropItem
 #include "script_classes/PapyrusObjectReference.h"
@@ -75,6 +77,7 @@ struct MpActor::Impl
   uint32_t blockActiveCount = 0;
   std::vector<std::pair<uint32_t, MpObjectReference*>> droppedItemsQueue;
   std::optional<AnimationData> animationData;
+  float serverMovementSpeed = 0;
 
   // this is a hot fix attempt to make permanent restoration potions work
   std::chrono::system_clock::time_point nextRestorationTime{};
@@ -108,6 +111,78 @@ MpActor::MpActor(const LocationalData& locationalData_,
 {
   pImpl.reset(new Impl);
   asActor = this;
+}
+
+void MpActor::SetServerControlled(bool controlled)
+{
+  if (IsCreatedAsPlayer() || GetProfileId() >= 0 ||
+      GetUserId() != Networking::InvalidUserId) {
+    throw std::invalid_argument("Server authority requires an NPC, not a human character");
+  }
+  if (IsServerControlled() != controlled) {
+    SetPropertyValueDump("_skympServerControlled", controlled ? "true" : "false",
+                         false, false);
+  }
+  if (controlled) {
+    auto& hosters = GetParent()->hosters;
+    auto it = hosters.find(GetFormId());
+    if (it != hosters.end()) {
+      auto form = GetParent()->LookupFormByIdNoLoad(it->second);
+      hosters.erase(it);
+      if (form && form->AsActor() &&
+          form->AsActor()->GetUserId() != Networking::InvalidUserId) {
+        HostStopMessage msg;
+        msg.target = GetFormId();
+        if (msg.target < 0xff000000) {
+          msg.target += 0x100000000;
+        }
+        form->AsActor()->SendToUser(msg, true);
+      }
+    }
+  }
+  UpdateHoster(0);
+}
+
+void MpActor::UpdateServerMovement(const NiPoint3& pos, const NiPoint3& angle,
+                                  float speed)
+{
+  if (!IsServerControlled() || IsDead() || IsDisabled()) {
+    throw std::invalid_argument("Movement requires an active server controlled NPC");
+  }
+  if (!std::isfinite(pos.x) || !std::isfinite(pos.y) || !std::isfinite(pos.z) ||
+      !std::isfinite(angle.x) || !std::isfinite(angle.y) || !std::isfinite(angle.z) ||
+      !std::isfinite(speed) || speed < 0 || speed > 300 ||
+      (pos - GetPos()).Length() > 4096) {
+    throw std::invalid_argument("Invalid NPC movement; use a bounded local route");
+  }
+  if (pos != GetPos()) {
+    SetPos(pos, SetPosMode::CalledByUpdateMovement);
+  }
+  if (angle != GetAngle()) {
+    SetAngle(angle, SetAngleMode::CalledByUpdateMovement);
+  }
+  pImpl->serverMovementSpeed = speed;
+  SendMessageToActorListeners(GetServerMovementMessage(), false);
+}
+
+UpdateMovementMessage MpActor::GetServerMovementMessage() const
+{
+  const auto& pos = GetPos();
+  const auto& angle = GetAngle();
+  UpdateMovementMessage msg;
+  msg.idx = idx;
+  msg.data.worldOrCell = GetCellOrWorld().ToFormId(GetParent()->espmFiles);
+  msg.data.pos = { pos.x, pos.y, pos.z };
+  msg.data.rot = { angle.x, angle.y, angle.z };
+  msg.data.healthPercentage = GetActorValues().healthPercentage;
+  msg.data.speed = pImpl->serverMovementSpeed;
+  msg.data.runMode = pImpl->serverMovementSpeed > 0 ? "Walking" : "Standing";
+  msg.data.isDead = IsDead();
+  msg.data.isWeapDrawn = IsWeaponDrawn();
+  msg.data.isInJumpState = GetAnimationVariableBool("bInJumpState");
+  msg.data.isSneaking = GetAnimationVariableBool("IsSneaking");
+  msg.data.isBlocking = GetAnimationVariableBool("IsBlocking");
+  return msg;
 }
 
 void MpActor::IncreaseBlockCount() noexcept

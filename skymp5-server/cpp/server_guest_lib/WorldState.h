@@ -139,6 +139,7 @@ public:
   // including candidates refused by the existing NPC policy. No new actors
   // are placed and no neighbouring chunks are recursively discovered.
   NpcLoadBatch LoadNpcBatch(size_t cursor, size_t limit);
+  size_t PrepareNpcLoad();
 
   // See LookupFormById comment
   template <class F>

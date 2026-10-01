@@ -129,11 +129,31 @@ Recursive discovery of neighbouring chunks is suspended during the call, so
 loading one NPC cannot trigger a whole cell load. Existing subscriptions still
 update, and normal streaming resumes after the call.
 
-The first call builds the placement index. Schedule that startup work before
-accepting connections. Subsequent calls bound candidate count rather than
+Call `mp.prepareNpcLoad(): number` before accepting connections to build the
+placement index without instantiating references. It returns candidate count.
+Subsequent calls bound candidate count rather than
 elapsed time: use small batches, yield between them, and measure the actual
 load order. This method supplies loading infrastructure, not movement,
 navigation, combat or unattended routines.
+
+## NPC server authority and navigation
+
+`mp.setNpcServerControlled(formId: number, controlled: boolean): void` marks
+an existing NPC as server controlled and revokes its human host. Human actors
+cannot acquire this flag. The flag persists in the save, stays private, and
+prevents connected clients from submitting hosted movement or actions for it.
+Observers receive its complete current movement snapshot when subscribing.
+
+`mp.updateNpcMovement(formId: number, pos: number[], angle: number[], speed:
+number): void` updates a server-controlled living, enabled NPC and streams the
+standard movement message. Coordinates must be finite, speed must be 0 to 300,
+and a single move cannot exceed 4096 units. The caller must supply navigation,
+activity and combat rules; acquiring authority alone supplies none of them.
+
+`mp.getNavmeshRecords(cellOrWorldId: number): number[]` returns winning,
+non-deleted NAVM identities belonging to that cell or world. Read each record's
+NVNM field with `lookupEspmRecordById`. It does not supply pathfinding or alter
+the older FindNavMeshes API.
 
 ## mp.clear()
 

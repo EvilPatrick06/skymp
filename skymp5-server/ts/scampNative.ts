@@ -19,11 +19,15 @@ export interface ScampServer {
   ): void;
   attachSaveStorage(): void;
   tick(): void;
+  prepareNpcLoad(): number;
   loadNpcBatch(cursor: number, limit: number): {
     nextCursor: number;
     total: number;
     actorIds: number[];
   };
+  setNpcServerControlled(formId: number, controlled: boolean): void;
+  updateNpcMovement(formId: number, pos: number[], angle: number[], speed: number): void;
+  getNavmeshRecords(cellOrWorldId: number): number[];
 
   createActor(
     formId: number,

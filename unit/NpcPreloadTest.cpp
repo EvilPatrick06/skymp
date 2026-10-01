@@ -1,10 +1,70 @@
 #include "TestUtils.hpp"
+#include "ActionListener.h"
+#include "HostMessage.h"
+#include "HostStartMessage.h"
+#include "HostStopMessage.h"
+#include "CreateActorMessage.h"
+#include "UpdateMovementMessage.h"
 #include "libespm/ACHR.h"
 #include "libespm/REFR.h"
 #include <algorithm>
 #include <limits>
 
 espm::Loader& GetEspmLoader();
+PartOne& GetPartOne();
+
+TEST_CASE("Server authority rejects stale hosted movement before forwarding",
+          "[NpcAuthority][PartOne]")
+{
+  auto& p = GetPartOne();
+  DoConnect(p, 0);
+  p.CreateActor(0xff000001, { 0, 0, 0 }, 0, 0x3c);
+  p.SetUserActor(0, 0xff000001);
+  DoConnect(p, 1);
+  p.CreateActor(0xff000002, { 0, 0, 0 }, 0, 0x3c);
+  p.SetUserActor(1, 0xff000002);
+  p.CreateActor(0xff000003, { 0, 0, 0 }, 0, 0x3c);
+  auto& npc = p.worldState.GetFormAt<MpActor>(0xff000003);
+  npc.SetPropertyValueDump("_skympServerControlled", "true", false, false);
+  p.worldState.hosters[npc.GetFormId()] = 0xff000001;
+  p.Messages().clear();
+  auto movement = jMovement;
+  movement["idx"] = npc.GetIdx();
+  DoMessage(p, 0, movement);
+  REQUIRE(npc.GetPos() == NiPoint3{ 0, 0, 0 });
+  for (const auto& sent : p.Messages()) {
+    REQUIRE(sent.j["t"] != MsgType::UpdateMovement);
+  }
+
+  p.Messages().clear();
+  movement["idx"] = p.worldState.GetFormAt<MpActor>(0xff000001).GetIdx();
+  DoMessage(p, 0, movement);
+  REQUIRE(p.worldState.GetFormAt<MpActor>(0xff000001).GetPos() ==
+          NiPoint3{ 1, -1, 1 });
+}
+
+TEST_CASE("A client cannot take hosting of a server controlled NPC",
+          "[NpcAuthority][PartOne]")
+{
+  auto& p = GetPartOne();
+  DoConnect(p, 0);
+  p.CreateActor(0xff000001, { 0, 0, 0 }, 0, 0x3c);
+  p.SetUserActor(0, 0xff000001);
+  p.CreateActor(0xff000002, { 0, 0, 0 }, 0, 0x3c);
+  auto& npc = p.worldState.GetFormAt<MpActor>(0xff000002);
+  npc.SetPropertyValueDump("_skympServerControlled", "true", false, false);
+  p.Messages().clear();
+  ActionListener listener(p);
+  RawMessageData raw;
+  raw.userId = 0;
+  HostMessage host;
+  host.remoteId = npc.GetFormId();
+  listener.OnHostAttempt(raw, host);
+  REQUIRE(p.worldState.hosters.count(npc.GetFormId()) == 0);
+  for (const auto& sent : p.Messages()) {
+    REQUIRE_FALSE(dynamic_cast<HostStartMessage*>(sent.message.get()));
+  }
+}
 
 namespace {
 constexpr uint32_t kCowId = 0x10ebaf;
@@ -339,4 +399,98 @@ TEST_CASE("Attaching another ESPM loader invalidates the NPC candidate index",
   REQUIRE(after.total == 0);
   REQUIRE(after.nextCursor == 0);
   REQUIRE(after.actorIds.empty());
+}
+
+TEST_CASE("Server authority revokes hosting, persists and streams a complete snapshot",
+          "[NpcAuthority][PartOne][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  p.worldState.npcAllowEssential = true;
+  p.worldState.npcAllowCrimeFaction = true;
+  constexpr uint32_t id = 0x1a66e;
+  p.worldState.LoadNpcBatch(CursorFor(id), 1);
+  auto& npc = p.worldState.GetFormAt<MpActor>(id);
+  const auto cell = npc.GetCellOrWorld().ToFormId(p.worldState.espmFiles);
+  DoConnect(p, 0);
+  p.CreateActor(0xff000001, npc.GetPos(), 0, cell);
+  p.SetUserActor(0, 0xff000001);
+  p.worldState.hosters[id] = 0xff000001;
+  p.Messages().clear();
+  npc.SetServerControlled(true);
+  REQUIRE(npc.IsServerControlled());
+  REQUIRE(p.worldState.hosters.count(id) == 0);
+  bool stopped = false;
+  for (const auto& sent : p.Messages()) {
+    auto stop = dynamic_cast<HostStopMessage*>(sent.message.get());
+    stopped |= stop && stop->target == uint64_t(id) + 0x100000000 && sent.userId == 0;
+  }
+  REQUIRE(stopped);
+  REQUIRE_THROWS(p.SetUserActor(0, id));
+  REQUIRE_THROWS(p.worldState.GetFormAt<MpActor>(0xff000001).SetServerControlled(true));
+  npc.SetAnimationVariableBool(AnimationVariableBool::kVariable_IsSneaking, true);
+  npc.SetAnimationVariableBool(AnimationVariableBool::kVariable_IsBlocking, true);
+  npc.SetAnimationVariableBool(AnimationVariableBool::kVariable__skymp_isWeapDrawn, true);
+  auto values = npc.GetActorValues();
+  values.healthPercentage = 0.5f;
+  npc.SetActorValues(values);
+  const auto position = npc.GetPos() + NiPoint3{ 12, 0, 0 };
+  npc.UpdateServerMovement(position, { 0, 0, 90 }, 60);
+  REQUIRE(npc.GetPos() == position);
+  const auto state = npc.GetChangeForm();
+  REQUIRE(state.dynamicFields.GetValueDump("_skympServerControlled") == "true");
+  WorldState recovered;
+  AttachFixture(recovered);
+  recovered.LoadChangeForm(state, FormCallbacks::DoNothing());
+  recovered.LoadNpcBatch(CursorFor(id), 1);
+  REQUIRE(recovered.GetFormAt<MpActor>(id).IsServerControlled());
+  REQUIRE(recovered.GetFormAt<MpActor>(id).GetPos() == position);
+  REQUIRE_THROWS(npc.UpdateServerMovement({ NAN, 0, 0 }, { 0, 0, 0 }, 60));
+  REQUIRE_THROWS(npc.UpdateServerMovement(position, { 0, 0, 0 }, 301));
+
+  // A new observer arrives after the final movement, with no later tick.
+  DoConnect(p, 1);
+  p.CreateActor(0xff000002, position, 0, cell);
+  p.Messages().clear();
+  p.SetUserActor(1, 0xff000002);
+  bool created = false, snapshot = false;
+  for (const auto& sent : p.Messages()) {
+    if (sent.userId != 1) continue;
+    if (auto create = dynamic_cast<CreateActorMessage*>(sent.message.get());
+        create && create->idx == npc.GetIdx()) {
+      created = true;
+      REQUIRE(create->props.isHostedByOther == true);
+      for (const auto& prop : create->customPropsJsonDumps) {
+        REQUIRE(prop.propName != "_skympServerControlled");
+      }
+    }
+    if (auto movement = dynamic_cast<UpdateMovementMessage*>(sent.message.get());
+        movement && movement->idx == npc.GetIdx()) {
+      snapshot = true;
+      REQUIRE(sent.reliable);
+      REQUIRE(movement->data.pos == std::array<float, 3>{position.x, position.y, position.z});
+      REQUIRE(movement->data.healthPercentage == 0.5f);
+      REQUIRE(movement->data.speed == 60);
+      REQUIRE(movement->data.runMode == "Walking");
+      REQUIRE(movement->data.isWeapDrawn);
+      REQUIRE(movement->data.isSneaking);
+      REQUIRE(movement->data.isBlocking);
+    }
+  }
+  REQUIRE(created);
+  REQUIRE(snapshot);
+  npc.SetServerControlled(false);
+  REQUIRE_FALSE(npc.IsServerControlled());
+}
+
+TEST_CASE("Preparing NPC placements does not instantiate references",
+          "[NpcPreload][WorldState][espm]")
+{
+  WorldState world;
+  AttachFixture(world);
+  REQUIRE(world.PrepareNpcLoad() == PlacedActorIds().size());
+  REQUIRE_FALSE(world.LookupFormByIdNoLoad(kCowId));
+  REQUIRE(world.hosters.empty());
+  const auto batch = world.LoadNpcBatch(CursorFor(kCowId), 1);
+  REQUIRE(batch.actorIds == std::vector<uint32_t>{kCowId});
 }

@@ -11,6 +11,7 @@
 #include "HostStopMessage.h"
 #include "SetRaceMenuOpenMessage.h"
 #include "UpdateGameModeDataMessage.h"
+#include "UpdateMovementMessage.h"
 
 #include "ActionListener.h"
 #include "FormCallbacks.h"
@@ -178,6 +179,10 @@ void PartOne::SetUserActor(Networking::UserId userId, uint32_t actorFormId)
 
   if (actorFormId > 0) {
     auto& actor = worldState.GetFormAt<MpActor>(actorFormId);
+
+    if (actor.IsServerControlled()) {
+      throw std::runtime_error("Cannot attach a human to a server controlled NPC");
+    }
 
     if (actor.IsDisabled()) {
       std::stringstream ss;
@@ -827,6 +832,9 @@ void PartOne::Init()
     emitter->VisitProperties(message, mode);
 
     auto isFilteredOut = [&](const CustomPropsEntry& customPropsEntry) {
+      if (customPropsEntry.propName == "_skympServerControlled") {
+        return true;
+      }
       auto it = pImpl->gamemodeApiState.createdProperties.find(
         customPropsEntry.propName);
       if (it != pImpl->gamemodeApiState.createdProperties.end()) {
@@ -852,7 +860,7 @@ void PartOne::Init()
       serverState.UserByActor(emitterAsActor) != Networking::InvalidUserId;
     auto hosterIterator = worldState.hosters.find(emitter->GetFormId());
 
-    if (hasUser ||
+    if (hasUser || (emitterAsActor && emitterAsActor->IsServerControlled()) ||
         (hosterIterator != worldState.hosters.end() &&
          hosterIterator->second != 0 &&
          hosterIterator->second != listener->GetFormId())) {
@@ -876,6 +884,10 @@ void PartOne::Init()
     message.transform.worldOrCell = worldOrCell;
 
     sendTarget->Send(listenerUserId, message, true);
+    if (emitterAsActor && emitterAsActor->IsServerControlled()) {
+      sendTarget->Send(listenerUserId,
+                       emitterAsActor->GetServerMovementMessage(), true);
+    }
   };
 
   pImpl->onUnsubscribe = [this](PartOneSendTargetWrapper* sendTarget,

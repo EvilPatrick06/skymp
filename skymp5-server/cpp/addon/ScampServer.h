@@ -64,6 +64,10 @@ public:
   Napi::Value GetNeighborsByPosition(const Napi::CallbackInfo& info);
   Napi::Value GetAllForms(const Napi::CallbackInfo& info);
   Napi::Value LoadNpcBatch(const Napi::CallbackInfo& info);
+  Napi::Value PrepareNpcLoad(const Napi::CallbackInfo& info);
+  Napi::Value SetNpcServerControlled(const Napi::CallbackInfo& info);
+  Napi::Value UpdateNpcMovement(const Napi::CallbackInfo& info);
+  Napi::Value GetNavmeshRecords(const Napi::CallbackInfo& info);
   Napi::Value GetEspmLoadOrder(const Napi::CallbackInfo& info);
   Napi::Value GetDescFromId(const Napi::CallbackInfo& info);
   Napi::Value GetIdFromDesc(const Napi::CallbackInfo& info);

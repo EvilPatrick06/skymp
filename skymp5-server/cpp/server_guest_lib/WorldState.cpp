@@ -892,12 +892,8 @@ const std::set<MpObjectReference*>& WorldState::GetNeighborsByPosition(
   return neighbours;
 }
 
-WorldState::NpcLoadBatch WorldState::LoadNpcBatch(size_t cursor, size_t limit)
+size_t WorldState::PrepareNpcLoad()
 {
-  if (limit == 0 || limit > 128) {
-    throw std::invalid_argument("NPC batch limit must be from 1 to 128");
-  }
-
   if (!pImpl->placedActorIds) {
     std::vector<uint32_t> ids;
     for (const auto& lookup :
@@ -909,6 +905,15 @@ WorldState::NpcLoadBatch WorldState::LoadNpcBatch(size_t cursor, size_t limit)
     std::sort(ids.begin(), ids.end());
     pImpl->placedActorIds = std::move(ids);
   }
+  return pImpl->placedActorIds->size();
+}
+
+WorldState::NpcLoadBatch WorldState::LoadNpcBatch(size_t cursor, size_t limit)
+{
+  if (limit == 0 || limit > 128) {
+    throw std::invalid_argument("NPC batch limit must be from 1 to 128");
+  }
+  PrepareNpcLoad();
 
   const auto& ids = *pImpl->placedActorIds;
   if (cursor > ids.size()) {
