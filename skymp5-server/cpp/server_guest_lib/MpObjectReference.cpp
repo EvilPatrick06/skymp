@@ -735,7 +735,8 @@ void MpObjectReference::UpdateHoster(uint32_t newHosterId)
   auto hostedMsg = CreatePropertyMessage_(this, "isHostedByOther", "true");
   auto notHostedMsg = CreatePropertyMessage_(this, "isHostedByOther", "false");
   for (auto listener : this->GetActorListeners()) {
-    if (newHosterId != 0 && newHosterId != listener->GetFormId()) {
+    if ((AsActor() && AsActor()->IsServerControlled()) ||
+        (newHosterId != 0 && newHosterId != listener->GetFormId())) {
       listener->GetActorToSendTo().SendToUser(hostedMsg, true);
     } else {
       listener->GetActorToSendTo().SendToUser(notHostedMsg, true);

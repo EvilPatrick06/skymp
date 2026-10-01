@@ -58,6 +58,7 @@ struct WorldState::Impl
   std::array<std::shared_ptr<std::vector<uint32_t>>, 0x100>
     allFormsByModIndexCache;
   std::vector<uint32_t> attachEspmRecordFailures;
+  std::optional<std::vector<uint32_t>> placedActorIds;
 };
 
 WorldState::WorldState()
@@ -88,6 +89,7 @@ void WorldState::AttachEspm(espm::Loader* espm_,
   formCallbacksFactory = formCallbacksFactory_;
   espmCache.reset(new espm::CompressedFieldsCache);
   espmFiles = espm->GetFileNames();
+  pImpl->placedActorIds.reset();
 }
 
 void WorldState::AttachSaveStorage(
@@ -667,6 +669,13 @@ bool WorldState::AttachEspmRecord(const espm::CombineBrowser& br,
 
 bool WorldState::LoadForm(uint32_t formId, std::stringstream* optionalOutTrace)
 {
+  // Chunk discovery can revisit preloaded references and plugin overrides.
+  // Reattaching one allocates an index for a duplicate that AddForm discards,
+  // leaving an abandoned index and a dangling entry in the lookup cache.
+  if (forms.find(formId) != forms.end()) {
+    return true;
+  }
+
   ANTIGO_CONTEXT_INIT(ctx);
   ctx.AddUnsigned(formId);
 
@@ -881,6 +890,60 @@ const std::set<MpObjectReference*>& WorldState::GetNeighborsByPosition(
   auto& neighbours =
     grids[cellOrWorld].grid->GetNeighboursByPosition(cellX, cellY);
   return neighbours;
+}
+
+size_t WorldState::PrepareNpcLoad()
+{
+  if (!pImpl->placedActorIds) {
+    std::vector<uint32_t> ids;
+    for (const auto& lookup :
+         GetEspm().GetBrowser().GetDistinctRecordsByType("REFR")) {
+      if (lookup.rec->GetType() == "ACHR") {
+        ids.push_back(lookup.ToGlobalId(lookup.rec->GetId()));
+      }
+    }
+    std::sort(ids.begin(), ids.end());
+    pImpl->placedActorIds = std::move(ids);
+  }
+  return pImpl->placedActorIds->size();
+}
+
+WorldState::NpcLoadBatch WorldState::LoadNpcBatch(size_t cursor, size_t limit)
+{
+  if (limit == 0 || limit > 128) {
+    throw std::invalid_argument("NPC batch limit must be from 1 to 128");
+  }
+  PrepareNpcLoad();
+
+  const auto& ids = *pImpl->placedActorIds;
+  if (cursor > ids.size()) {
+    throw std::out_of_range("NPC batch cursor exceeds the placed cast");
+  }
+  const auto end = cursor + std::min(limit, ids.size() - cursor);
+  NpcLoadBatch result{ end, ids.size(), {} };
+
+  // ForceSubscriptionsUpdate normally discovers nine surrounding chunks.
+  // Keep subscriptions to already loaded references, but defer discovery so
+  // one preload request cannot turn into an unbounded world load.
+  auto chunkState = std::make_pair(&pImpl->chunkLoadingInProgress,
+                                   pImpl->chunkLoadingInProgress);
+  Viet::ScopedTask<decltype(chunkState)> restore(
+    [](decltype(chunkState)& state) { *state.first = state.second; },
+    chunkState);
+  pImpl->chunkLoadingInProgress = true;
+  for (size_t i = cursor; i < end; ++i) {
+    // The vanilla human reference is an ACHR record too. It is not an NPC
+    // and must not be instantiated as a second character by the preloader.
+    const auto desc = FormDesc::FromFormId(ids[i], espmFiles);
+    if (desc == FormDesc{ 0x14, "Skyrim.esm" }) {
+      continue;
+    }
+    const auto& form = LookupFormById(ids[i]);
+    if (form && form->AsActor()) {
+      result.actorIds.push_back(ids[i]);
+    }
+  }
+  return result;
 }
 
 std::shared_ptr<std::vector<uint32_t>> WorldState::GetAllForms(

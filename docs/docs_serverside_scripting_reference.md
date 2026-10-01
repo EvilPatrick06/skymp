@@ -102,6 +102,59 @@ interface Mp {
 mp.set(0xff000000, "pos", [0, 0, 0]);
 ```
 
+## mp.loadNpcBatch()
+
+Loads a bounded batch of existing placed NPC references without a connected
+human. It does not place new actors, change the NPC inclusion policy, or run
+AI. Saved changes are applied through the normal reference-loading path.
+
+```typescript
+loadNpcBatch(cursor: number, limit: number): {
+  nextCursor: number;
+  total: number;
+  actorIds: number[];
+};
+```
+
+Start at cursor `0`. The cursor counts load-order-winning ACHR placements in
+ascending global-ID order, including candidates refused by the current policy
+and the vanilla human reference. `actorIds` contains only successfully loaded
+NPC identities; the human reference is excluded. Continue at `nextCursor`
+until it equals `total`. Repeating a batch keeps loaded identities and their
+current transforms. The index is rebuilt if a different ESPM loader is attached.
+
+Both arguments must be integers. The limit is from 1 to 128; a cursor past
+`total` is rejected, while a cursor equal to `total` returns an empty batch.
+Recursive discovery of neighbouring chunks is suspended during the call, so
+loading one NPC cannot trigger a whole cell load. Existing subscriptions still
+update, and normal streaming resumes after the call.
+
+Call `mp.prepareNpcLoad(): number` before accepting connections to build the
+placement index without instantiating references. It returns candidate count.
+Subsequent calls bound candidate count rather than
+elapsed time: use small batches, yield between them, and measure the actual
+load order. This method supplies loading infrastructure, not movement,
+navigation, combat or unattended routines.
+
+## NPC server authority and navigation
+
+`mp.setNpcServerControlled(formId: number, controlled: boolean): void` marks
+an existing NPC as server controlled and revokes its human host. Human actors
+cannot acquire this flag. The flag persists in the save, stays private, and
+prevents connected clients from submitting hosted movement or actions for it.
+Observers receive its complete current movement snapshot when subscribing.
+
+`mp.updateNpcMovement(formId: number, pos: number[], angle: number[], speed:
+number): void` updates a server-controlled living, enabled NPC and streams the
+standard movement message. Coordinates must be finite, speed must be 0 to 300,
+and a single move cannot exceed 4096 units. The caller must supply navigation,
+activity and combat rules; acquiring authority alone supplies none of them.
+
+`mp.getNavmeshRecords(cellOrWorldId: number): number[]` returns winning,
+non-deleted NAVM identities belonging to that cell or world. Read each record's
+NVNM field with `lookupEspmRecordById`. It does not supply pathfinding or alter
+the older FindNavMeshes API.
+
 ## mp.clear()
 
 Clears added properties and event sources.

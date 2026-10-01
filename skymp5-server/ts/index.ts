@@ -208,6 +208,12 @@ const main = async () => {
 
   try {
     server = createScampServer(settingsObject.allSettings);
+    if (settingsObject.allSettings.thornswoodServer === "dev") {
+      // Index placements before network ticks and system initialization.
+      // References still load later in bounded gamemode batches, after saves.
+      const count = server.prepareNpcLoad();
+      console.log(`Prepared ${count} placed NPC candidates before accepting input`);
+    }
     ui.setServer(server);
   } catch (e) {
     console.error(e);
