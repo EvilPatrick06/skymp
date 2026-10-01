@@ -50,6 +50,7 @@ struct Browser::Impl
   std::vector<const RecordHeader*> quests;
   std::vector<const RecordHeader*> worlds;
   std::vector<const RecordHeader*> cells;
+  std::vector<const RecordHeader*> navmeshRecords;
 
   GroupStack grStack;
   std::vector<std::unique_ptr<GroupStack>> grStackCopies;
@@ -139,8 +140,11 @@ const std::vector<const RecordHeader*>& Browser::GetRecordsByType(
   if (!std::strcmp(type, espm::CELL::kType)) {
     return pImpl->cells;
   }
+  if (!std::strcmp(type, "NAVM")) {
+    return pImpl->navmeshRecords;
+  }
   throw std::runtime_error("GetRecordsByType currently supports only REFR, "
-                           "COBJ, KYWD, LCTN, FACT, QUST, WRLD and CELL "
+                           "COBJ, KYWD, LCTN, FACT, QUST, WRLD, CELL and NAVM "
                            "records");
 }
 
@@ -264,6 +268,9 @@ bool Browser::ReadAny(const GroupStack* parentGrStack)
       pImpl->factions.push_back(recHeader);
     }
 
+    if (t == "NAVM") {
+      pImpl->navmeshRecords.push_back(recHeader);
+    }
     if (utils::Is<espm::NAVM>(t)) {
       auto nvnm = reinterpret_cast<const NAVM*>(recHeader);
 

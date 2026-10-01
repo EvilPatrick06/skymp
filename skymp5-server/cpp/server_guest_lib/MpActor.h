@@ -16,6 +16,7 @@ class WorldState;
 struct ActorValues;
 class RespawnEvent;
 class ActiveMagicEffectsMap;
+struct UpdateMovementMessage;
 
 class MpActor : public MpObjectReference
 {
@@ -31,6 +32,15 @@ public:
   const bool& IsRaceMenuOpen() const;
   const bool& IsDead() const;
   const bool& IsRespawning() const;
+
+  bool IsServerControlled() const
+  {
+    return GetDynamicFields().GetValueDump("_skympServerControlled") == "true";
+  }
+  void SetServerControlled(bool controlled);
+  void UpdateServerMovement(const NiPoint3& pos, const NiPoint3& angle,
+                            float speed);
+  UpdateMovementMessage GetServerMovementMessage() const;
 
   bool IsSpellLearned(uint32_t spellId) const; // including from base
   bool IsSpellLearnedFromBase(uint32_t spellId) const;

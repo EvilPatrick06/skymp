@@ -55,6 +55,11 @@ MpActor* ActionListener::SendToNeighbours(uint32_t idx,
     return nullptr;
   }
 
+  if (actor->IsServerControlled()) {
+    partOne.SendHostStop(userId, *actor);
+    return nullptr;
+  }
+
   if (idx != myActor->GetIdx()) {
     // Possible fix for "players link to each other" bug
     // See also PartOne::SetUserActor
@@ -213,6 +218,9 @@ void ActionListener::OnUpdateAppearance(const RawMessageData& rawMsgData,
   if (!actor || !msg.data.has_value()) {
     return;
   }
+  if (msg.idx != actor->GetIdx()) {
+    return;
+  }
 
   const bool isAllowed = actor->IsRaceMenuOpen();
 
@@ -235,6 +243,9 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
     return;
   }
 
+  if (msg.idx != actor->GetIdx()) {
+    return;
+  }
   bool isAllowed = true;
   const auto actorFormId = actor->GetFormId();
   // THORNSWOOD. A copy, not a reference. SetEquipment further down stores
@@ -539,6 +550,15 @@ void ActionListener::OnActivate(const RawMessageData& rawMsgData,
   if (!ac)
     throw std::runtime_error("Can't do this without Actor attached");
 
+  if (msg.data.caster != 0x14) {
+    auto form = partOne.worldState.LookupFormByIdNoLoad(
+      static_cast<uint32_t>(msg.data.caster));
+    if (form && form->AsActor() && form->AsActor()->IsServerControlled()) {
+      partOne.SendHostStop(rawMsgData.userId, *form->AsActor());
+      return;
+    }
+  }
+
   auto it =
     partOne.worldState.hosters.find(static_cast<uint32_t>(msg.data.caster));
   auto hosterId = it == partOne.worldState.hosters.end() ? 0 : it->second;
@@ -752,6 +772,11 @@ void ActionListener::OnHostAttempt(const RawMessageData& rawMsgData,
 
   auto& remote = partOne.worldState.GetFormAt<MpObjectReference>(remoteId);
 
+  if (remote.AsActor() && remote.AsActor()->IsServerControlled()) {
+    partOne.SendHostStop(rawMsgData.userId, remote);
+    return;
+  }
+
   auto user = partOne.serverState.UserByActor(remote.AsActor());
   if (user != Networking::InvalidUserId) {
     return;
@@ -869,6 +894,9 @@ void ActionListener::OnChangeValues(const RawMessageData& rawMsgData,
   }
 
   if (actor->ShouldSkipRestoration()) {
+    return;
+  }
+  if (msg.idx && *msg.idx != actor->GetIdx()) {
     return;
   }
 
@@ -1118,6 +1146,10 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
     hitData.aggressor = aggressor->GetFormId();
   } else {
     aggressor = &partOne.worldState.GetFormAt<MpActor>(hitData.aggressor);
+    if (aggressor->IsServerControlled()) {
+      partOne.SendHostStop(rawMsgData.userId, *aggressor);
+      return;
+    }
     auto it = partOne.worldState.hosters.find(hitData.aggressor);
     if (it == partOne.worldState.hosters.end() ||
         it->second != myActor->GetFormId()) {
@@ -1215,7 +1247,12 @@ void ActionListener::OnUpdateAnimVariables(
     throw std::runtime_error("Unable to change values without Actor attached");
   }
 
-  SendToNeighbours(myActor->idx, rawMsgData);
+  auto form = partOne.worldState.LookupFormByIdNoLoad(msg.data.actorRemoteId);
+  auto actor = form ? form->AsActor() : nullptr;
+  if (!actor) {
+    return;
+  }
+  SendToNeighbours(actor->GetIdx(), rawMsgData);
 }
 
 void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
@@ -1237,6 +1274,10 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
     spellCastData.caster = caster->GetFormId();
   } else {
     caster = &partOne.worldState.GetFormAt<MpActor>(spellCastData.caster);
+    if (caster->IsServerControlled()) {
+      partOne.SendHostStop(rawMsgData.userId, *caster);
+      return;
+    }
     const auto it = partOne.worldState.hosters.find(spellCastData.caster);
 
     if (it == partOne.worldState.hosters.end() ||
