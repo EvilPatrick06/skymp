@@ -128,6 +128,18 @@ public:
 
   std::shared_ptr<std::vector<uint32_t>> GetAllForms(uint32_t modIndex);
 
+  struct NpcLoadBatch
+  {
+    size_t nextCursor;
+    size_t total;
+    std::vector<uint32_t> actorIds;
+  };
+
+  // Cursor counts winning placed ACHR records in ascending global-ID order,
+  // including candidates refused by the existing NPC policy. No new actors
+  // are placed and no neighbouring chunks are recursively discovered.
+  NpcLoadBatch LoadNpcBatch(size_t cursor, size_t limit);
+
   // See LookupFormById comment
   template <class F>
   F& GetFormAt(uint32_t formId)

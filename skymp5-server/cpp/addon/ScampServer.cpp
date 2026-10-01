@@ -28,6 +28,7 @@
 #include <antigo/ResolvedContext.h>
 #include <cassert>
 #include <cctype>
+#include <cmath>
 #include <database_drivers/DatabaseFactory.h>
 #include <memory>
 #include <napi.h>
@@ -117,6 +118,7 @@ Napi::Object ScampServer::Init(Napi::Env env, Napi::Object exports)
       InstanceMethod("getNeighborsByPosition",
                      &ScampServer::GetNeighborsByPosition),
       InstanceMethod("getAllForms", &ScampServer::GetAllForms),
+      InstanceMethod("loadNpcBatch", &ScampServer::LoadNpcBatch),
       InstanceMethod("getDescFromId", &ScampServer::GetDescFromId),
       InstanceMethod("getIdFromDesc", &ScampServer::GetIdFromDesc),
       InstanceMethod("callPapyrusFunction", &ScampServer::CallPapyrusFunction),
@@ -1264,6 +1266,33 @@ Napi::Value ScampServer::GetNeighborsByPosition(const Napi::CallbackInfo& info)
       arr.Set(i++, Napi::Number::New(info.Env(), ref->GetFormId()));
     }
     return arr;
+  } catch (std::exception& e) {
+    throw Napi::Error::New(info.Env(), std::string(e.what()));
+  }
+}
+
+Napi::Value ScampServer::LoadNpcBatch(const Napi::CallbackInfo& info)
+{
+  try {
+    const auto cursor = NapiHelper::ExtractDouble(info[0], "cursor");
+    const auto limit = NapiHelper::ExtractDouble(info[1], "limit");
+    if (!std::isfinite(cursor) || cursor < 0 || cursor > UINT32_MAX ||
+        cursor != std::floor(cursor) || !std::isfinite(limit) || limit < 1 ||
+        limit > 128 || limit != std::floor(limit)) {
+      throw std::invalid_argument("NPC batch requires an unsigned integer "
+                                  "cursor and limit from 1 to 128");
+    }
+    auto batch = partOne->worldState.LoadNpcBatch(static_cast<size_t>(cursor),
+                                                  static_cast<size_t>(limit));
+    auto result = Napi::Object::New(info.Env());
+    result.Set("nextCursor", Napi::Number::New(info.Env(), batch.nextCursor));
+    result.Set("total", Napi::Number::New(info.Env(), batch.total));
+    auto ids = Napi::Array::New(info.Env(), batch.actorIds.size());
+    for (size_t i = 0; i < batch.actorIds.size(); ++i) {
+      ids.Set(i, Napi::Number::New(info.Env(), batch.actorIds[i]));
+    }
+    result.Set("actorIds", ids);
+    return result;
   } catch (std::exception& e) {
     throw Napi::Error::New(info.Env(), std::string(e.what()));
   }

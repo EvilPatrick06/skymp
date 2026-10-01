@@ -102,6 +102,39 @@ interface Mp {
 mp.set(0xff000000, "pos", [0, 0, 0]);
 ```
 
+## mp.loadNpcBatch()
+
+Loads a bounded batch of existing placed NPC references without a connected
+human. It does not place new actors, change the NPC inclusion policy, or run
+AI. Saved changes are applied through the normal reference-loading path.
+
+```typescript
+loadNpcBatch(cursor: number, limit: number): {
+  nextCursor: number;
+  total: number;
+  actorIds: number[];
+};
+```
+
+Start at cursor `0`. The cursor counts load-order-winning ACHR placements in
+ascending global-ID order, including candidates refused by the current policy
+and the vanilla human reference. `actorIds` contains only successfully loaded
+NPC identities; the human reference is excluded. Continue at `nextCursor`
+until it equals `total`. Repeating a batch keeps loaded identities and their
+current transforms. The index is rebuilt if a different ESPM loader is attached.
+
+Both arguments must be integers. The limit is from 1 to 128; a cursor past
+`total` is rejected, while a cursor equal to `total` returns an empty batch.
+Recursive discovery of neighbouring chunks is suspended during the call, so
+loading one NPC cannot trigger a whole cell load. Existing subscriptions still
+update, and normal streaming resumes after the call.
+
+The first call builds the placement index. Schedule that startup work before
+accepting connections. Subsequent calls bound candidate count rather than
+elapsed time: use small batches, yield between them, and measure the actual
+load order. This method supplies loading infrastructure, not movement,
+navigation, combat or unattended routines.
+
 ## mp.clear()
 
 Clears added properties and event sources.

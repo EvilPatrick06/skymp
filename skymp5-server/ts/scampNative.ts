@@ -19,6 +19,11 @@ export interface ScampServer {
   ): void;
   attachSaveStorage(): void;
   tick(): void;
+  loadNpcBatch(cursor: number, limit: number): {
+    nextCursor: number;
+    total: number;
+    actorIds: number[];
+  };
 
   createActor(
     formId: number,
