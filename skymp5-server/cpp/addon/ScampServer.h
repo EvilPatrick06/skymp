@@ -66,8 +66,16 @@ public:
   Napi::Value LoadNpcBatch(const Napi::CallbackInfo& info);
   Napi::Value PrepareNpcLoad(const Napi::CallbackInfo& info);
   Napi::Value SetNpcServerControlled(const Napi::CallbackInfo& info);
+  Napi::Value SetNpcDifficultyTier(const Napi::CallbackInfo& info);
   Napi::Value UpdateNpcMovement(const Napi::CallbackInfo& info);
+  Napi::Value StopNpcMovement(const Napi::CallbackInfo& info);
   Napi::Value GetNavmeshRecords(const Napi::CallbackInfo& info);
+  Napi::Value GetNpcAIState(const Napi::CallbackInfo& info);
+  Napi::Value GetFactionReactions(const Napi::CallbackInfo& info);
+  Napi::Value ServerNpcAttack(const Napi::CallbackInfo& info);
+  Napi::Value GetLoadedFormCount(const Napi::CallbackInfo& info);
+  Napi::Value SetNpcPlacementExclusions(const Napi::CallbackInfo& info);
+  Napi::Value GetLoadedNpcIds(const Napi::CallbackInfo& info);
   Napi::Value GetEspmLoadOrder(const Napi::CallbackInfo& info);
   Napi::Value GetDescFromId(const Napi::CallbackInfo& info);
   Napi::Value GetIdFromDesc(const Napi::CallbackInfo& info);
@@ -125,4 +133,8 @@ private:
   std::optional<std::vector<std::string>> cachedAvailableLanguages;
 
   static Napi::FunctionReference constructor;
+  std::map<uint32_t, std::pair<std::string, std::array<uint8_t, 2>>> npcAIProfiles;
+  std::optional<std::map<uint32_t, std::vector<uint32_t>>> navmeshParents;
+  std::map<std::tuple<uint32_t, int16_t, int16_t>, std::vector<uint32_t>> navmeshRegions;
+  void EnsureNavmeshIndex();
 };

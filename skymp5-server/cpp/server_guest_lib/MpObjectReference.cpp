@@ -695,11 +695,22 @@ void MpObjectReference::ForceSubscriptionsUpdate()
 
   auto& was = *this->listeners;
   auto pos = GetGridPos(GetPos());
+  const auto actor = AsActor();
+  const bool serverNpc = actor && actor->IsServerControlled();
   auto& now =
+    serverNpc ? worldState->GetLoadedNeighborsByPosition(worldOrCell, pos.first, pos.second) :
     worldState->GetNeighborsByPosition(worldOrCell, pos.first, pos.second);
+  std::set<MpObjectReference*> observed;
+  if (serverNpc) {
+    for (auto listener : now) {
+      const auto other = listener->AsActor();
+      if (listener == this || !other || !other->IsServerControlled()) observed.insert(listener);
+    }
+  }
+  const auto& current = serverNpc ? observed : now;
 
   std::vector<MpObjectReference*> toRemove;
-  std::set_difference(was.begin(), was.end(), now.begin(), now.end(),
+  std::set_difference(was.begin(), was.end(), current.begin(), current.end(),
                       std::inserter(toRemove, toRemove.begin()));
   for (auto listener : toRemove) {
     Unsubscribe(this, listener);
@@ -709,7 +720,7 @@ void MpObjectReference::ForceSubscriptionsUpdate()
   }
 
   std::vector<MpObjectReference*> toAdd;
-  std::set_difference(now.begin(), now.end(), was.begin(), was.end(),
+  std::set_difference(current.begin(), current.end(), was.begin(), was.end(),
                       std::inserter(toAdd, toAdd.begin()));
   for (auto listener : toAdd) {
     Subscribe(this, listener);

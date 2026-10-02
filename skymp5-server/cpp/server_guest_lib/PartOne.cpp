@@ -492,7 +492,8 @@ float PartOne::CalculateDamage(const MpActor& aggressor, const MpActor& target,
   if (!pImpl->damageFormula) {
     throw std::runtime_error("no damage formula");
   }
-  return pImpl->damageFormula->CalculateDamage(aggressor, target, hitData);
+  return pImpl->damageFormula->CalculateDamage(aggressor, target, hitData) *
+    aggressor.GetNpcDamageMultiplier();
 }
 
 float PartOne::CalculateDamage(const MpActor& aggressor, const MpActor& target,
@@ -502,7 +503,7 @@ float PartOne::CalculateDamage(const MpActor& aggressor, const MpActor& target,
     throw std::runtime_error("no damage formula");
   }
   return pImpl->damageFormula->CalculateDamage(aggressor, target,
-                                               spellCastData);
+                                               spellCastData) * aggressor.GetNpcDamageMultiplier();
 }
 
 void PartOne::NotifyGamemodeApiStateChanged(

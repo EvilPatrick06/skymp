@@ -17,8 +17,9 @@ NPC_::Data NPC_::GetData(
       } else if (!std::memcmp(type, "SOFT", 4)) {
         result.sleepOutfitId = *reinterpret_cast<const uint32_t*>(data);
       } else if (!std::memcmp(type, "SNAM", 4)) {
+        if (dataSize < 5) return;
         uint32_t formId = *reinterpret_cast<const uint32_t*>(data);
-        int8_t rank = *reinterpret_cast<const int8_t*>(data);
+        int8_t rank = *reinterpret_cast<const int8_t*>(data + 4);
 
         result.factions.push_back({ formId, rank });
       } else if (!std::memcmp(type, "ACBS", 4)) {
