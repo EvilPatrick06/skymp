@@ -37,6 +37,7 @@
 #include "TeleportMessage.h"
 #include "UpdateEquipmentMessage.h"
 #include "UpdateMovementMessage.h"
+#include "UpdateAnimationMessage.h"
 #include "HostStopMessage.h"
 
 // for PlaceAtMe used in MpActor::DropItem
@@ -78,6 +79,8 @@ struct MpActor::Impl
   std::vector<std::pair<uint32_t, MpObjectReference*>> droppedItemsQueue;
   std::optional<AnimationData> animationData;
   float serverMovementSpeed = 0;
+  uint32_t serverCombatTarget = 0;
+  std::chrono::steady_clock::time_point serverCombatUntil{};
 
   // this is a hot fix attempt to make permanent restoration potions work
   std::chrono::system_clock::time_point nextRestorationTime{};
@@ -119,9 +122,14 @@ void MpActor::SetServerControlled(bool controlled)
       GetUserId() != Networking::InvalidUserId) {
     throw std::invalid_argument("Server authority requires an NPC, not a human character");
   }
+  const bool takingOwnership = controlled && !IsServerControlled();
   if (IsServerControlled() != controlled) {
     SetPropertyValueDump("_skympServerControlled", controlled ? "true" : "false",
                          false, false);
+  }
+  if (!controlled) {
+    pImpl->serverCombatTarget = 0;
+    pImpl->serverMovementSpeed = 0;
   }
   if (controlled) {
     auto& hosters = GetParent()->hosters;
@@ -141,6 +149,12 @@ void MpActor::SetServerControlled(bool controlled)
     }
   }
   UpdateHoster(0);
+  if (controlled) ForceSubscriptionsUpdate();
+  if (takingOwnership && IsDead()) {
+    // Invalidate a client-era timer before scheduling the configured return.
+    pImpl->isRespawning = false;
+    RespawnWithDelay();
+  }
 }
 
 void MpActor::UpdateServerMovement(const NiPoint3& pos, const NiPoint3& angle,
@@ -162,7 +176,17 @@ void MpActor::UpdateServerMovement(const NiPoint3& pos, const NiPoint3& angle,
     SetAngle(angle, SetAngleMode::CalledByUpdateMovement);
   }
   pImpl->serverMovementSpeed = speed;
-  SendMessageToActorListeners(GetServerMovementMessage(), false);
+  SendServerStateToObservers(GetServerMovementMessage(), false);
+}
+
+void MpActor::StopServerMovement()
+{
+  if (!IsServerControlled()) {
+    throw std::invalid_argument("Stopping movement requires server NPC authority");
+  }
+  pImpl->serverMovementSpeed = 0;
+  pImpl->serverCombatTarget = 0;
+  SendServerStateToObservers(GetServerMovementMessage(), true);
 }
 
 UpdateMovementMessage MpActor::GetServerMovementMessage() const
@@ -175,14 +199,45 @@ UpdateMovementMessage MpActor::GetServerMovementMessage() const
   msg.data.pos = { pos.x, pos.y, pos.z };
   msg.data.rot = { angle.x, angle.y, angle.z };
   msg.data.healthPercentage = GetActorValues().healthPercentage;
-  msg.data.speed = pImpl->serverMovementSpeed;
-  msg.data.runMode = pImpl->serverMovementSpeed > 0 ? "Walking" : "Standing";
+  msg.data.speed = IsDead() || IsDisabled() ? 0 : pImpl->serverMovementSpeed;
+  msg.data.runMode = msg.data.speed > 0 ? "Walking" : "Standing";
   msg.data.isDead = IsDead();
   msg.data.isWeapDrawn = IsWeaponDrawn();
   msg.data.isInJumpState = GetAnimationVariableBool("bInJumpState");
   msg.data.isSneaking = GetAnimationVariableBool("IsSneaking");
   msg.data.isBlocking = GetAnimationVariableBool("IsBlocking");
   return msg;
+}
+
+uint32_t MpActor::GetServerCombatTarget() const
+{
+  if (!IsServerControlled() || IsDead() || IsDisabled() ||
+      std::chrono::steady_clock::now() >= pImpl->serverCombatUntil) return 0;
+  const auto form = GetParent()->LookupFormByIdNoLoad(pImpl->serverCombatTarget);
+  const auto target = form ? form->AsActor() : nullptr;
+  if (!target || target->IsDead() || target->IsDisabled() ||
+      target->GetCellOrWorld() != GetCellOrWorld() ||
+      (target->GetPos() - GetPos()).Length() > 4096 ||
+      (target->IsCreatedAsPlayer() && target->GetUserId() == Networking::InvalidUserId)) return 0;
+  return target->GetFormId();
+}
+
+void MpActor::RecordServerCombatTarget(uint32_t targetId)
+{
+  if (!IsServerControlled() || targetId == GetFormId() || IsDead()) return;
+  pImpl->serverCombatTarget = targetId;
+  pImpl->serverCombatUntil = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+}
+
+void MpActor::PublishServerAttackAnimation(const AnimationData& animation)
+{
+  if (!IsServerControlled() || IsDead() || IsDisabled()) return;
+  SetAnimationVariableBool(AnimationVariableBool::kVariable__skymp_isWeapDrawn, true);
+  SetLastAnimEvent(animation);
+  UpdateAnimationMessage message;
+  message.idx = GetIdx();
+  message.data = animation;
+  SendServerStateToObservers(message, true);
 }
 
 void MpActor::IncreaseBlockCount() noexcept
@@ -437,6 +492,7 @@ void MpActor::VisitProperties(CreateActorMessage& message,
                                          ChangeForm().templateChain);
   }
 
+  baseActorValues.health *= GetNpcHealthMultiplier();
   MpChangeForm changeForm = GetChangeForm();
 
   MpObjectReference::VisitProperties(message, mode);
@@ -445,7 +501,7 @@ void MpActor::VisitProperties(CreateActorMessage& message,
     message.props.isRaceMenuOpen = true;
   }
 
-  if (mode == VisitPropertiesMode::All) {
+  if (mode == VisitPropertiesMode::All || IsServerControlled()) {
     baseActorValues.VisitBaseActorValuesAndPercentages(baseActorValues,
                                                        changeForm, message);
   }
@@ -489,6 +545,18 @@ void MpActor::Disable()
   }
 
   pImpl->snippetPromises.clear();
+}
+
+void MpActor::SendServerStateToObservers(const IMessageBase& message,
+                                        bool reliable) const
+{
+  std::set<Networking::UserId> recipients;
+  for (auto listener : GetActorListeners()) {
+    const auto user = listener->GetUserId();
+    if (user != Networking::InvalidUserId && recipients.insert(user).second) {
+      listener->SendToUser(message, reliable);
+    }
+  }
 }
 
 void MpActor::SendToUser(const IMessageBase& message, bool reliable)
@@ -678,12 +746,25 @@ void MpActor::ApplyChangeForm(const MpChangeForm& newChangeForm)
       if (GetParent() && GetParent()->HasEspm()) {
         EnsureTemplateChainEvaluated(GetParent()->GetEspm(),
                                      Mode::NoRequestSave);
+        const auto savedValues = changeForm.actorValues;
         changeForm.actorValues = GetBaseActorValues(
           GetParent(), GetBaseId(), GetRaceId(), changeForm.templateChain);
+        if (IsServerControlled()) {
+          changeForm.actorValues.healthPercentage = savedValues.healthPercentage;
+          changeForm.actorValues.magickaPercentage = savedValues.magickaPercentage;
+          changeForm.actorValues.staminaPercentage = savedValues.staminaPercentage;
+        }
       }
     },
     Mode::NoRequestSave);
   ReapplyMagicEffects();
+
+  if (IsServerControlled()) {
+    // A later saved form may replace a death deadline after a timer was queued.
+    // Invalidate that callback and schedule from the restored persisted state.
+    ++pImpl->respawnTimerIndex;
+    pImpl->isRespawning = false;
+  }
 
   // We do the same in PartOne::SetUserActor for player characters
   if (IsDead() && !IsRespawning()) {
@@ -789,6 +870,7 @@ void MpActor::NetSendChangeValues(
     message.data.health = actorValues.healthPercentage;
     message.data.magicka = actorValues.magickaPercentage;
     message.data.stamina = actorValues.staminaPercentage;
+    numUpdatedValues = 3;
   } else {
     // Filter actor values based on the provided filter
     for (const auto& av : avFilterRef) {
@@ -812,7 +894,11 @@ void MpActor::NetSendChangeValues(
   }
 
   if (numUpdatedValues > 0) {
-    GetActorToSendTo().SendToUser(message, true);
+    if (IsServerControlled()) {
+      SendServerStateToObservers(message, true);
+    } else {
+      GetActorToSendTo().SendToUser(message, true);
+    }
   }
 }
 
@@ -1083,11 +1169,31 @@ void MpActor::SendAndSetDeathState(bool isDead, bool shouldTeleport)
 
   auto position = GetSpawnPoint();
 
+  std::optional<int64_t> nextGeneration;
+  if (!isDead && IsDead() && IsServerControlled()) {
+    const auto saved = nlohmann::json::parse(
+      ChangeForm().dynamicFields.GetValueDump("_skympNpcLifeGeneration"));
+    if (!saved.is_null() && (!saved.is_number_integer() || saved < 0 ||
+                            saved >= 9007199254740991LL))
+      throw std::runtime_error("Invalid persisted NPC life generation");
+    nextGeneration = saved.is_null() ? 1 : saved.get<int64_t>() + 1;
+  }
+
   auto respawnMsg = GetDeathStateMsg(position, isDead, shouldTeleport);
-  GetActorToSendTo().SendToUser(respawnMsg, true);
+  if (IsServerControlled()) {
+    SendServerStateToObservers(respawnMsg, true);
+  } else {
+    GetActorToSendTo().SendToUser(respawnMsg, true);
+  }
 
   EditChangeForm([&](MpChangeForm& changeForm) {
+    if (nextGeneration) {
+      changeForm.dynamicFields.SetValueDump("_skympNpcLifeGeneration",
+                                            std::to_string(*nextGeneration));
+    }
     changeForm.isDead = isDead;
+    if (!isDead && IsServerControlled())
+      changeForm.dynamicFields.SetValueDump("_skympServerRespawnAt", "0");
     changeForm.actorValues.healthPercentage =
       isDead ? 0.f : GetHealthRespawnPercentage();
     changeForm.actorValues.magickaPercentage =
@@ -1100,6 +1206,11 @@ void MpActor::SendAndSetDeathState(bool isDead, bool shouldTeleport)
     SetCellOrWorldObsolete(position.cellOrWorldDesc);
     SetPos(position.pos);
     SetAngle(position.rot);
+  }
+  pImpl->serverCombatTarget = 0;
+  pImpl->serverMovementSpeed = 0;
+  if (IsServerControlled()) {
+    SendServerStateToObservers(GetServerMovementMessage(), true);
   }
 }
 
@@ -1264,6 +1375,10 @@ void MpActor::AddDeathItem()
 
 void MpActor::LoadFactions()
 {
+  if (GetChangeForm().factions.has_value()) {
+    factionsLoaded = true;
+    return;
+  }
   std::vector<Faction> factions = EvaluateTemplate<espm::NPC_::UseFactions>(
     GetParent(), GetBaseId(), GetTemplateChain(),
     [&](const auto& npcLookupResult, const auto& npcData) {
@@ -1431,15 +1546,33 @@ void MpActor::RespawnWithDelay(bool shouldTeleport)
   if (pImpl->isRespawning) {
     return;
   }
-  pImpl->isRespawning = true;
-
-  ++pImpl->respawnTimerIndex;
-  auto respawnTimerIndex = pImpl->respawnTimerIndex;
-
   uint32_t formId = GetFormId();
   if (auto worldState = GetParent()) {
     float respawnTime = GetRespawnTime();
     auto time = Viet::TimeUtils::To<std::chrono::milliseconds>(respawnTime);
+    if (IsServerControlled()) {
+      const auto epoch = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+      int64_t deadline = 0;
+      const auto dump = ChangeForm().dynamicFields.GetValueDump("_skympServerRespawnAt");
+      const auto saved = nlohmann::json::parse(dump);
+      const auto maxDeadline = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::duration::max()).count() - 86400000;
+      if (!saved.is_null()) {
+        if (!saved.is_number_integer() || saved < 0 || saved > maxDeadline)
+          throw std::runtime_error("Invalid persisted NPC respawn deadline");
+        deadline = saved.get<int64_t>();
+      }
+      if (deadline <= 0) {
+        if (time.count() < 0 || time.count() > maxDeadline - epoch)
+          throw std::runtime_error("Invalid NPC respawn interval");
+        deadline = epoch + time.count();
+        SetPropertyValueDump("_skympServerRespawnAt", std::to_string(deadline), false, false);
+      }
+      time = std::chrono::milliseconds(std::max<int64_t>(0, deadline - epoch));
+    }
+    pImpl->isRespawning = true;
+    const auto respawnTimerIndex = ++pImpl->respawnTimerIndex;
     worldState->SetTimer(time).Then([worldState, this, formId, shouldTeleport,
                                      respawnTimerIndex,
                                      respawnTime](Viet::Void) {
@@ -1651,8 +1784,41 @@ void MpActor::DamageActorValue(espm::ActorValue av, float value)
 
 BaseActorValues MpActor::GetBaseValues()
 {
-  return GetBaseActorValues(GetParent(), GetBaseId(), GetRaceId(),
-                            ChangeForm().templateChain);
+  auto values = GetBaseActorValues(GetParent(), GetBaseId(), GetRaceId(),
+                                   ChangeForm().templateChain);
+  values.health *= GetNpcHealthMultiplier();
+  return values;
+}
+
+int MpActor::GetNpcDifficultyTier() const
+{
+  if (!IsServerControlled()) return 0;
+  const auto saved = nlohmann::json::parse(
+    GetDynamicFields().GetValueDump("_skympNpcDifficultyTier"));
+  if (saved.is_null()) return 0;
+  if (!saved.is_number_integer() || saved < 0 || saved > 4)
+    throw std::runtime_error("Invalid NPC difficulty tier");
+  return saved.get<int>();
+}
+
+void MpActor::SetNpcDifficultyTier(int tier)
+{
+  if (tier < 0 || tier > 4 || !IsServerControlled() || IsCreatedAsPlayer() ||
+      GetProfileId() >= 0 || GetUserId() != Networking::InvalidUserId)
+    throw std::invalid_argument("Difficulty tier requires a server owned NPC and tier 0..4");
+  SetPropertyValueDump("_skympNpcDifficultyTier", std::to_string(tier), false, false);
+}
+
+float MpActor::GetNpcHealthMultiplier() const
+{
+  static constexpr float values[] = {1.f, 1.f, 1.25f, 1.5f, 2.f};
+  return values[GetNpcDifficultyTier()];
+}
+
+float MpActor::GetNpcDamageMultiplier() const
+{
+  static constexpr float values[] = {1.f, 1.f, 1.1f, 1.2f, 1.35f};
+  return values[GetNpcDifficultyTier()];
 }
 
 BaseActorValues MpActor::GetMaximumValues()

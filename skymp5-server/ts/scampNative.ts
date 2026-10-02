@@ -26,8 +26,26 @@ export interface ScampServer {
     actorIds: number[];
   };
   setNpcServerControlled(formId: number, controlled: boolean): void;
+  setNpcDifficultyTier(formId: number, tier: number): void;
   updateNpcMovement(formId: number, pos: number[], angle: number[], speed: number): void;
-  getNavmeshRecords(cellOrWorldId: number): number[];
+  stopNpcMovement(formId: number): void;
+  getNavmeshRecords(cellOrWorldId: number, pos?: number[]): number[];
+  getNpcAIState(formId: number): {
+    pos: number[]; rot: number[]; cellOrWorld: number;
+    isDead: boolean; isDisabled: boolean; isHuman: boolean; isConnected: boolean;
+    isServerControlled: boolean; lifeGeneration: number; difficultyTier: number;
+    meleeReach: number; meleeAllowance: number;
+    canSwim: boolean; canFly: boolean; immobile: boolean;
+    aggression: number; confidence: number; combatTarget: number;
+    factions: { id: number; rank: number }[];
+  };
+  getFactionReactions(factionIds: number[]): {
+    source: number; target: number; reaction: number;
+  }[];
+  serverNpcAttack(aggressorId: number, targetId: number): boolean;
+  getLoadedFormCount(): number;
+  setNpcPlacementExclusions(formIds: number[]): void;
+  getLoadedNpcIds(): number[];
 
   createActor(
     formId: number,

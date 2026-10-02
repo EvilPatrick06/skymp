@@ -75,6 +75,8 @@ public:
 
   virtual void OnHit(const RawMessageData& rawMsgData, const HitMessage& msg);
 
+  bool ServerNpcAttack(uint32_t aggressorId, uint32_t targetId);
+
   virtual void OnUpdateAnimVariables(const RawMessageData& rawMsgData,
                                      const UpdateAnimVariablesMessage& msg);
 
