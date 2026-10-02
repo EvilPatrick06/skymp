@@ -154,6 +154,12 @@ public:
   void RemoveFromGridAndUnsubscribeAll();
 
   void SetInventory(const Inventory& inv);
+  static constexpr const char* kInventoryReceiptProperty = "_inventoryReceipt";
+  const std::string& GetInventoryReceiptDump() const;
+  bool CompareAndSetInventory(const Inventory& expected,
+                               const std::string& expectedReceipt,
+                               const Inventory& replacement,
+                               uint64_t sequence);
   void AddItem(uint32_t baseId, uint32_t count);
   void AddItems(const std::vector<Inventory::Entry>& entries);
   void RemoveItem(uint32_t baseId, uint32_t count, MpObjectReference* target);

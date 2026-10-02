@@ -39,6 +39,13 @@ struct RelootTimeForTypesEntry
 
 struct WorldState::Impl
 {
+  using ReceiptKey = std::pair<FormDesc, int32_t>;
+  struct SavedReceipt
+  {
+    std::string dump;
+    std::weak_ptr<MpForm> form;
+  };
+  std::map<ReceiptKey, SavedReceipt> savedInventoryReceipts;
   std::vector<std::optional<MpChangeForm>> changesByIdx;
   bool changesByIdxEmpty = true;
 
@@ -74,6 +81,7 @@ WorldState::WorldState()
 
 void WorldState::Clear()
 {
+  pImpl->savedInventoryReceipts.clear();
   forms.clear();
   grids.clear();
   formIdxManager.reset();
@@ -720,6 +728,47 @@ bool WorldState::LoadForm(uint32_t formId, std::stringstream* optionalOutTrace)
   return attached;
 }
 
+void WorldState::RememberInventoryReceipt(MpObjectReference& ref)
+{
+  auto actor = ref.AsActor();
+  if (!actor || actor->GetProfileId() <= 0) {
+    throw std::runtime_error("Inventory receipts require a human profile");
+  }
+  auto key = Impl::ReceiptKey{ref.GetChangeForm().formDesc, actor->GetProfileId()};
+  auto existing = pImpl->savedInventoryReceipts.find(key);
+  if (existing != pImpl->savedInventoryReceipts.end() &&
+      existing->second.form.lock().get() == &ref) {
+    return;
+  }
+  pImpl->savedInventoryReceipts[key] = {
+    ref.GetInventoryReceiptDump(), forms.at(ref.GetFormId())
+  };
+}
+
+void WorldState::ForgetInventoryReceipt(MpObjectReference& ref)
+{
+  for (auto it = pImpl->savedInventoryReceipts.begin();
+       it != pImpl->savedInventoryReceipts.end();) {
+    auto form = it->second.form.lock();
+    if (!form || form.get() == &ref) {
+      it = pImpl->savedInventoryReceipts.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
+std::string WorldState::GetSavedInventoryReceipt(MpObjectReference& ref)
+{
+  if (!pImpl->saveStorage) {
+    throw std::runtime_error("Inventory save acknowledgement is unavailable");
+  }
+  RememberInventoryReceipt(ref);
+  auto actor = ref.AsActor();
+  auto key = Impl::ReceiptKey{ref.GetChangeForm().formDesc, actor->GetProfileId()};
+  return pImpl->savedInventoryReceipts.at(key).dump;
+}
+
 void WorldState::TickSaveStorage(const std::chrono::system_clock::time_point&)
 {
   if (!pImpl->saveStorage) {
@@ -792,8 +841,34 @@ void WorldState::TickSaveStorage(const std::chrono::system_clock::time_point&)
   auto previousSize = pImpl->changesByIdx.size();
 
   try {
+    // Metadata belongs to this submitted snapshot, not the actor's later state.
+    std::vector<std::pair<Impl::ReceiptKey, Impl::SavedReceipt>> receipts;
+    for (const auto& changeForm : pImpl->changesByIdx) {
+      if (!changeForm || changeForm->profileId <= 0) {
+        continue;
+      }
+      auto key = Impl::ReceiptKey{changeForm->formDesc, changeForm->profileId};
+      auto cached = pImpl->savedInventoryReceipts.find(key);
+      if (cached != pImpl->savedInventoryReceipts.end()) {
+        auto dump = changeForm->dynamicFields.GetValueDump(
+          MpObjectReference::kInventoryReceiptProperty);
+        receipts.push_back({key, {dump, cached->second.form}});
+      }
+    }
     pImpl->saveStorage->Upsert(std::move(pImpl->changesByIdx),
-                               [pImpl_] { pImpl_->saveStorageBusy = false; });
+      [pImpl_, receipts = std::move(receipts)] {
+        pImpl_->saveStorageBusy = false;
+        for (const auto& saved : receipts) {
+          auto current = pImpl_->savedInventoryReceipts.find(saved.first);
+          auto form = saved.second.form.lock();
+          auto actor = form ? form->AsActor() : nullptr;
+          if (current != pImpl_->savedInventoryReceipts.end() && actor &&
+              actor->GetProfileId() == saved.first.second &&
+              current->second.form.lock() == form) {
+            current->second.dump = saved.second.dump;
+          }
+        }
+      });
     pImpl->changesByIdxEmpty = true;
   } catch (std::exception& e) {
     pImpl->saveStorageBusy = false;

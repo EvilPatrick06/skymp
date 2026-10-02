@@ -33,6 +33,8 @@
 #include <map>
 #include <numeric>
 #include <optional>
+#include <limits>
+#include <type_traits>
 
 #include "OpenContainerMessage.h"
 #include "SetInventoryMessage.h"
@@ -760,6 +762,9 @@ void MpObjectReference::SetPropertyValueDump(const std::string& propertyName,
                                              bool isVisibleByOwner,
                                              bool isVisibleByNeighbor)
 {
+  if (propertyName == kInventoryReceiptProperty) {
+    throw std::runtime_error("Inventory receipts require an atomic transaction");
+  }
   auto msg = CreatePropertyMessage_(this, propertyName.c_str(), valueDump);
   EditChangeForm([&](MpChangeFormREFR& changeForm) {
     changeForm.dynamicFields.SetValueDump(propertyName, valueDump);
@@ -824,6 +829,87 @@ void MpObjectReference::SetInventory(const Inventory& inv)
     changeForm.inv = inv;
   });
   SendInventoryUpdate();
+}
+
+namespace {
+void ValidateTransactionInventory(const Inventory& inventory)
+{
+  uint64_t total = 0;
+  for (const auto& entry : inventory.entries) {
+    if (entry.baseId == 0 || entry.count == 0) {
+      throw std::runtime_error("Invalid transaction inventory entry");
+    }
+    total += entry.count;
+    if (total > std::numeric_limits<uint32_t>::max()) {
+      throw std::runtime_error("Transaction inventory count exceeds its limit");
+    }
+  }
+  auto json = inventory.ToJson();
+  if (json.dump().size() > 128 * 1024 ||
+      Inventory::FromJson(json).ToJson() != json) {
+    throw std::runtime_error("Transaction inventory cannot round trip safely");
+  }
+}
+}
+
+const std::string& MpObjectReference::GetInventoryReceiptDump() const
+{
+  return GetDynamicFields().GetValueDump(kInventoryReceiptProperty);
+}
+
+bool MpObjectReference::CompareAndSetInventory(
+  const Inventory& expected, const std::string& expectedReceipt,
+  const Inventory& replacement, uint64_t sequence)
+{
+  constexpr uint64_t maxSequence = 9007199254740991;
+  auto actor = AsActor();
+  if (!actor || actor->GetProfileId() <= 0) {
+    throw std::runtime_error("Inventory transactions require a human profile");
+  }
+  if (GetInventoryReceiptDump() != expectedReceipt ||
+      GetInventory().ToJson() != expected.ToJson()) {
+    return false;
+  }
+  auto identity = GetChangeForm().formDesc.ToString();
+  uint64_t previous = 0;
+  if (expectedReceipt != "null") {
+    auto receipt = nlohmann::json::parse(expectedReceipt);
+    if (!receipt.is_object() || receipt.size() != 3 ||
+        receipt.at("actor") != identity ||
+        !receipt.at("profile").is_number_integer() ||
+        receipt.at("profile") != actor->GetProfileId() ||
+        !receipt.at("sequence").is_number_unsigned()) {
+      throw std::runtime_error("Invalid saved inventory receipt");
+    }
+    previous = receipt.at("sequence").get<uint64_t>();
+    if (previous == 0 || previous > maxSequence) {
+      throw std::runtime_error("Invalid saved inventory receipt sequence");
+    }
+  }
+  if (sequence <= previous || sequence > maxSequence) {
+    throw std::runtime_error("Inventory receipt sequence must advance");
+  }
+  ValidateTransactionInventory(expected);
+  ValidateTransactionInventory(replacement);
+
+  // Stage every allocating operation before modifying either live field.
+  Inventory nextInventory = replacement;
+  DynamicFields nextFields = GetDynamicFields();
+  auto receipt = nlohmann::json{
+    { "actor", identity }, { "profile", actor->GetProfileId() },
+    { "sequence", sequence }
+  }.dump();
+  nextFields.SetValueDump(kInventoryReceiptProperty, receipt);
+  GetParent()->RememberInventoryReceipt(*this);
+  static_assert(std::is_nothrow_move_assignable_v<Inventory>);
+  static_assert(std::is_nothrow_move_assignable_v<DynamicFields>);
+  EditChangeForm([&](MpChangeForm& changeForm) {
+    changeForm.inv = std::move(nextInventory);
+    changeForm.dynamicFields = std::move(nextFields);
+    changeForm.baseContainerAdded = true;
+  });
+  SendInventoryUpdate();
+  return true;
 }
 
 void MpObjectReference::AddItem(uint32_t baseId, uint32_t count)
