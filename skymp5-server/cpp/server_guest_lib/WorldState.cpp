@@ -77,11 +77,15 @@ WorldState::WorldState()
 
   pImpl.reset(new Impl);
   pImpl->policy = PapyrusCompatibilityPolicyFactory::Create(this);
+  merchantTransfers = std::make_unique<MerchantTransferController>(*this);
 }
 
 void WorldState::Clear()
 {
   pImpl->savedInventoryReceipts.clear();
+  if (merchantTransfers) {
+    merchantTransfers = std::make_unique<MerchantTransferController>(*this);
+  }
   forms.clear();
   grids.clear();
   formIdxManager.reset();
@@ -756,6 +760,15 @@ void WorldState::ForgetInventoryReceipt(MpObjectReference& ref)
       ++it;
     }
   }
+}
+
+
+MerchantTransferController& WorldState::GetMerchantTransfers()
+{
+  if (!merchantTransfers) {
+    merchantTransfers = std::make_unique<MerchantTransferController>(*this);
+  }
+  return *merchantTransfers;
 }
 
 std::string WorldState::GetSavedInventoryReceipt(MpObjectReference& ref)
