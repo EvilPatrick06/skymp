@@ -3,6 +3,7 @@
 #include "FormIndex.h"
 #include "Grid.h"
 #include "GridElement.h"
+#include "MerchantTransferController.h"
 #include "MpChangeForms.h"
 #include "MpForm.h"
 #include "MpObjectReference.h"
@@ -85,6 +86,7 @@ public:
 
   void RequestSave(MpObjectReference& ref);
   std::string GetSavedInventoryReceipt(MpObjectReference& ref);
+  MerchantTransferController& GetMerchantTransfers();
   bool HasEspmFile(std::string_view filename) const noexcept;
 
   template <typename T>
@@ -333,6 +335,8 @@ public:
   std::vector<GameModeEvent*> currentGameModeEventsStack;
 
 private:
+  std::unique_ptr<MerchantTransferController> merchantTransfers;
+
   void RememberInventoryReceipt(MpObjectReference& ref);
   void ForgetInventoryReceipt(MpObjectReference& ref);
   bool AttachEspmRecord(const espm::CombineBrowser& br,
