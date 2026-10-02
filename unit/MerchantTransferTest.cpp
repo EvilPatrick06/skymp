@@ -5,6 +5,7 @@
 #include "save_storages/AsyncSaveStorage.h"
 #include <chrono>
 #include <filesystem>
+#include <memory>
 
 extern espm::Loader& GetEspmLoader();
 
@@ -120,7 +121,22 @@ MpActor& AddHuman(PartOne& server, uint32_t formId)
 
 MpActor& AddMerchant(PartOne& server, uint32_t formId)
 {
-  server.CreateActor(formId, { 2, 2, 2 }, 0, 0x3c);
+  if (!server.HasEspm()) {
+    AttachSkyrimFiles(server);
+  }
+  // Same gate the combat fixture uses so Hulda's placed NPC actually loads.
+  server.worldState.npcEnabled = true;
+  server.worldState.npcAllowEssential = true;
+  server.worldState.npcAllowCrimeFaction = true;
+  // Reuse Hulda's real base record; CreateActor's default base 0x7 is a player.
+  auto hulda = server.worldState.LookupFormById(0x1a66e);
+  REQUIRE(hulda);
+  REQUIRE(hulda->AsActor());
+  auto npc = std::make_unique<MpActor>(
+    LocationalData{ { 2, 2, 2 }, { 0, 0, 0 },
+                    FormDesc::FromFormId(0x3c, server.worldState.espmFiles) },
+    server.CreateFormCallbacks(), hulda->AsActor()->GetBaseId());
+  server.worldState.AddForm(std::move(npc), formId);
   auto& actor = server.worldState.GetFormAt<MpActor>(formId);
   actor.SetServerControlled(true);
   actor.SetInventory(MerchantStock());
