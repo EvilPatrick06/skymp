@@ -66,6 +66,7 @@ public:
   Napi::Value LoadNpcBatch(const Napi::CallbackInfo& info);
   Napi::Value PrepareNpcLoad(const Napi::CallbackInfo& info);
   Napi::Value SetNpcServerControlled(const Napi::CallbackInfo& info);
+  Napi::Value SetNpcDifficultyTier(const Napi::CallbackInfo& info);
   Napi::Value UpdateNpcMovement(const Napi::CallbackInfo& info);
   Napi::Value StopNpcMovement(const Napi::CallbackInfo& info);
   Napi::Value GetNavmeshRecords(const Napi::CallbackInfo& info);
@@ -73,6 +74,8 @@ public:
   Napi::Value GetFactionReactions(const Napi::CallbackInfo& info);
   Napi::Value ServerNpcAttack(const Napi::CallbackInfo& info);
   Napi::Value GetLoadedFormCount(const Napi::CallbackInfo& info);
+  Napi::Value SetNpcPlacementExclusions(const Napi::CallbackInfo& info);
+  Napi::Value GetLoadedNpcIds(const Napi::CallbackInfo& info);
   Napi::Value GetEspmLoadOrder(const Napi::CallbackInfo& info);
   Napi::Value GetDescFromId(const Napi::CallbackInfo& info);
   Napi::Value GetIdFromDesc(const Napi::CallbackInfo& info);

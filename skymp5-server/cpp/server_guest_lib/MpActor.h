@@ -38,6 +38,10 @@ public:
     return GetDynamicFields().GetValueDump("_skympServerControlled") == "true";
   }
   void SetServerControlled(bool controlled);
+  void SetNpcDifficultyTier(int tier);
+  int GetNpcDifficultyTier() const;
+  float GetNpcHealthMultiplier() const;
+  float GetNpcDamageMultiplier() const;
   void UpdateServerMovement(const NiPoint3& pos, const NiPoint3& angle,
                             float speed);
   void StopServerMovement();

@@ -123,6 +123,7 @@ Napi::Object ScampServer::Init(Napi::Env env, Napi::Object exports)
       InstanceMethod("loadNpcBatch", &ScampServer::LoadNpcBatch),
       InstanceMethod("prepareNpcLoad", &ScampServer::PrepareNpcLoad),
       InstanceMethod("setNpcServerControlled", &ScampServer::SetNpcServerControlled),
+      InstanceMethod("setNpcDifficultyTier", &ScampServer::SetNpcDifficultyTier),
       InstanceMethod("updateNpcMovement", &ScampServer::UpdateNpcMovement),
       InstanceMethod("stopNpcMovement", &ScampServer::StopNpcMovement),
       InstanceMethod("getNavmeshRecords", &ScampServer::GetNavmeshRecords),
@@ -130,6 +131,8 @@ Napi::Object ScampServer::Init(Napi::Env env, Napi::Object exports)
       InstanceMethod("getFactionReactions", &ScampServer::GetFactionReactions),
       InstanceMethod("serverNpcAttack", &ScampServer::ServerNpcAttack),
       InstanceMethod("getLoadedFormCount", &ScampServer::GetLoadedFormCount),
+      InstanceMethod("setNpcPlacementExclusions", &ScampServer::SetNpcPlacementExclusions),
+      InstanceMethod("getLoadedNpcIds", &ScampServer::GetLoadedNpcIds),
       InstanceMethod("getDescFromId", &ScampServer::GetDescFromId),
       InstanceMethod("getIdFromDesc", &ScampServer::GetIdFromDesc),
       InstanceMethod("callPapyrusFunction", &ScampServer::CallPapyrusFunction),
@@ -1335,6 +1338,20 @@ Napi::Value ScampServer::SetNpcServerControlled(const Napi::CallbackInfo& info)
   }
 }
 
+Napi::Value ScampServer::SetNpcDifficultyTier(const Napi::CallbackInfo& info)
+{
+  try {
+    const auto id = NapiHelper::ExtractUInt32(info[0], "formId");
+    const auto tier = NapiHelper::ExtractDouble(info[1], "tier");
+    if (!std::isfinite(tier) || std::floor(tier) != tier || tier < 0 || tier > 4)
+      throw std::invalid_argument("tier must be an integer from 0 to 4");
+    partOne->worldState.GetFormAt<MpActor>(id).SetNpcDifficultyTier(static_cast<int>(tier));
+    return info.Env().Undefined();
+  } catch (const std::exception& e) {
+    throw Napi::Error::New(info.Env(), e.what());
+  }
+}
+
 Napi::Value ScampServer::UpdateNpcMovement(const Napi::CallbackInfo& info)
 {
   try {
@@ -1475,11 +1492,40 @@ Napi::Value ScampServer::GetNpcAIState(const Napi::CallbackInfo& info)
     result.Set("isHuman", actor.IsCreatedAsPlayer() || actor.GetProfileId() >= 0);
     result.Set("isConnected", actor.GetUserId() != Networking::InvalidUserId);
     result.Set("isServerControlled", actor.IsServerControlled());
+    const auto savedLife = nlohmann::json::parse(
+      actor.GetDynamicFields().GetValueDump("_skympNpcLifeGeneration"));
+    if (!savedLife.is_null() && (!savedLife.is_number_integer() || savedLife < 0 ||
+                               savedLife > 9007199254740991LL))
+      throw std::runtime_error("Invalid persisted NPC life generation");
+    const int64_t generation = savedLife.is_null() ? 0 : savedLife.get<int64_t>();
+    result.Set("lifeGeneration", static_cast<double>(generation));
+    result.Set("difficultyTier", actor.GetNpcDifficultyTier());
     result.Set("aggression", profile->second.second[0]);
     result.Set("confidence", profile->second.second[1]);
     const auto raceLookup = partOne->GetEspm().GetBrowser().LookupById(actor.GetRaceId());
     const auto race = espm::Convert<espm::RACE>(raceLookup.rec);
     const auto raceFlags = race ? race->GetData(world.GetEspmCache()).flags : 0;
+    const auto unarmedReach = race ? race->GetData(world.GetEspmCache()).unarmedReach : 0.f;
+    const auto unarmedData = espm::GetData<espm::WEAP>(0x1f4, &world).weapDNAM;
+    auto meleeReach = unarmedData && std::isfinite(unarmedData->speed) &&
+      unarmedData->speed > 0 ? unarmedReach : 0.f;
+    for (const auto& equipped : actor.GetEquippedWeapon()) {
+      if (!equipped) continue;
+      if (!actor.GetInventory().HasItem(equipped->baseId)) {meleeReach = 0; break;}
+      const auto lookup = partOne->GetEspm().GetBrowser().LookupById(equipped->baseId);
+      const auto weapon = espm::Convert<espm::WEAP>(lookup.rec);
+      if (!weapon) continue;
+      const auto data = weapon->GetData(world.GetEspmCache()).weapDNAM;
+      meleeReach = data && std::isfinite(data->speed) && data->speed > 0 &&
+        std::isfinite(data->reach) && data->reach > 0 ?
+        (equipped->baseId == 0x1f4 ? unarmedReach :
+         data->reach * espm::GetData<espm::GMST>(espm::GMST::kFCombatDistance, &world).value) : 0.f;
+      break;
+    }
+    const auto bounds = actor.GetBounds();
+    result.Set("meleeReach", std::isfinite(meleeReach) && meleeReach > 0 ? meleeReach : 0);
+    result.Set("meleeAllowance", std::min(96.f, std::max(16.f,
+      std::hypot(float(bounds.pos2[0]), float(bounds.pos2[1])))));
     result.Set("canSwim", (raceFlags & espm::RACE::kSwims) != 0);
     result.Set("canFly", (raceFlags & espm::RACE::kFlies) != 0);
     result.Set("immobile", (raceFlags & espm::RACE::kImmobile) != 0);
@@ -1542,6 +1588,31 @@ Napi::Value ScampServer::ServerNpcAttack(const Napi::CallbackInfo& info)
 Napi::Value ScampServer::GetLoadedFormCount(const Napi::CallbackInfo& info)
 {
   return Napi::Number::New(info.Env(), partOne->worldState.GetLoadedFormCount());
+}
+
+Napi::Value ScampServer::SetNpcPlacementExclusions(const Napi::CallbackInfo& info)
+{
+  try {
+    if (!info[0].IsArray()) throw std::invalid_argument("NPC exclusions must be an array");
+    const auto input = info[0].As<Napi::Array>();
+    if (input.Length() > 20000) throw std::invalid_argument("Too many NPC exclusions");
+    std::vector<uint32_t> ids;
+    ids.reserve(input.Length());
+    for (uint32_t i = 0; i < input.Length(); ++i)
+      ids.push_back(NapiHelper::ExtractUInt32(input.Get(i), "formId"));
+    partOne->worldState.SetNpcPlacementExclusions(ids);
+    return info.Env().Undefined();
+  } catch (const std::exception& error) {
+    throw Napi::Error::New(info.Env(), error.what());
+  }
+}
+
+Napi::Value ScampServer::GetLoadedNpcIds(const Napi::CallbackInfo& info)
+{
+  const auto ids = partOne->worldState.GetLoadedNpcIds();
+  auto result = Napi::Array::New(info.Env(), ids.size());
+  for (size_t i = 0; i < ids.size(); ++i) result.Set(i, ids[i]);
+  return result;
 }
 
 Napi::Value ScampServer::GetAllForms(const Napi::CallbackInfo& info)

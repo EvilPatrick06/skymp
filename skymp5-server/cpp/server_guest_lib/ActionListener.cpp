@@ -965,7 +965,7 @@ float CalculateCurrentHealthPercentage(const MpActor& actor, float damage,
 
   const float baseHealth =
     GetBaseActorValues(espmProvider, baseId, raceId, actor.GetTemplateChain())
-      .health;
+      .health * actor.GetNpcHealthMultiplier();
 
   if (outBaseHealth) {
     *outBaseHealth = baseHealth;

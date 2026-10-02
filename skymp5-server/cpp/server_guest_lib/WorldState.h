@@ -143,6 +143,8 @@ public:
   // are placed and no neighbouring chunks are recursively discovered.
   NpcLoadBatch LoadNpcBatch(size_t cursor, size_t limit);
   size_t PrepareNpcLoad();
+  void SetNpcPlacementExclusions(const std::vector<uint32_t>& ids);
+  std::vector<uint32_t> GetLoadedNpcIds() const;
 
   // See LookupFormById comment
   template <class F>

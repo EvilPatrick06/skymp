@@ -24,6 +24,7 @@
 #include <save_storages/AsyncSaveStorage.h> // UpsertFailedException
 #include <save_storages/ISaveStorage.h>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace {
 
@@ -59,6 +60,7 @@ struct WorldState::Impl
     allFormsByModIndexCache;
   std::vector<uint32_t> attachEspmRecordFailures;
   std::optional<std::vector<uint32_t>> placedActorIds;
+  std::unordered_set<uint32_t> npcPlacementExclusions;
 };
 
 WorldState::WorldState()
@@ -212,6 +214,9 @@ void WorldState::LoadChangeForm(const MpChangeForm& changeForm,
   }
 
   if (formId < 0xff000000) {
+    // An asynchronous save can arrive after population policy is installed.
+    // It must not restore enabled state or client ownership on a cut identity.
+    if (pImpl->npcPlacementExclusions.count(formId)) return;
     auto it = forms.find(formId);
     if (it != forms.end()) {
       auto refr = std::dynamic_pointer_cast<MpObjectReference>(it->second);
@@ -669,6 +674,7 @@ bool WorldState::AttachEspmRecord(const espm::CombineBrowser& br,
 
 bool WorldState::LoadForm(uint32_t formId, std::stringstream* optionalOutTrace)
 {
+  if (pImpl->npcPlacementExclusions.count(formId)) return false;
   // Chunk discovery can revisit preloaded references and plugin overrides.
   // Reattaching one allocates an index for a duplicate that AddForm discards,
   // leaving an abandoned index and a dangling entry in the lookup cache.
@@ -918,6 +924,60 @@ size_t WorldState::PrepareNpcLoad()
   return pImpl->placedActorIds->size();
 }
 
+void WorldState::SetNpcPlacementExclusions(const std::vector<uint32_t>& ids)
+{
+  if (ids.size() > 20000) throw std::invalid_argument("Too many NPC exclusions");
+  std::unordered_set<uint32_t> next;
+  for (const auto id : ids) {
+    if (id >= 0xff000000 ||
+        FormDesc::FromFormId(id, espmFiles) == FormDesc{0x14, "Skyrim.esm"}) {
+      throw std::invalid_argument("Exclusions require existing placed NPC identities");
+    }
+    const auto lookup = GetEspm().GetBrowser().LookupById(id);
+    if (!lookup.rec || lookup.rec->GetType() != "ACHR") {
+      throw std::invalid_argument("An NPC exclusion must name an ACHR record");
+    }
+    const auto loaded = LookupFormByIdNoLoad(id);
+    const auto deferred = pImpl->changeFormsForDeferredLoad.find(id);
+    if (deferred != pImpl->changeFormsForDeferredLoad.end() &&
+        deferred->second.profileId >= 0) {
+      throw std::invalid_argument("An NPC exclusion cannot affect a saved human identity");
+    }
+    if (loaded) {
+      const auto actor = loaded->AsActor();
+      if (!actor || actor->IsCreatedAsPlayer() || actor->GetProfileId() >= 0 ||
+          actor->GetUserId() != Networking::InvalidUserId) {
+        throw std::invalid_argument("An NPC exclusion cannot affect a human identity");
+      }
+    }
+    next.insert(id);
+  }
+  // Validate the whole policy before changing any reference. Saved identities
+  // already in the world are hidden and stopped; future loads never create them.
+  pImpl->npcPlacementExclusions = std::move(next);
+  for (const auto id : pImpl->npcPlacementExclusions) {
+    const auto loaded = LookupFormByIdNoLoad(id);
+    if (loaded && loaded->AsActor()) {
+      auto& actor = *loaded->AsActor();
+      actor.SetServerControlled(true);
+      actor.StopServerMovement();
+      actor.Disable();
+    }
+  }
+}
+
+std::vector<uint32_t> WorldState::GetLoadedNpcIds() const
+{
+  std::vector<uint32_t> ids;
+  for (const auto& [id, form] : forms) {
+    const auto actor = form->AsActor();
+    if (actor && !actor->IsCreatedAsPlayer() && actor->GetProfileId() < 0 &&
+        actor->GetUserId() == Networking::InvalidUserId) ids.push_back(id);
+  }
+  std::sort(ids.begin(), ids.end());
+  return ids;
+}
+
 WorldState::NpcLoadBatch WorldState::LoadNpcBatch(size_t cursor, size_t limit)
 {
   if (limit == 0 || limit > 128) {
@@ -942,6 +1002,7 @@ WorldState::NpcLoadBatch WorldState::LoadNpcBatch(size_t cursor, size_t limit)
     chunkState);
   pImpl->chunkLoadingInProgress = true;
   for (size_t i = cursor; i < end; ++i) {
+    if (pImpl->npcPlacementExclusions.count(ids[i])) continue;
     // The vanilla human reference is an ACHR record too. It is not an NPC
     // and must not be instantiated as a second character by the preloader.
     const auto desc = FormDesc::FromFormId(ids[i], espmFiles);
