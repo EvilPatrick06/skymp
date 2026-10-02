@@ -768,6 +768,7 @@ MerchantTransferController& WorldState::GetMerchantTransfers()
   if (!merchantTransfers) {
     merchantTransfers = std::make_unique<MerchantTransferController>(*this);
   }
+  merchantTransfers->UseParentSavedReceipt(*this);
   return *merchantTransfers;
 }
 
