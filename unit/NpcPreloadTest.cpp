@@ -401,6 +401,24 @@ TEST_CASE("Attaching another ESPM loader invalidates the NPC candidate index",
   REQUIRE(after.actorIds.empty());
 }
 
+TEST_CASE("Unattended server NPC movement cannot recursively populate surrounding chunks",
+          "[NpcAuthority][PartOne][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  p.worldState.npcAllowEssential = true;
+  p.worldState.npcAllowCrimeFaction = true;
+  constexpr uint32_t id = 0x1a66e;
+  p.worldState.LoadNpcBatch(CursorFor(id), 1);
+  auto& npc = p.worldState.GetFormAt<MpActor>(id);
+  npc.SetServerControlled(true);
+  const auto before = p.worldState.GetLoadedFormCount();
+  REQUIRE(before == 1);
+  const auto position = npc.GetPos();
+  npc.UpdateServerMovement(position + NiPoint3{ 4096, 0, 0 }, npc.GetAngle(), 60);
+  REQUIRE(p.worldState.GetLoadedFormCount() == before);
+}
+
 TEST_CASE("Server authority revokes hosting, persists and streams a complete snapshot",
           "[NpcAuthority][PartOne][espm]")
 {
@@ -493,4 +511,213 @@ TEST_CASE("Preparing NPC placements does not instantiate references",
   REQUIRE(world.hosters.empty());
   const auto batch = world.LoadNpcBatch(CursorFor(kCowId), 1);
   REQUIRE(batch.actorIds == std::vector<uint32_t>{kCowId});
+}
+
+TEST_CASE("Excluded NPC placements advance the preload cursor without instantiation",
+          "[NpcExclusions][NpcPreload][WorldState][espm]")
+{
+  WorldState world;
+  AttachFixture(world);
+  world.SetNpcPlacementExclusions({ kCowId });
+  const auto cursor = CursorFor(kCowId);
+  const auto batch = world.LoadNpcBatch(cursor, 1);
+  REQUIRE(batch.total == PlacedActorIds().size());
+  REQUIRE(batch.nextCursor == cursor + 1);
+  REQUIRE(batch.actorIds.empty());
+  REQUIRE_FALSE(world.LookupFormByIdNoLoad(kCowId));
+  REQUIRE_FALSE(world.LookupFormById(kCowId));
+  REQUIRE(world.GetLoadedFormCount() == 0);
+}
+
+TEST_CASE("Saved NPC transforms cannot bypass placement exclusions",
+          "[NpcExclusions][NpcPreload][save][espm]")
+{
+  WorldState world;
+  AttachFixture(world);
+  const auto lookup = GetEspmLoader().GetBrowser().LookupById(kCowId);
+  const auto data = reinterpret_cast<const espm::REFR*>(lookup.rec)
+                      ->GetData(world.GetEspmCache());
+  MpChangeForm saved;
+  saved.recType = MpChangeForm::ACHR;
+  saved.formDesc = FormDesc::FromFormId(kCowId, world.espmFiles);
+  saved.baseDesc = FormDesc::FromFormId(lookup.ToGlobalId(data.baseId), world.espmFiles);
+  saved.position = { 123, 456, 789 };
+  saved.worldOrCellDesc = FormDesc::Tamriel();
+  SECTION("A deferred save exists before the policy")
+  {
+    world.LoadChangeForm(saved, FormCallbacks::DoNothing());
+    world.SetNpcPlacementExclusions({ kCowId });
+  }
+  SECTION("A deferred save arrives after the policy")
+  {
+    world.SetNpcPlacementExclusions({ kCowId });
+    world.LoadChangeForm(saved, FormCallbacks::DoNothing());
+  }
+  REQUIRE_FALSE(world.LookupFormByIdNoLoad(kCowId));
+  REQUIRE(world.LoadNpcBatch(CursorFor(kCowId), 1).actorIds.empty());
+  REQUIRE_FALSE(world.LookupFormById(kCowId));
+  REQUIRE(world.GetLoadedFormCount() == 0);
+}
+
+TEST_CASE("Excluding an existing NPC retains identity and stops server movement",
+          "[NpcExclusions][NpcAuthority][espm]")
+{
+  WorldState world;
+  AttachFixture(world);
+  world.LoadNpcBatch(CursorFor(kCowId), 1);
+  const auto original = world.LookupFormByIdNoLoad(kCowId);
+  REQUIRE(original);
+  auto& npc = world.GetFormAt<MpActor>(kCowId);
+  npc.SetServerControlled(true);
+  const auto pos = npc.GetPos();
+  npc.UpdateServerMovement(pos, npc.GetAngle(), 60);
+  REQUIRE(npc.GetServerMovementMessage().data.speed == 60);
+
+  world.SetNpcPlacementExclusions({ kCowId });
+
+  REQUIRE(world.LookupFormByIdNoLoad(kCowId).get() == original.get());
+  REQUIRE(npc.IsDisabled());
+  REQUIRE(npc.IsServerControlled());
+  REQUIRE(npc.GetPos() == pos);
+  REQUIRE(npc.GetServerMovementMessage().data.speed == 0);
+  REQUIRE(npc.GetServerMovementMessage().data.runMode == "Standing");
+  REQUIRE(npc.GetServerCombatTarget() == 0);
+  REQUIRE(world.LoadNpcBatch(CursorFor(kCowId), 1).actorIds.empty());
+  REQUIRE(world.GetLoadedNpcIds() == std::vector<uint32_t>{ kCowId });
+}
+
+TEST_CASE("Loading an old save cannot re-enable an already loaded excluded NPC",
+          "[NpcExclusions][NpcPreload][save][espm]")
+{
+  WorldState world;
+  AttachFixture(world);
+  world.LoadNpcBatch(CursorFor(kCowId), 1);
+  const auto original = world.LookupFormByIdNoLoad(kCowId);
+  REQUIRE(original);
+  auto& npc = world.GetFormAt<MpActor>(kCowId);
+  REQUIRE_FALSE(npc.IsDisabled());
+  REQUIRE_FALSE(npc.IsServerControlled());
+  const auto saved = npc.GetChangeForm();
+
+  world.SetNpcPlacementExclusions({ kCowId });
+  REQUIRE(npc.IsDisabled());
+  REQUIRE(npc.IsServerControlled());
+  world.LoadChangeForm(saved, FormCallbacks::DoNothing());
+
+  REQUIRE(world.LookupFormByIdNoLoad(kCowId).get() == original.get());
+  CHECK(npc.IsDisabled());
+  CHECK(npc.IsServerControlled());
+  CHECK(world.hosters.empty());
+  CHECK(world.LoadNpcBatch(CursorFor(kCowId), 1).actorIds.empty());
+}
+
+TEST_CASE("Invalid exclusion IDs cannot partially replace a valid policy",
+          "[NpcExclusions][WorldState][espm]")
+{
+  WorldState world;
+  AttachFixture(world);
+  world.SetNpcPlacementExclusions({ kCowId });
+  constexpr uint32_t hulda = 0x1a66e;
+  uint32_t invalid = 0;
+  SECTION("Vanilla human reference") { invalid = 0x14; }
+  SECTION("Dynamic identity") { invalid = 0xff000100; }
+  SECTION("Weapon record") { invalid = 0x1397e; }
+  SECTION("Unknown reference") { invalid = 0x00ffffff; }
+  REQUIRE_THROWS(world.SetNpcPlacementExclusions({ hulda, invalid }));
+  REQUIRE(world.LoadNpcBatch(CursorFor(kCowId), 1).actorIds.empty());
+  REQUIRE_FALSE(world.LookupFormByIdNoLoad(kCowId));
+  REQUIRE(world.LoadNpcBatch(CursorFor(hulda), 1).actorIds ==
+          std::vector<uint32_t>{ hulda });
+  REQUIRE_FALSE(world.GetFormAt<MpActor>(hulda).IsDisabled());
+}
+
+TEST_CASE("Placement exclusions cannot disable an existing profile identity",
+          "[NpcExclusions][WorldState][espm]")
+{
+  WorldState world;
+  AttachFixture(world);
+  world.LoadNpcBatch(CursorFor(kCowId), 1);
+  auto& actor = world.GetFormAt<MpActor>(kCowId);
+  actor.RegisterProfileId(123);
+  REQUIRE_THROWS(world.SetNpcPlacementExclusions({ kCowId }));
+  REQUIRE_FALSE(actor.IsDisabled());
+  REQUIRE_FALSE(actor.IsServerControlled());
+  REQUIRE(actor.GetProfileId() == 123);
+  REQUIRE(world.LoadNpcBatch(CursorFor(kCowId), 1).actorIds ==
+          std::vector<uint32_t>{ kCowId });
+}
+
+TEST_CASE("Loaded NPC enumeration stays fresh and excludes human identities",
+          "[NpcEnumeration][WorldState][espm]")
+{
+  WorldState world;
+  AttachFixture(world);
+  world.LoadNpcBatch(CursorFor(kCowId), 1);
+  const auto base = world.GetFormAt<MpActor>(kCowId).GetBaseId();
+  const auto cached = world.GetAllForms(0xff);
+  REQUIRE(cached);
+  REQUIRE(cached->empty());
+  const WorldState& view = world;
+  const auto first = view.GetLoadedNpcIds();
+  REQUIRE(first == std::vector<uint32_t>{ kCowId });
+  const auto addActor = [&](uint32_t id, uint32_t baseId) -> MpActor& {
+    world.AddForm(std::make_unique<MpActor>(
+      LocationalData{ { 0, 0, 0 }, {}, FormDesc::Tamriel() },
+      FormCallbacks::DoNothing(), baseId), id);
+    return world.GetFormAt<MpActor>(id);
+  };
+  constexpr uint32_t high = 0xff000200, low = 0xff000100;
+  addActor(high, base).Disable();
+  addActor(low, base);
+  addActor(0xff000300, 7);
+  addActor(0xff000400, base).RegisterProfileId(123);
+  world.AddForm(std::make_unique<MpForm>(), 0xff000500);
+
+  REQUIRE(view.GetLoadedNpcIds() == std::vector<uint32_t>{ kCowId, low, high });
+  REQUIRE(first == std::vector<uint32_t>{ kCowId });
+  world.DestroyForm<MpActor>(low);
+  REQUIRE(view.GetLoadedNpcIds() == std::vector<uint32_t>{ kCowId, high });
+}
+
+TEST_CASE("Placement exclusions cannot alter a connected human identity",
+          "[NpcExclusions][NpcEnumeration][PartOne][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  p.worldState.npcAllowEssential = true;
+  p.worldState.npcAllowCrimeFaction = true;
+  p.worldState.LoadNpcBatch(CursorFor(kCowId), 1);
+  auto& actor = p.worldState.GetFormAt<MpActor>(kCowId);
+  DoConnect(p, 0);
+  p.SetUserActor(0, kCowId);
+  REQUIRE(actor.GetUserId() == 0);
+  REQUIRE_THROWS(p.worldState.SetNpcPlacementExclusions({ kCowId }));
+  REQUIRE(actor.GetUserId() == 0);
+  REQUIRE_FALSE(actor.IsDisabled());
+  REQUIRE_FALSE(actor.IsServerControlled());
+  const auto ids = p.worldState.GetLoadedNpcIds();
+  REQUIRE(std::find(ids.begin(), ids.end(), kCowId) == ids.end());
+}
+
+TEST_CASE("Placement exclusions protect deferred saved profile identities atomically",
+          "[NpcExclusions][NpcPreload][espm]")
+{
+  WorldState world;
+  AttachFixture(world);
+  const auto lookup = GetEspmLoader().GetBrowser().LookupById(kCowId);
+  const auto data = reinterpret_cast<const espm::REFR*>(lookup.rec)->GetData(world.GetEspmCache());
+  MpChangeForm saved;
+  saved.recType = MpChangeForm::ACHR;
+  saved.formDesc = FormDesc::FromFormId(kCowId, world.espmFiles);
+  saved.baseDesc = FormDesc::FromFormId(lookup.ToGlobalId(data.baseId), world.espmFiles);
+  saved.profileId = 99;
+  saved.worldOrCellDesc = FormDesc::Tamriel();
+  world.LoadChangeForm(saved, FormCallbacks::DoNothing());
+  REQUIRE_FALSE(world.LookupFormByIdNoLoad(kCowId));
+  REQUIRE_THROWS(world.SetNpcPlacementExclusions({ kCowId }));
+  world.LoadNpcBatch(CursorFor(kCowId), 1);
+  auto& restored = world.GetFormAt<MpActor>(kCowId);
+  REQUIRE(restored.GetProfileId() == 99);
+  REQUIRE_FALSE(restored.IsDisabled());
+  REQUIRE_FALSE(restored.IsServerControlled());
 }

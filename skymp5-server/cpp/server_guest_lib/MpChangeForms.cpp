@@ -98,8 +98,7 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm)
     res["displayName"] = *changeForm.displayName;
   }
 
-  if (changeForm.factions.has_value() &&
-      !changeForm.factions.value().empty()) {
+  if (changeForm.factions.has_value()) {
     auto factionsJson = nlohmann::json::array();
     for (int i = 0; i < static_cast<int>(changeForm.factions.value().size());
          ++i) {

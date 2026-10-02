@@ -38,9 +38,17 @@ public:
     return GetDynamicFields().GetValueDump("_skympServerControlled") == "true";
   }
   void SetServerControlled(bool controlled);
+  void SetNpcDifficultyTier(int tier);
+  int GetNpcDifficultyTier() const;
+  float GetNpcHealthMultiplier() const;
+  float GetNpcDamageMultiplier() const;
   void UpdateServerMovement(const NiPoint3& pos, const NiPoint3& angle,
                             float speed);
+  void StopServerMovement();
   UpdateMovementMessage GetServerMovementMessage() const;
+  uint32_t GetServerCombatTarget() const;
+  void RecordServerCombatTarget(uint32_t targetId);
+  void PublishServerAttackAnimation(const AnimationData& animation);
 
   bool IsSpellLearned(uint32_t spellId) const; // including from base
   bool IsSpellLearnedFromBase(uint32_t spellId) const;
@@ -212,6 +220,8 @@ private:
   bool factionsLoaded = false;
 
   void SendAndSetDeathState(bool isDead, bool shouldTeleport);
+  void SendServerStateToObservers(const IMessageBase& message,
+                                  bool reliable) const;
 
   DeathStateContainerMessage GetDeathStateMsg(const LocationalData& position,
                                               bool isDead,
