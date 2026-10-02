@@ -4,6 +4,7 @@
 #include "LeveledListUtils.h"
 #include "LocationalDataUtils.h"
 #include "MpActor.h"
+#include "MerchantTransferController.h"
 #include "MpChangeForms.h"
 #include "MpObjectReference.h"
 #include "libespm/GroupUtils.h"
@@ -69,6 +70,8 @@ struct WorldState::Impl
   std::optional<std::vector<uint32_t>> placedActorIds;
   std::unordered_set<uint32_t> npcPlacementExclusions;
 };
+
+inline WorldState::~WorldState() = default;
 
 WorldState::WorldState()
   : worldStartTime(std::chrono::steady_clock::now())
