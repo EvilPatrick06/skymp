@@ -3,7 +3,7 @@
 #include "FormIndex.h"
 #include "Grid.h"
 #include "GridElement.h"
-#include "MerchantTransferController.h"
+class MerchantTransferController;
 #include "MpChangeForms.h"
 #include "MpForm.h"
 #include "MpObjectReference.h"
@@ -57,6 +57,7 @@ public:
 
 public:
   WorldState();
+  inline ~WorldState();
   WorldState(const WorldState&) = delete;
   WorldState& operator=(const WorldState&) = delete;
 
