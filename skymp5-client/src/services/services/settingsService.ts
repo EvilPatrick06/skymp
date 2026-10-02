@@ -138,7 +138,7 @@ export class SettingsService extends ClientListener {
     states.start();
   }
 
-  public async getServerMods(): Promise<Mod[]> {
+  public async getServerMods(): Promise<Mod[] | null> {
     const masterApiClient = this.makeMasterApiClient();
 
     const masterKey = this.getServerMasterKey();
@@ -163,7 +163,9 @@ export class SettingsService extends ClientListener {
       }
     }
 
-    return [];
+    // Unreachable after retries: null, never an empty list. An empty list means
+    // the server answered with no mods (or an unsupported manifest version).
+    return null;
   };
 
   private normalizeUrl(url: string) {
