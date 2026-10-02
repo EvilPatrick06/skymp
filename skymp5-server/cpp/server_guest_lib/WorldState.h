@@ -84,6 +84,7 @@ public:
                      std::chrono::system_clock::duration time);
 
   void RequestSave(MpObjectReference& ref);
+  std::string GetSavedInventoryReceipt(MpObjectReference& ref);
   bool HasEspmFile(std::string_view filename) const noexcept;
 
   template <typename T>
@@ -212,6 +213,9 @@ public:
       *outDestroyedForm = std::dynamic_pointer_cast<FormType>(it->second);
 
     it->second->BeforeDestroy();
+    if (auto ref = it->second->AsObjectReference()) {
+      ForgetInventoryReceipt(*ref);
+    }
 
     if (auto formIndex = dynamic_cast<FormIndex*>(form.get())) {
       if (formIdxManager && !formIdxManager->DestroyID(formIndex->idx))
@@ -329,6 +333,8 @@ public:
   std::vector<GameModeEvent*> currentGameModeEventsStack;
 
 private:
+  void RememberInventoryReceipt(MpObjectReference& ref);
+  void ForgetInventoryReceipt(MpObjectReference& ref);
   bool AttachEspmRecord(const espm::CombineBrowser& br,
                         const espm::RecordHeader* record,
                         const espm::IdMapping& mapping,
