@@ -4,6 +4,10 @@ import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { Mod } from "../messages_http/serverManifest";
 import { logTrace } from "../../logging";
 import { SettingsService } from "./settingsService";
+import {
+  evaluateLoadOrder,
+  screenNoticeForEval,
+} from "./loadOrderCheck";
 
 const STATE_KEY = 'loadOrderCheckState';
 
@@ -29,49 +33,41 @@ export class LoadOrderVerificationService extends ClientListener {
     this.printModOrder('Client load order:', clientMods);
     return settingsService.getServerMods()
       .then((serverMods) => {
-        this.printModOrder('Server load order:', serverMods);
-        if (clientMods.length < serverMods.length) {
-          throw new Error(`Missing some server mods. Server has ${serverMods.length}, we have ${clientMods.length}`);
+        const result = evaluateLoadOrder(clientMods, serverMods);
+
+        if (result.kind === 'unreachable') {
+          printConsole('Server mod list could not be fetched after retries.');
+          const notice = screenNoticeForEval(result, false)!;
+          this.updateText(notice.text, notice.color, notice.clearDelay);
+          return;
         }
-        if (clientMods.length > serverMods.length) {
-          this.updateText(
-            'LOAD ORDER WARNING: you have more mods than server!\n(or could not receive server mod list)\nCheck console for details.',
-            [255, 255, 0, 1], 5,
+
+        this.printModOrder('Server load order:', serverMods as Mod[]);
+
+        if (result.kind === 'tooFewClientMods') {
+          throw new Error(
+            `Missing some server mods. Server has ${result.serverCount}, we have ${result.clientCount}`,
           );
         }
-        let fail = [];
-        for (let i = 0; i < serverMods.length; ++i) {
-          // Need case-insensitive check for 1.6+
-          if (
-            clientMods[i].filename.toLowerCase() !== serverMods[i].filename.toLowerCase() ||
-            clientMods[i].size !== serverMods[i].size ||
-            clientMods[i].crc32 !== serverMods[i].crc32
-          ) {
-            fail.push(i);
+        if (result.kind === 'tooManyClientMods') {
+          const notice = screenNoticeForEval(result, false)!;
+          this.updateText(notice.text, notice.color, notice.clearDelay);
+          return;
+        }
+        if (result.kind === 'mismatch') {
+          for (const i of result.indices) {
             printConsole(`${i}-th mod (numbered from 0) does not match.`);
-            printConsole(`Server has ${JSON.stringify(serverMods[i])}`);
+            printConsole(`Server has ${JSON.stringify((serverMods as Mod[])[i])}`);
             printConsole(`We have ${JSON.stringify(clientMods[i])}`);
           }
-        }
-        if (fail.length !== 0) {
-          throw new Error('Load order check failed! Indices: ' + JSON.stringify(fail));
+          throw new Error('Load order check failed! Indices: ' + JSON.stringify(result.indices));
         }
       })
       .catch((err) => {
         printConsole(err);
-        if (this.sp.settings['skymp5-client']['ignoreLoadOrderMismatch']) {
-          this.updateText(
-            'LOAD ORDER ERROR!\nHowever, ignoring it because of ignoreLoadOrderMismatch being set.' +
-            '\nExpect EVERYTHING BREAK, unless you know what you are doing.\nCheck console for details.' +
-            '\nThis message will disappear after 30 seconds.',
-            [255, 0, 0, 1], 30,
-          );
-          return;
-        }
-        this.updateText(
-          'LOAD ORDER ERROR!\nCheck console for details.',
-          [255, 0, 0, 1],
-        );
+        const ignore = !!this.sp.settings['skymp5-client']['ignoreLoadOrderMismatch'];
+        const notice = screenNoticeForEval({ kind: 'mismatch', indices: [] }, ignore)!;
+        this.updateText(notice.text, notice.color, notice.clearDelay);
       });
   };
 
