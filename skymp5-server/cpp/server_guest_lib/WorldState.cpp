@@ -4,6 +4,7 @@
 #include "LeveledListUtils.h"
 #include "LocationalDataUtils.h"
 #include "MpActor.h"
+#include "MerchantTransferController.h"
 #include "MpChangeForms.h"
 #include "MpObjectReference.h"
 #include "libespm/GroupUtils.h"
@@ -39,6 +40,14 @@ struct RelootTimeForTypesEntry
 
 struct WorldState::Impl
 {
+  std::shared_ptr<MerchantTransferController> merchantTransfers;
+  using ReceiptKey = std::pair<FormDesc, int32_t>;
+  struct SavedReceipt
+  {
+    std::string dump;
+    std::weak_ptr<MpForm> form;
+  };
+  std::map<ReceiptKey, SavedReceipt> savedInventoryReceipts;
   std::vector<std::optional<MpChangeForm>> changesByIdx;
   bool changesByIdxEmpty = true;
 
@@ -63,6 +72,12 @@ struct WorldState::Impl
   std::unordered_set<uint32_t> npcPlacementExclusions;
 };
 
+WorldState::~WorldState()
+{
+  pImpl->merchantTransfers.reset();
+  pImpl->savedInventoryReceipts.clear();
+}
+
 WorldState::WorldState()
   : worldStartTime(std::chrono::steady_clock::now())
 {
@@ -70,10 +85,15 @@ WorldState::WorldState()
 
   pImpl.reset(new Impl);
   pImpl->policy = PapyrusCompatibilityPolicyFactory::Create(this);
+  pImpl->merchantTransfers = std::make_shared<MerchantTransferController>(*this);
 }
 
 void WorldState::Clear()
 {
+  pImpl->savedInventoryReceipts.clear();
+  if (pImpl->merchantTransfers) {
+    pImpl->merchantTransfers = std::make_shared<MerchantTransferController>(*this);
+  }
   forms.clear();
   grids.clear();
   formIdxManager.reset();
@@ -720,6 +740,57 @@ bool WorldState::LoadForm(uint32_t formId, std::stringstream* optionalOutTrace)
   return attached;
 }
 
+void WorldState::RememberInventoryReceipt(MpObjectReference& ref)
+{
+  auto actor = ref.AsActor();
+  if (!actor || actor->GetProfileId() <= 0) {
+    throw std::runtime_error("Inventory receipts require a human profile");
+  }
+  auto key = Impl::ReceiptKey{ref.GetChangeForm().formDesc, actor->GetProfileId()};
+  auto existing = pImpl->savedInventoryReceipts.find(key);
+  if (existing != pImpl->savedInventoryReceipts.end() &&
+      existing->second.form.lock().get() == &ref) {
+    return;
+  }
+  pImpl->savedInventoryReceipts[key] = {
+    ref.GetInventoryReceiptDump(), forms.at(ref.GetFormId())
+  };
+}
+
+void WorldState::ForgetInventoryReceipt(MpObjectReference& ref)
+{
+  for (auto it = pImpl->savedInventoryReceipts.begin();
+       it != pImpl->savedInventoryReceipts.end();) {
+    auto form = it->second.form.lock();
+    if (!form || form.get() == &ref) {
+      it = pImpl->savedInventoryReceipts.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
+
+MerchantTransferController& WorldState::GetMerchantTransfers()
+{
+  if (!pImpl->merchantTransfers) {
+    pImpl->merchantTransfers = std::make_shared<MerchantTransferController>(*this);
+  }
+  pImpl->merchantTransfers->UseParentSavedReceipt(*this);
+  return *pImpl->merchantTransfers;
+}
+
+std::string WorldState::GetSavedInventoryReceipt(MpObjectReference& ref)
+{
+  if (!pImpl->saveStorage) {
+    throw std::runtime_error("Inventory save acknowledgement is unavailable");
+  }
+  RememberInventoryReceipt(ref);
+  auto actor = ref.AsActor();
+  auto key = Impl::ReceiptKey{ref.GetChangeForm().formDesc, actor->GetProfileId()};
+  return pImpl->savedInventoryReceipts.at(key).dump;
+}
+
 void WorldState::TickSaveStorage(const std::chrono::system_clock::time_point&)
 {
   if (!pImpl->saveStorage) {
@@ -790,14 +861,58 @@ void WorldState::TickSaveStorage(const std::chrono::system_clock::time_point&)
   auto pImpl_ = pImpl;
 
   auto previousSize = pImpl->changesByIdx.size();
+  std::vector<std::weak_ptr<MpForm>> submittedForms;
 
   try {
+    // Metadata belongs to this submitted snapshot, not the actor's later state.
+    std::vector<std::pair<Impl::ReceiptKey, Impl::SavedReceipt>> receipts;
+    for (const auto& changeForm : pImpl->changesByIdx) {
+      if (!changeForm) {
+        continue;
+      }
+      auto live = forms.find(changeForm->formDesc.ToFormId(espmFiles));
+      if (live != forms.end()) submittedForms.push_back(live->second);
+      if (changeForm->profileId <= 0) continue;
+      auto key = Impl::ReceiptKey{changeForm->formDesc, changeForm->profileId};
+      auto cached = pImpl->savedInventoryReceipts.find(key);
+      if (cached != pImpl->savedInventoryReceipts.end()) {
+        auto dump = changeForm->dynamicFields.GetValueDump(
+          MpObjectReference::kInventoryReceiptProperty);
+        receipts.push_back({key, {dump, cached->second.form}});
+      }
+    }
+    std::weak_ptr<MerchantTransferController> controller = pImpl->merchantTransfers;
+    auto transfers = pImpl->merchantTransfers->CaptureSubmittedBatch(pImpl->changesByIdx);
     pImpl->saveStorage->Upsert(std::move(pImpl->changesByIdx),
-                               [pImpl_] { pImpl_->saveStorageBusy = false; });
+      [pImpl_, receipts = std::move(receipts), controller, transfers = std::move(transfers)] {
+        pImpl_->saveStorageBusy = false;
+        for (const auto& saved : receipts) {
+          auto current = pImpl_->savedInventoryReceipts.find(saved.first);
+          auto form = saved.second.form.lock();
+          auto actor = form ? form->AsActor() : nullptr;
+          if (current != pImpl_->savedInventoryReceipts.end() && actor &&
+              actor->GetProfileId() == saved.first.second &&
+              current->second.form.lock() == form) {
+            current->second.dump = saved.second.dump;
+          }
+        }
+        if (auto current = controller.lock()) current->AcknowledgeSubmittedBatch(transfers);
+      });
     pImpl->changesByIdxEmpty = true;
   } catch (std::exception& e) {
     pImpl->saveStorageBusy = false;
     spdlog::error("TickSaveStorage - Upsert failed with {}", e.what());
+    // Upsert may consume the rvalue buffer before throwing. Reconstruct
+    // current snapshots for the submitted identities; retain any buffer
+    // contents if failure happened before the move. Do not clear retries.
+    for (auto& submitted : submittedForms) {
+      auto form = submitted.lock();
+      if (!form) continue;
+      auto current = forms.find(form->GetFormId());
+      auto ref = form->AsObjectReference();
+      if (ref && current != forms.end() && current->second == form) RequestSave(*ref);
+    }
+    return;
   }
 
   pImpl->changesByIdx.clear();
