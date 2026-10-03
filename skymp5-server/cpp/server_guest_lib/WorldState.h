@@ -57,7 +57,7 @@ public:
 
 public:
   WorldState();
-  inline ~WorldState();
+  ~WorldState();
   WorldState(const WorldState&) = delete;
   WorldState& operator=(const WorldState&) = delete;
 
@@ -336,7 +336,6 @@ public:
   std::vector<GameModeEvent*> currentGameModeEventsStack;
 
 private:
-  std::unique_ptr<MerchantTransferController> merchantTransfers;
 
   void RememberInventoryReceipt(MpObjectReference& ref);
   void ForgetInventoryReceipt(MpObjectReference& ref);

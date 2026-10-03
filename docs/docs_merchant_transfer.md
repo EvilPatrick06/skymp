@@ -1,50 +1,65 @@
-# Private merchant transfer
+# Private merchant transfer prototype
 
-This is the native controller for one human and one merchant NPC. It does not
-open a trading panel, price books, or quest payments. Those stay on
-Thornswood #1375. The type is header-only:
+This native controller is experimental and is not enabled on Dev. It does not
+open a trading panel, authenticate an offer, select prices, or pay quests.
+Thornswood's private merchant ledger remains authoritative for the 249 NPC
+purses and purchased goods. Native NPC equipment and loot are not that ledger.
+The controller must not be connected to trading without that integration.
+
+The type is header-only at
 `skymp5-server/cpp/server_guest_lib/MerchantTransferController.h`.
+`WorldState::GetMerchantTransfers` binds its receipt and identity lookups.
+Clearing or destroying the world revokes outstanding controller callbacks.
 
-`WorldState::GetMerchantTransfers` constructs the controller and binds
-`UseParentSavedReceipt` to `GetSavedInventoryReceipt`. Durability checks do
-nothing until that hook is bound.
+## Preparation and debit
 
-The human side uses `CompareAndSetInventory` and the inventory receipt.
-The merchant side uses `SetInventory` only. That edit already queues the
-existing save batch. The controller never calls `CompareAndSetInventory` on
-the merchant and never writes `_inventoryReceipt` there.
+`Begin` requires distinct live forms, a positive human profile, and a
+server-controlled NPC merchant. It binds the actual form instances and profile,
+validates both complete inventories and deltas, and prepares every resulting
+snapshot before a debit. Metadata is preserved. Zero base ids, empty entries,
+count overflow, snapshots over 128 KiB, and unavailable receipt sequences are
+refused. At least one delta must be nonempty; a free offer can have no debit.
 
-`humanDebit` is the stack the human gives up. `humanCredit` is the stack the
-human receives. Removal is applied before addition, so a spent stack cannot
-fund itself. Metadata stays on the matched entry. Empty entries, a zero
-base id, a count that overflows, and a snapshot over 128 KiB are refused.
+Both form ids stay locked. Pending, quarantined, awaiting-save, refused and
+offline records count toward the limit of 25. Durable records do not count.
 
-## Calls
+`CommitHumanDebit` rechecks both identities and the prepared merchant snapshot.
+It applies the human debit through `CompareAndSetInventory`. Its receipt is
+prepared before mutation. An exception after an inventory update retains the
+attempt and locks for reconciliation. A refused compare-and-set leaves the
+pending offer unchanged.
 
-`Begin` requires two different forms and a human profile. The debit must be
-non-empty. It locks both form ids. A second transfer on either actor fails
-while the lock is held. Pending, quarantined, refused, and offline records
-count toward the cap of 25. A full cap does not lock and does not store the
-offer. Durable records do not count.
+`IsHumanDebitDurable` requires the exact saved debit receipt. A live receipt
+alone never acknowledges persistence.
 
-`CommitHumanDebit` runs only for a pending offer for that human. It removes
-the debit from the expected inventory and compare-and-sets that result with
-the expected receipt and sequence. The credit is not applied. On success the
-offer stores the post-debit inventory and the live receipt dump and becomes
-quarantined. A mismatch or a thrown compare-and-set leaves the offer pending
-and keeps the lock.
+## Settlement and acknowledgement
 
-`IsHumanDebitDurable` is true only for a quarantined or durable offer when
-`GetSavedInventoryReceipt` equals the receipt dump stored at debit time.
+`ReleaseQuarantine` requires the saved debit receipt, both original identities,
+and the prepared merchant inventory. It compare-and-sets the final human
+snapshot at the next sequence, including when the credit is empty. It updates
+the merchant with `SetInventory`, without writing a human receipt on the NPC.
 
-`ReleaseQuarantine` requires that saved receipt. It compare-and-sets the
-human credit at the next sequence, using the post-debit inventory and the
-stored receipt. An empty credit skips that compare-and-set. It then
-`SetInventory`s the merchant: the merchant gains the human debit and loses
-the human credit. The offer becomes durable and the pair is unlocked. If the
-merchant edit throws after the human credit succeeded, the offer stays
-quarantined.
+The offer then awaits saving with both actors locked. WorldState captures an
+acknowledgement only when the submitted batch contains both exact final
+snapshots, their identities and the final human receipt. Successful completion
+of that batch marks the offer durable and unlocks it. Failure retains the
+locks. A synchronous submission exception requeues consumed live changes.
+Stale or duplicate callbacks cannot unlock a newer offer.
 
-`Refuse` and `MarkOffline` apply only to a pending or quarantined offer.
-They keep the lock, so the record still fills the cap until `Forget`.
-`Forget` unlocks the pair and drops the record.
+`Refuse` and `MarkOffline` retain the record and locks. `Forget` cannot erase an
+attempted debit before durability. Pruning a completed record cannot remove
+locks belonging to a newer transfer.
+
+## Remaining release blockers
+
+Offers and locks are process-local. There is no durable transaction intent,
+restart reconstruction, or resume operation for held offers. A merchant
+publication exception after human credit requires reconciliation and remains
+locked. These limitations prevent enabling this prototype for buying, selling,
+or quest payments. Passing native regressions does not complete Thornswood
+issues 1375 or 505.
+
+The next integration must persist intent in the canonical private ledger,
+coordinate a single full human inventory compare-and-set with exact save
+acknowledgement, and recover after restart without repeating payment. It must
+also bind the authenticated trading panel to the submitted hold price books.

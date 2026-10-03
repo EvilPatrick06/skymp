@@ -32,6 +32,7 @@ public:
   {
     Pending,
     Quarantined,
+    AwaitingSave,
     Durable,
     Refused,
     Offline
@@ -42,12 +43,24 @@ public:
     uint64_t id = 0;
     uint32_t humanFormId = 0;
     uint32_t merchantFormId = 0;
+    int32_t humanProfileId = 0;
+    std::weak_ptr<MpForm> humanIdentity;
+    std::weak_ptr<MpForm> merchantIdentity;
+    FormDesc humanDesc;
+    FormDesc merchantDesc;
     Inventory humanDebit;
     Inventory humanCredit;
     Inventory expectedHumanInventory;
     Inventory humanAfterDebit;
+    Inventory humanAfterCredit;
+    Inventory expectedMerchantInventory;
+    Inventory merchantAfter;
     std::string expectedHumanReceipt;
     std::string submittedReceipt;
+    std::string finalReceipt;
+    std::string preparedDebitReceipt;
+    std::string preparedFinalReceipt;
+    bool debitAttempted = false;
     uint64_t expectedHumanSequence = 0;
     State state = State::Pending;
     std::string reason;
@@ -63,6 +76,8 @@ public:
   explicit MerchantTransferController(WorldState& worldState_)
     : worldState(worldState_)
   {
+    offers.reserve(kMaxPendingRecords);
+    locks.reserve(kMaxPendingRecords * 2);
   }
 
   // Call from GetMerchantTransfers. Binds acknowledgement to
@@ -73,6 +88,9 @@ public:
   {
     savedReceipt = [&world](MpObjectReference& ref) {
       return world.GetSavedInventoryReceipt(ref);
+    };
+    identity = [&world](uint32_t id) {
+      return std::weak_ptr<MpForm>(world.LookupFormByIdNoLoad(id));
     };
   }
 
@@ -92,12 +110,23 @@ public:
       result.reason = "inventory transactions require a human profile";
       return result;
     }
-    if (humanDebit.IsEmpty()) {
-      result.reason = "a transfer needs a human debit";
+    auto npc = merchant.AsActor();
+    if (human.GetParent() != &worldState || merchant.GetParent() != &worldState ||
+        !npc || npc->GetProfileId() > 0 || !npc->IsServerControlled() || !identity) {
+      result.reason = "merchant must be a server-controlled NPC in this world";
+      return result;
+    }
+    if (expectedHumanSequence == 0 || expectedHumanSequence >= kMaxSequence) {
+      result.reason = "transfer needs two advancing inventory receipt sequences";
+      return result;
+    }
+    if (humanDebit.IsEmpty() && humanCredit.IsEmpty()) {
+      result.reason = "a transfer needs a debit or credit";
       return result;
     }
     std::string invalid;
-    if (!EntriesAreSafe(humanDebit, invalid) ||
+    if (!EntriesAreSafe(expectedHumanInventory, invalid) ||
+        !EntriesAreSafe(humanDebit, invalid) ||
         !EntriesAreSafe(humanCredit, invalid)) {
       result.reason = invalid;
       return result;
@@ -106,23 +135,56 @@ public:
       result.reason = "pending merchant transfer cap is full";
       return result;
     }
-    if (!TryLockPair(human.GetFormId(), merchant.GetFormId(), result.reason)) {
-      return result;
-    }
-
     Offer offer;
-    offer.id = nextOfferId++;
+    offer.id = nextOfferId;
     offer.humanFormId = human.GetFormId();
     offer.merchantFormId = merchant.GetFormId();
+    offer.humanProfileId = human.GetProfileId();
+    offer.humanIdentity = identity(human.GetFormId());
+    offer.merchantIdentity = identity(merchant.GetFormId());
+    offer.humanDesc = human.GetChangeForm().formDesc;
+    offer.merchantDesc = merchant.GetChangeForm().formDesc;
     offer.humanDebit = humanDebit;
     offer.humanCredit = humanCredit;
     offer.expectedHumanInventory = expectedHumanInventory;
     offer.expectedHumanReceipt = expectedHumanReceipt;
     offer.expectedHumanSequence = expectedHumanSequence;
+    offer.preparedDebitReceipt = nlohmann::json{
+      {"actor", offer.humanDesc.ToString()}, {"profile", offer.humanProfileId},
+      {"sequence", expectedHumanSequence}
+    }.dump();
+    offer.preparedFinalReceipt = nlohmann::json{
+      {"actor", offer.humanDesc.ToString()}, {"profile", offer.humanProfileId},
+      {"sequence", expectedHumanSequence + 1}
+    }.dump();
+    offer.expectedMerchantInventory = merchant.GetInventory();
+    offer.humanAfterDebit = expectedHumanInventory;
+    if (human.GetInventory().ToJson() != expectedHumanInventory.ToJson() ||
+        human.GetInventoryReceiptDump() != expectedHumanReceipt ||
+        !EntriesAreSafe(offer.expectedMerchantInventory, result.reason) ||
+        !ApplyDelta(offer.humanAfterDebit, Inventory{}, humanDebit, result.reason)) {
+      return result;
+    }
+    offer.humanAfterCredit = offer.humanAfterDebit;
+    offer.merchantAfter = offer.expectedMerchantInventory;
+    if (!ApplyDelta(offer.humanAfterCredit, humanCredit, Inventory{}, result.reason) ||
+        !ApplyDelta(offer.merchantAfter, humanDebit, humanCredit, result.reason) ||
+        !FitsSnapshot(offer.humanAfterDebit, result.reason) ||
+        !FitsSnapshot(offer.humanAfterCredit, result.reason) ||
+        !FitsSnapshot(offer.merchantAfter, result.reason)) {
+      return result;
+    }
     offer.state = State::Pending;
-    offers.push_back(offer);
+    // Reserve allocations before publishing either lock.
+    offers.reserve(offers.size() + 1);
+    locks.reserve(locks.size() + 2);
+    if (!TryLockPair(human.GetFormId(), merchant.GetFormId(), result.reason)) {
+      return result;
+    }
+    offers.push_back(std::move(offer));
+    ++nextOfferId;
     result.ok = true;
-    result.offerId = offer.id;
+    result.offerId = offers.back().id;
     return result;
   }
 
@@ -135,11 +197,18 @@ public:
       result.reason = "offer is not pending";
       return result;
     }
-    if (offer->humanFormId != human.GetFormId()) {
+    if (!MatchesHuman(*offer, human)) {
       result.reason = "offer is for a different human";
       return result;
     }
 
+    auto merchantForm = offer->merchantIdentity.lock();
+    auto merchant = merchantForm ? merchantForm->AsObjectReference() : nullptr;
+    if (!merchant || !MatchesMerchant(*offer, *merchant) ||
+        merchant->GetInventory().ToJson() != offer->expectedMerchantInventory.ToJson()) {
+      result.reason = "merchant changed after preparation";
+      return result;
+    }
     Inventory after = offer->expectedHumanInventory;
     if (!ApplyDelta(after, Inventory{}, offer->humanDebit, result.reason)) {
       return result;
@@ -149,22 +218,26 @@ public:
     }
 
     bool swapped = false;
+    // Preserve the attempt when a notification throws after the native edit.
+    offer->submittedReceipt = offer->preparedDebitReceipt;
+    offer->debitAttempted = true;
     try {
       swapped = human.CompareAndSetInventory(offer->expectedHumanInventory,
                                               offer->expectedHumanReceipt,
                                               after,
                                               offer->expectedHumanSequence);
     } catch (const std::exception& error) {
+      offer->state = State::Refused;
       result.reason = error.what();
       return result;
     }
     if (!swapped) {
+      offer->debitAttempted = false;
+      offer->submittedReceipt.clear();
       result.reason = "human inventory or receipt did not match";
       return result;
     }
 
-    offer->humanAfterDebit = after;
-    offer->submittedReceipt = human.GetInventoryReceiptDump();
     offer->state = State::Quarantined;
     result.ok = true;
     return result;
@@ -173,7 +246,7 @@ public:
   bool IsHumanDebitDurable(MpActor& human, uint64_t offerId) const
   {
     auto offer = Find(offerId);
-    if (!offer || offer->humanFormId != human.GetFormId()) {
+    if (!offer || !MatchesHuman(*offer, human)) {
       return false;
     }
     if (offer->state != State::Quarantined &&
@@ -196,9 +269,13 @@ public:
       result.reason = "offer is not quarantined";
       return result;
     }
-    if (offer->humanFormId != human.GetFormId() ||
-        offer->merchantFormId != merchant.GetFormId()) {
+    if (!MatchesHuman(*offer, human) ||
+        !MatchesMerchant(*offer, merchant)) {
       result.reason = "offer actors do not match";
+      return result;
+    }
+    if (merchant.GetInventory().ToJson() != offer->expectedMerchantInventory.ToJson()) {
+      result.reason = "merchant inventory changed after preparation";
       return result;
     }
     if (!savedReceipt) {
@@ -240,13 +317,15 @@ public:
     // Credit the human while the merchant snapshot is still staged, then
     // publish the merchant. On a failed human compare-and-set the merchant
     // inventory is left untouched.
-    if (!offer->humanCredit.IsEmpty()) {
+    std::string finalStamp = offer->preparedFinalReceipt;
+    {
       bool credited = false;
       try {
         credited = human.CompareAndSetInventory(offer->humanAfterDebit,
                                                  offer->submittedReceipt,
                                                  humanNext, creditSequence);
       } catch (const std::exception& error) {
+        offer->state = State::Refused;
         result.reason = error.what();
         return result;
       }
@@ -261,15 +340,55 @@ public:
     } catch (const std::exception& error) {
       result.reason = error.what();
       offer->reason = result.reason;
+      offer->state = State::Refused;
       return result;
     }
-
-    offer->state = State::Durable;
-    UnlockPair(offer->humanFormId, offer->merchantFormId);
+    offer->finalReceipt = std::move(finalStamp);
+    offer->state = State::AwaitingSave;
     result.ok = true;
     return result;
   }
 
+private:
+  friend class WorldState;
+  // A receipt alone does not acknowledge the NPC. Only a submitted batch
+  // containing BOTH final snapshots may complete this transfer.
+  std::vector<uint64_t> CaptureSubmittedBatch(
+    const std::vector<std::optional<MpChangeForm>>& forms) const
+  {
+    std::vector<uint64_t> ids;
+    for (const auto& offer : offers) {
+      if (offer.finalReceipt.empty() || offer.state != State::AwaitingSave) continue;
+      bool humanSaved = false, merchantSaved = false;
+      for (const auto& form : forms) {
+        if (!form) continue;
+        if (form->formDesc == offer.humanDesc && form->profileId == offer.humanProfileId &&
+            form->dynamicFields.GetValueDump(MpObjectReference::kInventoryReceiptProperty) == offer.finalReceipt &&
+            form->inv.ToJson() == offer.humanAfterCredit.ToJson()) humanSaved = true;
+        if (form->formDesc == offer.merchantDesc && form->profileId <= 0 &&
+            form->inv.ToJson() == offer.merchantAfter.ToJson()) merchantSaved = true;
+      }
+      if (humanSaved && merchantSaved) ids.push_back(offer.id);
+    }
+    return ids;
+  }
+
+  void AcknowledgeSubmittedBatch(const std::vector<uint64_t>& ids)
+  {
+    for (auto id : ids) {
+      auto* offer = FindMutable(id);
+      if (!offer || offer->finalReceipt.empty() || offer->state != State::AwaitingSave) continue;
+      auto form = offer->humanIdentity.lock();
+      auto human = form ? form->AsActor() : nullptr;
+      auto merchantForm = offer->merchantIdentity.lock();
+      auto merchant = merchantForm ? merchantForm->AsObjectReference() : nullptr;
+      if (!human || !MatchesHuman(*offer, *human) || !merchant || !MatchesMerchant(*offer, *merchant)) continue;
+      offer->state = State::Durable;
+      UnlockPair(offer->humanFormId, offer->merchantFormId);
+    }
+  }
+
+public:
   Result Refuse(uint64_t offerId, const std::string& reason)
   {
     return Hold(offerId, State::Refused, reason);
@@ -290,7 +409,11 @@ public:
       result.reason = "offer was not found";
       return result;
     }
-    UnlockPair(it->humanFormId, it->merchantFormId);
+    if (it->debitAttempted && it->state != State::Durable) {
+      result.reason = "an applied debit requires durable settlement before forgetting";
+      return result;
+    }
+    if (it->state != State::Durable) UnlockPair(it->humanFormId, it->merchantFormId);
     offers.erase(it);
     result.ok = true;
     return result;
@@ -325,7 +448,7 @@ public:
 private:
   static bool CountsTowardCap(State state)
   {
-    return state == State::Pending || state == State::Quarantined ||
+    return state == State::Pending || state == State::Quarantined || state == State::AwaitingSave ||
       state == State::Refused || state == State::Offline;
   }
 
@@ -350,7 +473,8 @@ private:
         return false;
       }
     }
-    if (inventory.ToJson().dump().size() > 128 * 1024) {
+    const auto json = inventory.ToJson();
+    if (json.dump().size() > 128 * 1024 || Inventory::FromJson(json).ToJson() != json) {
       reason = "transfer inventory exceeds 128 KiB";
       return false;
     }
@@ -449,6 +573,23 @@ private:
     return nullptr;
   }
 
+  bool MatchesHuman(const Offer& offer, MpActor& human) const
+  {
+    return offer.humanFormId == human.GetFormId() &&
+      offer.humanProfileId == human.GetProfileId() &&
+      offer.humanIdentity.lock().get() == &human && human.GetParent() == &worldState &&
+      identity(human.GetFormId()).lock().get() == &human;
+  }
+
+  bool MatchesMerchant(const Offer& offer, MpObjectReference& merchant) const
+  {
+    auto actor = merchant.AsActor();
+    return actor && actor->GetProfileId() <= 0 && actor->IsServerControlled() &&
+      merchant.GetParent() == &worldState && offer.merchantFormId == merchant.GetFormId() &&
+      offer.merchantIdentity.lock().get() == &merchant &&
+      identity(merchant.GetFormId()).lock().get() == &merchant;
+  }
+
   Result Hold(uint64_t offerId, State state, const std::string& reason)
   {
     Result result;
@@ -468,6 +609,7 @@ private:
 
   WorldState& worldState;
   std::function<std::string(MpObjectReference&)> savedReceipt;
+  std::function<std::weak_ptr<MpForm>(uint32_t)> identity;
   std::vector<Offer> offers;
   std::vector<uint32_t> locks;
   uint64_t nextOfferId = 1;

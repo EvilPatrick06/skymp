@@ -40,6 +40,7 @@ struct RelootTimeForTypesEntry
 
 struct WorldState::Impl
 {
+  std::shared_ptr<MerchantTransferController> merchantTransfers;
   using ReceiptKey = std::pair<FormDesc, int32_t>;
   struct SavedReceipt
   {
@@ -71,7 +72,11 @@ struct WorldState::Impl
   std::unordered_set<uint32_t> npcPlacementExclusions;
 };
 
-inline WorldState::~WorldState() = default;
+WorldState::~WorldState()
+{
+  pImpl->merchantTransfers.reset();
+  pImpl->savedInventoryReceipts.clear();
+}
 
 WorldState::WorldState()
   : worldStartTime(std::chrono::steady_clock::now())
@@ -80,14 +85,14 @@ WorldState::WorldState()
 
   pImpl.reset(new Impl);
   pImpl->policy = PapyrusCompatibilityPolicyFactory::Create(this);
-  merchantTransfers = std::make_unique<MerchantTransferController>(*this);
+  pImpl->merchantTransfers = std::make_shared<MerchantTransferController>(*this);
 }
 
 void WorldState::Clear()
 {
   pImpl->savedInventoryReceipts.clear();
-  if (merchantTransfers) {
-    merchantTransfers = std::make_unique<MerchantTransferController>(*this);
+  if (pImpl->merchantTransfers) {
+    pImpl->merchantTransfers = std::make_shared<MerchantTransferController>(*this);
   }
   forms.clear();
   grids.clear();
@@ -768,11 +773,11 @@ void WorldState::ForgetInventoryReceipt(MpObjectReference& ref)
 
 MerchantTransferController& WorldState::GetMerchantTransfers()
 {
-  if (!merchantTransfers) {
-    merchantTransfers = std::make_unique<MerchantTransferController>(*this);
+  if (!pImpl->merchantTransfers) {
+    pImpl->merchantTransfers = std::make_shared<MerchantTransferController>(*this);
   }
-  merchantTransfers->UseParentSavedReceipt(*this);
-  return *merchantTransfers;
+  pImpl->merchantTransfers->UseParentSavedReceipt(*this);
+  return *pImpl->merchantTransfers;
 }
 
 std::string WorldState::GetSavedInventoryReceipt(MpObjectReference& ref)
@@ -856,14 +861,18 @@ void WorldState::TickSaveStorage(const std::chrono::system_clock::time_point&)
   auto pImpl_ = pImpl;
 
   auto previousSize = pImpl->changesByIdx.size();
+  std::vector<std::weak_ptr<MpForm>> submittedForms;
 
   try {
     // Metadata belongs to this submitted snapshot, not the actor's later state.
     std::vector<std::pair<Impl::ReceiptKey, Impl::SavedReceipt>> receipts;
     for (const auto& changeForm : pImpl->changesByIdx) {
-      if (!changeForm || changeForm->profileId <= 0) {
+      if (!changeForm) {
         continue;
       }
+      auto live = forms.find(changeForm->formDesc.ToFormId(espmFiles));
+      if (live != forms.end()) submittedForms.push_back(live->second);
+      if (changeForm->profileId <= 0) continue;
       auto key = Impl::ReceiptKey{changeForm->formDesc, changeForm->profileId};
       auto cached = pImpl->savedInventoryReceipts.find(key);
       if (cached != pImpl->savedInventoryReceipts.end()) {
@@ -872,8 +881,10 @@ void WorldState::TickSaveStorage(const std::chrono::system_clock::time_point&)
         receipts.push_back({key, {dump, cached->second.form}});
       }
     }
+    std::weak_ptr<MerchantTransferController> controller = pImpl->merchantTransfers;
+    auto transfers = pImpl->merchantTransfers->CaptureSubmittedBatch(pImpl->changesByIdx);
     pImpl->saveStorage->Upsert(std::move(pImpl->changesByIdx),
-      [pImpl_, receipts = std::move(receipts)] {
+      [pImpl_, receipts = std::move(receipts), controller, transfers = std::move(transfers)] {
         pImpl_->saveStorageBusy = false;
         for (const auto& saved : receipts) {
           auto current = pImpl_->savedInventoryReceipts.find(saved.first);
@@ -885,11 +896,23 @@ void WorldState::TickSaveStorage(const std::chrono::system_clock::time_point&)
             current->second.dump = saved.second.dump;
           }
         }
+        if (auto current = controller.lock()) current->AcknowledgeSubmittedBatch(transfers);
       });
     pImpl->changesByIdxEmpty = true;
   } catch (std::exception& e) {
     pImpl->saveStorageBusy = false;
     spdlog::error("TickSaveStorage - Upsert failed with {}", e.what());
+    // Upsert may consume the rvalue buffer before throwing. Reconstruct
+    // current snapshots for the submitted identities; retain any buffer
+    // contents if failure happened before the move. Do not clear retries.
+    for (auto& submitted : submittedForms) {
+      auto form = submitted.lock();
+      if (!form) continue;
+      auto current = forms.find(form->GetFormId());
+      auto ref = form->AsObjectReference();
+      if (ref && current != forms.end() && current->second == form) RequestSave(*ref);
+    }
+    return;
   }
 
   pImpl->changesByIdx.clear();
