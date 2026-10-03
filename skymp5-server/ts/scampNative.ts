@@ -10,6 +10,16 @@ export type SendChatMessageFn = (
   message: Record<string, unknown>
 ) => void;
 
+export interface InventorySnapshot {
+  entries: {
+    baseId: number; count: number;
+    health?: number; enchantmentId?: number; maxCharge?: number;
+    removeEnchantmentOnUnequip?: boolean; chargePercent?: number;
+    name?: string; soul?: number; poisonId?: number; poisonCount?: number;
+    worn?: boolean; wornLeft?: boolean;
+  }[];
+}
+
 export interface ScampServer {
   on(event: "connect", handler: (userId: number) => void): void;
   on(event: "disconnect", handler: (userId: number) => void): void;
@@ -19,6 +29,11 @@ export interface ScampServer {
   ): void;
   attachSaveStorage(): void;
   tick(): void;
+  compareAndSetInventory(formId: number, expected: InventorySnapshot,
+    expectedReceipt: string, replacement: InventorySnapshot, sequence: number,
+    expectedProfileId: number): boolean;
+  getInventoryReceipt(formId: number): string;
+  getSavedInventoryReceipt(formId: number): string;
   prepareNpcLoad(): number;
   loadNpcBatch(cursor: number, limit: number): {
     nextCursor: number;
@@ -33,6 +48,7 @@ export interface ScampServer {
   getNpcAIState(formId: number): {
     pos: number[]; rot: number[]; cellOrWorld: number;
     isDead: boolean; isDisabled: boolean; isHuman: boolean; isConnected: boolean;
+    profileId: number;
     isServerControlled: boolean; lifeGeneration: number; difficultyTier: number;
     meleeReach: number; meleeAllowance: number;
     canSwim: boolean; canFly: boolean; immobile: boolean;
