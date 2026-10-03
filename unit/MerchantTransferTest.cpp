@@ -26,6 +26,7 @@ public:
   UpsertCallback completion;
   bool ready = false;
   bool fail = false;
+  bool failSubmission = false;
   uint32_t writes = 0;
 
   ~ControlledFileStorage() { std::filesystem::remove_all(root); }
@@ -37,6 +38,11 @@ public:
               const UpsertCallback& cb) override
   {
     REQUIRE_FALSE(static_cast<bool>(completion));
+    if (failSubmission) {
+      failSubmission = false;
+      auto consumed = std::move(forms);
+      throw std::runtime_error("injected submission failure after consuming buffer");
+    }
     pending = std::move(forms);
     completion = cb;
   }
@@ -113,6 +119,9 @@ void AttachSkyrimFiles(PartOne& server)
 
 MpActor& AddHuman(PartOne& server, uint32_t formId)
 {
+  if (!server.HasEspm()) {
+    AttachSkyrimFiles(server);
+  }
   server.CreateActor(formId, { 1, 1, 1 }, 0, 0x3c, 42);
   auto& actor = server.worldState.GetFormAt<MpActor>(formId);
   actor.SetInventory(Purse(40));
@@ -303,12 +312,13 @@ TEST_CASE("UnlockOnEveryFailureIncludingThrownSave", "[merchant-transfer]")
   auto humanBefore = human.GetInventory().ToJson();
   auto merchantBefore = merchant.GetInventory().ToJson();
   auto& transfers = server.worldState.GetMerchantTransfers();
-  auto began = BeginTransfer(transfers, human, merchant, 10, 1, 0);
+  auto began = BeginTransfer(transfers, human, merchant, 10, 1, 1);
   REQUIRE(began.ok);
   REQUIRE(transfers.IsLocked(human.GetFormId()));
+  human.SetInventory(Purse(1));
   auto committed = transfers.CommitHumanDebit(human, began.offerId);
   REQUIRE_FALSE(committed.ok);
-  REQUIRE(human.GetInventory().ToJson() == humanBefore);
+  REQUIRE(human.GetInventory().GetItemCount(kGold) == 1);
   REQUIRE(merchant.GetInventory().ToJson() == merchantBefore);
   auto offer = transfers.Find(began.offerId);
   REQUIRE(offer);
@@ -317,6 +327,7 @@ TEST_CASE("UnlockOnEveryFailureIncludingThrownSave", "[merchant-transfer]")
   REQUIRE_FALSE(transfers.IsLocked(human.GetFormId()));
   REQUIRE_FALSE(transfers.IsLocked(merchant.GetFormId()));
   REQUIRE_FALSE(transfers.Find(began.offerId));
+  human.SetInventory(Purse(40));
 
   AttachSkyrimFiles(server);
   auto storage = std::make_shared<ControlledFileStorage>();
@@ -331,9 +342,9 @@ TEST_CASE("UnlockOnEveryFailureIncludingThrownSave", "[merchant-transfer]")
   REQUIRE_FALSE(transfers.IsHumanDebitDurable(human, again.offerId));
   REQUIRE(merchant.GetInventory().ToJson() == merchantBefore);
   REQUIRE(transfers.IsLocked(human.GetFormId()));
-  REQUIRE(transfers.Forget(again.offerId).ok);
-  REQUIRE_FALSE(transfers.IsLocked(human.GetFormId()));
-  REQUIRE_FALSE(transfers.IsLocked(merchant.GetFormId()));
+  REQUIRE_FALSE(transfers.Forget(again.offerId).ok);
+  REQUIRE(transfers.IsLocked(human.GetFormId()));
+  REQUIRE(transfers.IsLocked(merchant.GetFormId()));
 }
 
 TEST_CASE("IncomingCreditsStayQuarantinedUntilMatchingDebitIsDurable",
@@ -368,10 +379,13 @@ TEST_CASE("IncomingCreditsStayQuarantinedUntilMatchingDebitIsDurable",
   REQUIRE(merchant.GetInventory().GetItemCount(kGoods) == 0);
   auto offer = transfers.Find(began.offerId);
   REQUIRE(offer);
+  REQUIRE(offer->state == MerchantTransferController::State::AwaitingSave);
+  CompleteSave(server, *storage);
+  offer = transfers.Find(began.offerId);
   REQUIRE(offer->state == MerchantTransferController::State::Durable);
 }
 
-TEST_CASE("FailedOrPartialWriteDoesNotCreditPayeeWhilePayerUnchanged",
+TEST_CASE("InsufficientHumanFundsRefuseBeforePreparation",
           "[merchant-transfer]")
 {
   PartOne server;
@@ -381,16 +395,12 @@ TEST_CASE("FailedOrPartialWriteDoesNotCreditPayeeWhilePayerUnchanged",
   auto merchantBefore = merchant.GetInventory().ToJson();
   auto& transfers = server.worldState.GetMerchantTransfers();
   auto began = BeginTransfer(transfers, human, merchant, 100, 1, 1);
-  REQUIRE(began.ok);
-  auto committed = transfers.CommitHumanDebit(human, began.offerId);
-  REQUIRE_FALSE(committed.ok);
+  REQUIRE_FALSE(began.ok);
   REQUIRE(human.GetInventory().ToJson() == humanBefore);
   REQUIRE(merchant.GetInventory().ToJson() == merchantBefore);
   REQUIRE(human.GetInventory().GetItemCount(kGoods) == 0);
   REQUIRE(merchant.GetInventory().GetItemCount(kGold) == 250);
-  auto offer = transfers.Find(began.offerId);
-  REQUIRE(offer);
-  REQUIRE(offer->state == MerchantTransferController::State::Pending);
+  REQUIRE_FALSE(transfers.Find(began.offerId));
 }
 
 TEST_CASE("MerchantChangeJoinsSameFileDatabaseBatchUpsertAsHuman",
@@ -415,6 +425,10 @@ TEST_CASE("MerchantChangeJoinsSameFileDatabaseBatchUpsertAsHuman",
   REQUIRE(PendingHasForm(*storage, merchant.GetChangeForm().formDesc));
   auto offer = transfers.Find(began.offerId);
   REQUIRE(offer);
+  REQUIRE(offer->state == MerchantTransferController::State::AwaitingSave);
+  storage->Commit();
+  server.Tick();
+  offer = transfers.Find(began.offerId);
   REQUIRE(offer->state == MerchantTransferController::State::Durable);
 }
 
@@ -438,9 +452,12 @@ TEST_CASE("MerchantDurabilityAckIsBatchUpsertCompletionNotInventoryReceipt",
   REQUIRE(merchant.GetChangeForm().dynamicFields.GetValueDump(
             MpObjectReference::kInventoryReceiptProperty) == "null");
   REQUIRE(human.GetInventoryReceiptDump() != "null");
-  REQUIRE_FALSE(transfers.IsLocked(merchant.GetFormId()));
+  REQUIRE(transfers.IsLocked(merchant.GetFormId()));
   auto offer = transfers.Find(began.offerId);
   REQUIRE(offer);
+  REQUIRE(offer->state == MerchantTransferController::State::AwaitingSave);
+  CompleteSave(server, *storage);
+  offer = transfers.Find(began.offerId);
   REQUIRE(offer->state == MerchantTransferController::State::Durable);
 }
 
@@ -537,7 +554,7 @@ TEST_CASE("MerchantAckStampIsNotInventoryReceiptProperty",
   REQUIRE(merchant.GetInventoryReceiptDump() == "null");
   REQUIRE(merchant.GetChangeForm().dynamicFields.GetValueDump(
             MpObjectReference::kInventoryReceiptProperty) == "null");
-  REQUIRE(server.worldState.GetSavedInventoryReceipt(merchant) == "null");
+  REQUIRE_THROWS(server.worldState.GetSavedInventoryReceipt(merchant));
   REQUIRE(human.GetInventoryReceiptDump() != "null");
   auto offer = transfers.Find(began.offerId);
   REQUIRE(offer);
@@ -661,4 +678,270 @@ TEST_CASE("RefusedOfferStaysPendingAndStillCountsTowardCapUntilDropped",
   REQUIRE(transfers.PendingCount() == 25);
   REQUIRE(transfers.Find(keptId)->state ==
           MerchantTransferController::State::Refused);
+}
+
+TEST_CASE("AppliedMerchantDebitCannotBeForgotten", "[merchant-transfer-regression]")
+{
+  PartOne server;
+  auto& human = AddHuman(server, 0xff000abc);
+  auto& merchant = AddMerchant(server, 0xff000def);
+  auto& transfers = server.worldState.GetMerchantTransfers();
+  auto began = BeginTransfer(transfers, human, merchant, 10, 1, 1);
+  REQUIRE(began.ok);
+  REQUIRE(transfers.CommitHumanDebit(human, began.offerId).ok);
+  SECTION("quarantined") {}
+  SECTION("refused") { REQUIRE(transfers.Refuse(began.offerId, "save failed").ok); }
+  SECTION("offline") { REQUIRE(transfers.MarkOffline(began.offerId).ok); }
+  REQUIRE_FALSE(transfers.Forget(began.offerId).ok);
+  REQUIRE(transfers.Find(began.offerId));
+  REQUIRE(transfers.IsLocked(human.GetFormId()));
+  REQUIRE(transfers.IsLocked(merchant.GetFormId()));
+  REQUIRE(transfers.PendingCount() == 1);
+}
+
+TEST_CASE("MerchantAvailabilityIsCheckedBeforeHumanDebit", "[merchant-transfer-regression]")
+{
+  PartOne server;
+  auto& human = AddHuman(server, 0xff000abc);
+  auto& merchant = AddMerchant(server, 0xff000def);
+  auto& transfers = server.worldState.GetMerchantTransfers();
+  SECTION("empty shelf") { merchant.SetInventory(Purse(250)); }
+  SECTION("cannot reserve final sequence") {}
+  const uint64_t sequence = merchant.GetInventory().GetItemCount(kGoods) == 0
+    ? 1 : MerchantTransferController::kMaxSequence;
+  REQUIRE_FALSE(BeginTransfer(transfers, human, merchant, 10, 1, sequence).ok);
+  REQUIRE(human.GetInventory().GetItemCount(kGold) == 40);
+  REQUIRE(human.GetInventoryReceiptDump() == "null");
+  REQUIRE(transfers.PendingCount() == 0);
+  REQUIRE_FALSE(transfers.IsLocked(human.GetFormId()));
+}
+
+TEST_CASE("MerchantTransferCannotDebitReplacementProfile", "[merchant-transfer-regression]")
+{
+  PartOne server;
+  auto& human = AddHuman(server, 0xff000abc);
+  auto& merchant = AddMerchant(server, 0xff000def);
+  auto& transfers = server.worldState.GetMerchantTransfers();
+  auto began = BeginTransfer(transfers, human, merchant, 10, 1, 1);
+  REQUIRE(began.ok);
+  auto changed = human.GetChangeForm();
+  changed.profileId = 43;
+  human.ApplyChangeForm(changed);
+  REQUIRE_FALSE(transfers.CommitHumanDebit(human, began.offerId).ok);
+  REQUIRE(human.GetInventory().GetItemCount(kGold) == 40);
+  REQUIRE(human.GetInventoryReceiptDump() == "null");
+}
+
+TEST_CASE("MerchantTransferCannotUseHumanAsMerchant", "[merchant-transfer-regression]")
+{
+  PartOne server;
+  auto& human = AddHuman(server, 0xff000abc);
+  auto& otherHuman = AddHuman(server, 0xff000def);
+  auto& transfers = server.worldState.GetMerchantTransfers();
+  REQUIRE_FALSE(BeginTransfer(transfers, human, otherHuman, 10, 0, 1).ok);
+  REQUIRE(transfers.PendingCount() == 0);
+}
+
+TEST_CASE("MerchantFinalSaveKeepsBothActorsLocked", "[merchant-transfer-regression]")
+{
+  PartOne server;
+  AttachSkyrimFiles(server);
+  auto storage = std::make_shared<ControlledFileStorage>();
+  server.AttachSaveStorage(storage);
+  auto& human = AddHuman(server, 0xff000abc);
+  auto& merchant = AddMerchant(server, 0xff000def);
+  auto& transfers = server.worldState.GetMerchantTransfers();
+  auto began = BeginTransfer(transfers, human, merchant, 10, 1, 1);
+  REQUIRE(began.ok);
+  REQUIRE(transfers.CommitHumanDebit(human, began.offerId).ok);
+  CompleteSave(server, *storage);
+  REQUIRE(transfers.ReleaseQuarantine(human, merchant, began.offerId).ok);
+  REQUIRE(transfers.Find(began.offerId)->state != MerchantTransferController::State::Durable);
+  REQUIRE(transfers.IsLocked(human.GetFormId()));
+  REQUIRE(transfers.IsLocked(merchant.GetFormId()));
+  REQUIRE(transfers.PendingCount() == 1);
+}
+
+TEST_CASE("SynchronousSubmissionFailureRetriesMerchantDebit", "[merchant-submit-regression]")
+{
+  PartOne server;
+  auto storage = std::make_shared<ControlledFileStorage>();
+  AttachSkyrimFiles(server);
+  server.AttachSaveStorage(storage);
+  auto& human = AddHuman(server, 0xff000abc);
+  auto& merchant = AddMerchant(server, 0xff000def);
+  auto& transfers = server.worldState.GetMerchantTransfers();
+  auto began = BeginTransfer(transfers, human, merchant, 10, 1, 1);
+  REQUIRE(began.ok);
+  REQUIRE(transfers.CommitHumanDebit(human, began.offerId).ok);
+  storage->failSubmission = true;
+  server.Tick();
+  REQUIRE_FALSE(static_cast<bool>(storage->completion));
+  server.Tick();
+  REQUIRE(static_cast<bool>(storage->completion));
+  storage->Commit();
+  server.Tick();
+  REQUIRE(transfers.IsHumanDebitDurable(human, began.offerId));
+}
+
+TEST_CASE("PruningCompletedTradePreservesNewTradeLocks", "[merchant-review-regression]")
+{
+  PartOne server;
+  auto storage = std::make_shared<ControlledFileStorage>();
+  AttachSkyrimFiles(server);
+  server.AttachSaveStorage(storage);
+  auto& human = AddHuman(server, 0xff000abc);
+  auto& merchant = AddMerchant(server, 0xff000def);
+  auto& transfers = server.worldState.GetMerchantTransfers();
+  auto first = BeginTransfer(transfers, human, merchant, 10, 1, 1);
+  REQUIRE(first.ok);
+  REQUIRE(transfers.CommitHumanDebit(human, first.offerId).ok);
+  CompleteSave(server, *storage);
+  REQUIRE(transfers.ReleaseQuarantine(human, merchant, first.offerId).ok);
+  CompleteSave(server, *storage);
+  auto second = BeginTransfer(transfers, human, merchant, 1, 0, 3);
+  REQUIRE(second.ok);
+  REQUIRE(transfers.Forget(first.offerId).ok);
+  REQUIRE(transfers.IsLocked(human.GetFormId()));
+  REQUIRE(transfers.IsLocked(merchant.GetFormId()));
+  REQUIRE_FALSE(BeginTransfer(transfers, human, merchant, 1, 0, 3).ok);
+}
+
+TEST_CASE("ChangedMerchantCannotStrandHumanDebit", "[merchant-review-regression]")
+{
+  PartOne server;
+  auto& human = AddHuman(server, 0xff000abc);
+  auto& merchant = AddMerchant(server, 0xff000def);
+  auto& transfers = server.worldState.GetMerchantTransfers();
+  auto began = BeginTransfer(transfers, human, merchant, 10, 1, 1);
+  REQUIRE(began.ok);
+  merchant.SetInventory(Purse(250));
+  REQUIRE_FALSE(transfers.CommitHumanDebit(human, began.offerId).ok);
+  REQUIRE(human.GetInventory().GetItemCount(kGold) == 40);
+  REQUIRE(human.GetInventoryReceiptDump() == "null");
+}
+
+TEST_CASE("OldCallbackCannotAcknowledgeReplacementMerchant", "[merchant-review-regression]")
+{
+  PartOne server;
+  auto storage = std::make_shared<ControlledFileStorage>();
+  AttachSkyrimFiles(server);
+  server.AttachSaveStorage(storage);
+  auto& human = AddHuman(server, 0xff000abc);
+  auto& merchant = AddMerchant(server, 0xff000def);
+  auto& transfers = server.worldState.GetMerchantTransfers();
+  auto began = BeginTransfer(transfers, human, merchant, 10, 1, 1);
+  REQUIRE(began.ok);
+  REQUIRE(transfers.CommitHumanDebit(human, began.offerId).ok);
+  CompleteSave(server, *storage);
+  REQUIRE(transfers.ReleaseQuarantine(human, merchant, began.offerId).ok);
+  server.Tick();
+  REQUIRE(static_cast<bool>(storage->completion));
+  std::shared_ptr<MpActor> retained;
+  server.worldState.DestroyForm<MpActor>(merchant.GetFormId(), &retained);
+  auto& replacement = AddMerchant(server, 0xff000def);
+  REQUIRE(retained.get() != &replacement);
+  storage->Commit();
+  server.Tick();
+  REQUIRE(transfers.Find(began.offerId)->state != MerchantTransferController::State::Durable);
+  REQUIRE(transfers.IsLocked(replacement.GetFormId()));
+}
+
+TEST_CASE("FailedNotificationCannotHideAppliedMerchantDebit", "[merchant-notify-regression]")
+{
+  bool failNotification = false;
+  PartOne server;
+  AttachSkyrimFiles(server);
+  auto callbacks = server.CreateFormCallbacks();
+  callbacks.sendToUserDeferred = [&](auto, auto&, auto, auto, auto) {
+    if (failNotification) throw std::runtime_error("injected notification failure");
+  };
+  auto actor = std::make_unique<MpActor>(
+    LocationalData{{1,1,1},{0,0,0},FormDesc::FromFormId(0x3c,server.worldState.espmFiles)},
+    callbacks, 0x7);
+  server.worldState.AddForm(std::move(actor), 0xff000abc);
+  auto& human = server.worldState.GetFormAt<MpActor>(0xff000abc);
+  auto form = human.GetChangeForm();
+  form.profileId = 42;
+  human.ApplyChangeForm(form);
+  human.SetInventory(Purse(40));
+  auto& merchant = AddMerchant(server, 0xff000def);
+  auto& transfers = server.worldState.GetMerchantTransfers();
+  auto began = BeginTransfer(transfers, human, merchant, 10, 1, 1);
+  REQUIRE(began.ok);
+  failNotification = true;
+  REQUIRE_FALSE(transfers.CommitHumanDebit(human, began.offerId).ok);
+  REQUIRE(human.GetInventory().GetItemCount(kGold) == 30);
+  REQUIRE(human.GetInventoryReceiptDump() != "null");
+  REQUIRE_FALSE(transfers.Forget(began.offerId).ok);
+  REQUIRE(transfers.IsLocked(human.GetFormId()));
+  REQUIRE(transfers.IsLocked(merchant.GetFormId()));
+}
+
+TEST_CASE("FreeMerchantOfferStillSavesBothSides", "[merchant-free-regression]")
+{
+  PartOne server;
+  auto storage = std::make_shared<ControlledFileStorage>();
+  AttachSkyrimFiles(server);
+  server.AttachSaveStorage(storage);
+  auto& human = AddHuman(server, 0xff000abc);
+  auto& merchant = AddMerchant(server, 0xff000def);
+  auto& transfers = server.worldState.GetMerchantTransfers();
+  auto began = transfers.Begin(human, merchant, Inventory{}, Goods(1),
+    human.GetInventory(), human.GetInventoryReceiptDump(), 1);
+  REQUIRE(began.ok);
+  REQUIRE(transfers.CommitHumanDebit(human, began.offerId).ok);
+  CompleteSave(server, *storage);
+  REQUIRE(transfers.ReleaseQuarantine(human, merchant, began.offerId).ok);
+  REQUIRE(transfers.IsLocked(merchant.GetFormId()));
+  CompleteSave(server, *storage);
+  REQUIRE(transfers.Find(began.offerId)->state == MerchantTransferController::State::Durable);
+  REQUIRE(human.GetInventory().GetItemCount(kGold) == 40);
+  REQUIRE(merchant.GetInventory().GetItemCount(kGold) == 250);
+  REQUIRE(human.GetInventory().GetItemCount(kGoods) == 1);
+  REQUIRE(merchant.GetInventory().GetItemCount(kGoods) == 0);
+}
+
+TEST_CASE("LateMerchantCallbackDoesNotUseDestroyedWorld", "[merchant-lifetime-regression]")
+{
+  // Poison destroyed owner storage so any dangling-world access is visible.
+  alignas(WorldState) std::array<std::byte, sizeof(WorldState)> memory;
+  auto world = std::unique_ptr<WorldState, std::function<void(WorldState*)>>(
+    new(memory.data()) WorldState, [](WorldState* value) { value->~WorldState(); });
+  world->AttachEspm(&GetEspmLoader(), [] { return FormCallbacks::DoNothing(); });
+  world->npcEnabled = true;
+  world->npcAllowEssential = true;
+  world->npcAllowCrimeFaction = true;
+  auto storage = std::make_shared<ControlledFileStorage>();
+  world->AttachSaveStorage(storage);
+  const auto location = LocationalData{{1,1,1},{0,0,0},FormDesc::FromFormId(0x3c,world->espmFiles)};
+  world->AddForm(std::make_unique<MpActor>(location, FormCallbacks::DoNothing(), 0x7), 0xff000abc);
+  auto humanOwner = world->LookupFormByIdNoLoad(0xff000abc);
+  auto& human = *humanOwner->AsActor();
+  auto humanForm = human.GetChangeForm();
+  humanForm.profileId = 42;
+  human.ApplyChangeForm(humanForm);
+  human.SetInventory(Purse(40));
+  auto hulda = world->LookupFormById(0x1a66e);
+  REQUIRE(hulda);
+  world->AddForm(std::make_unique<MpActor>(location, FormCallbacks::DoNothing(),
+    hulda->AsActor()->GetBaseId()), 0xff000def);
+  auto merchantOwner = world->LookupFormByIdNoLoad(0xff000def);
+  auto& merchant = *merchantOwner->AsActor();
+  merchant.SetServerControlled(true);
+  merchant.SetInventory(MerchantStock());
+  auto& transfers = world->GetMerchantTransfers();
+  auto began = BeginTransfer(transfers, human, merchant, 10, 1, 1);
+  REQUIRE(began.ok);
+  REQUIRE(transfers.CommitHumanDebit(human, began.offerId).ok);
+  world->Tick();
+  storage->Commit();
+  world->Tick();
+  REQUIRE(transfers.ReleaseQuarantine(human, merchant, began.offerId).ok);
+  world->Tick();
+  storage->Commit();
+  world.reset();
+  std::fill(memory.begin(), memory.end(), std::byte{0xcd});
+  REQUIRE_NOTHROW(storage->Tick());
+  REQUIRE_FALSE(static_cast<bool>(storage->completion));
 }
