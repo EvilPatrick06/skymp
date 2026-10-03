@@ -32,12 +32,14 @@
 #include <cctype>
 #include <cmath>
 #include <database_drivers/DatabaseFactory.h>
+#include <limits>
 #include <memory>
 #include <napi.h>
 #include <prometheus/core.h>
 #include <save_storages/SaveStorageFactory.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <sstream>
+#include <string_view>
 
 enum class CallType
 {
@@ -113,6 +115,11 @@ Napi::Object ScampServer::Init(Napi::Env env, Napi::Object exports)
       InstanceMethod("makeEventSource", &ScampServer::MakeEventSource),
       InstanceMethod("get", &ScampServer::Get),
       InstanceMethod("set", &ScampServer::Set),
+      InstanceMethod("compareAndSetInventory",
+                     &ScampServer::CompareAndSetInventory),
+      InstanceMethod("getInventoryReceipt", &ScampServer::GetInventoryReceipt),
+      InstanceMethod("getSavedInventoryReceipt",
+                     &ScampServer::GetSavedInventoryReceipt),
       InstanceMethod("place", &ScampServer::Place),
       InstanceMethod("lookupEspmRecordById",
                      &ScampServer::LookupEspmRecordById),
@@ -548,6 +555,130 @@ Napi::Value ScampServer::AttachSaveStorage(const Napi::CallbackInfo& info)
     throw Napi::Error::New(info.Env(), (std::string)e.what());
   }
   return info.Env().Undefined();
+}
+
+namespace {
+uint32_t InventoryActorId(const Napi::Value& value)
+{
+  const auto number = NapiHelper::ExtractDouble(value, "formId");
+  if (!std::isfinite(number) || std::floor(number) != number || number <= 0 ||
+      number > 0xffffffffu) {
+    throw std::runtime_error("formId must be a positive uint32 integer");
+  }
+  return static_cast<uint32_t>(number);
+}
+
+Inventory InventorySnapshot(const Napi::Value& value)
+{
+  const auto dump = NapiHelper::Stringify(value.Env(), value);
+  if (dump.size() > 128 * 1024) {
+    throw std::runtime_error("Inventory snapshot exceeds 128 KiB");
+  }
+  const auto json = nlohmann::json::parse(dump);
+  if (!json.is_object() || !json.contains("entries") ||
+      !json.at("entries").is_array()) {
+    throw std::runtime_error("Invalid inventory snapshot");
+  }
+  for (const auto& entry : json["entries"]) {
+    if (!entry.is_object()) {
+      throw std::runtime_error("Inventory entries must be objects");
+    }
+    for (const auto* field : { "baseId", "count", "enchantmentId", "poisonId",
+                               "poisonCount", "soul" }) {
+      if (!entry.contains(field)) {
+        if (std::string_view(field) == "baseId" ||
+            std::string_view(field) == "count") {
+          throw std::runtime_error(
+            "Inventory entries require baseId and count");
+        }
+        continue;
+      }
+      const auto& number = entry[field];
+      const auto maximum =
+        std::string_view(field) == "soul" ? 255u : 0xffffffffu;
+      if (!number.is_number_integer() || number < 0 || number > maximum) {
+        throw std::runtime_error(
+          "Inventory integer is outside its native range");
+      }
+    }
+    for (const auto* field : { "health", "maxCharge", "chargePercent" }) {
+      if (entry.contains(field) &&
+          (!entry[field].is_number() ||
+           std::abs(entry[field].get<double>()) >
+             std::numeric_limits<float>::max())) {
+        throw std::runtime_error(
+          "Inventory number is outside its native float range");
+      }
+    }
+  }
+  auto inventory = Inventory::FromJson(json);
+  if (inventory.ToJson() != json) {
+    throw std::runtime_error(
+      "Inventory snapshot cannot be represented exactly");
+  }
+  return inventory;
+}
+}
+
+Napi::Value ScampServer::CompareAndSetInventory(const Napi::CallbackInfo& info)
+{
+  try {
+    const auto id = InventoryActorId(info[0]);
+    const auto sequence = NapiHelper::ExtractDouble(info[4], "sequence");
+    if (!std::isfinite(sequence) || std::floor(sequence) != sequence ||
+        sequence <= 0 || sequence > 9007199254740991.0) {
+      throw std::runtime_error(
+        "Inventory sequence must be a positive safe integer");
+    }
+    const auto expected = InventorySnapshot(info[1]);
+    const auto receipt = NapiHelper::ExtractString(info[2], "expectedReceipt",
+                                                   std::nullopt, { 1, 1024 });
+    const auto replacement = InventorySnapshot(info[3]);
+    const auto profile =
+      NapiHelper::ExtractDouble(info[5], "expectedProfileId");
+    if (!std::isfinite(profile) || std::floor(profile) != profile ||
+        profile <= 0 || profile > 2147483647) {
+      throw std::runtime_error(
+        "Inventory profile must be a positive int32 integer");
+    }
+    auto& actor = partOne->worldState.GetFormAt<MpActor>(id);
+    if (actor.GetProfileId() != static_cast<int32_t>(profile)) {
+      throw std::runtime_error(
+        "Inventory profile does not match the expected human");
+    }
+    const auto changed = actor.CompareAndSetInventory(
+      expected, receipt, replacement, static_cast<uint64_t>(sequence));
+    return Napi::Boolean::New(info.Env(), changed);
+  } catch (const std::exception& error) {
+    throw Napi::Error::New(info.Env(), error.what());
+  }
+}
+
+Napi::Value ScampServer::GetInventoryReceipt(const Napi::CallbackInfo& info)
+{
+  try {
+    auto& actor =
+      partOne->worldState.GetFormAt<MpActor>(InventoryActorId(info[0]));
+    if (actor.GetProfileId() <= 0) {
+      throw std::runtime_error("Inventory receipts require a human profile");
+    }
+    return Napi::String::New(info.Env(), actor.GetInventoryReceiptDump());
+  } catch (const std::exception& error) {
+    throw Napi::Error::New(info.Env(), error.what());
+  }
+}
+
+Napi::Value ScampServer::GetSavedInventoryReceipt(
+  const Napi::CallbackInfo& info)
+{
+  try {
+    auto& world = partOne->worldState;
+    auto& actor = world.GetFormAt<MpActor>(InventoryActorId(info[0]));
+    return Napi::String::New(info.Env(),
+                             world.GetSavedInventoryReceipt(actor));
+  } catch (const std::exception& error) {
+    throw Napi::Error::New(info.Env(), error.what());
+  }
 }
 
 Napi::Value ScampServer::Tick(const Napi::CallbackInfo& info)
@@ -1484,6 +1615,7 @@ Napi::Value ScampServer::GetNpcAIState(const Napi::CallbackInfo& info)
       for (size_t i = 0; i < 3; ++i) array.Set(i, point[i]);
       return array;
     };
+    result.Set("profileId", actor.GetProfileId());
     result.Set("pos", vector(actor.GetPos()));
     result.Set("rot", vector(actor.GetAngle()));
     result.Set("cellOrWorld", actor.GetCellOrWorld().ToFormId(world.espmFiles));
