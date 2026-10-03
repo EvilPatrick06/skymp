@@ -43,6 +43,14 @@ export class Spawn implements System {
           userProfileId
         );
         this.log("Creating character", actorId.toString(16));
+        // Let the gamemode persist creation and supply the outfit before the
+        // initial character packet and face menu are sent to the owner.
+        const chargen = (globalThis as typeof globalThis & {
+          __thornswoodChargen?: { created?: (id: number) => void };
+        }).__thornswoodChargen;
+        if (typeof chargen?.created === "function") {
+          chargen.created(actorId);
+        }
         ctx.svr.setUserActor(userId, actorId);
         ctx.svr.setRaceMenuOpen(actorId, true);
       }
