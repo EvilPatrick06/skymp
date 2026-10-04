@@ -130,7 +130,9 @@ Napi::Value CallNativeImpl(
           throw NullPointerException("g_callNativeArgsPtr");
         g_callNativeArgsPtr->latentCallback =
           [resolveFunctionRef](Napi::Env env, const CallNative::AnySafe& v) {
-            spdlog::info("Latent callback called");
+            // Trace, not info (Thornswood #1031): the other half of the pair
+            // with "onResult called", 1,324 more lines in the same six minutes.
+            spdlog::trace("Latent callback called");
             resolveFunctionRef->Value().Call(
               env.Undefined(),
               { SP3NativeValueCasts::GetSingleton().NativeValueToJsValue(env,
