@@ -1,7 +1,9 @@
+#include <cmath>
 #include "LoadGameApi.h"
 #include "LoadGame.h"
 #include "NullPointerException.h"
 #include "savefile/SFChangeFormNPC.h"
+#include <map>
 
 namespace {
 uint32_t RgbToAbgr(int32_t rgb)
@@ -24,21 +26,9 @@ uint32_t RgbToAbgr(int32_t rgb)
   return resultColor;
 }
 
-SaveFile_::RefID FormIdToRefId(uint32_t formId)
+SaveFile_::RefID FormIdToRefId(SaveFile_::SaveFile& save, uint32_t formId)
 {
-  std::string binType = formId >= 0x01000000 ? "10" : "01";
-  std::string binId = std::bitset<22>(formId).to_string();
-
-  std::string binSum = binType + binId;
-  std::string binByte0 = { binSum.begin(), binSum.begin() + 8 };
-  std::string binByte1 = { binSum.begin() + 8, binSum.begin() + 16 };
-  std::string binByte2 = { binSum.begin() + 16, binSum.begin() + 24 };
-
-  SaveFile_::RefID hpRefId;
-  hpRefId.byte0 = std::bitset<8>(binByte0).to_ulong();
-  hpRefId.byte1 = std::bitset<8>(binByte1).to_ulong();
-  hpRefId.byte2 = std::bitset<8>(binByte2).to_ulong();
-  return hpRefId;
+  return SaveFile_::RefID::CreateRefId(save, formId);
 }
 
 std::unique_ptr<SaveFile_::ChangeFormNPC_> CreateChangeFormNpc(
@@ -55,8 +45,8 @@ std::unique_ptr<SaveFile_::ChangeFormNPC_> CreateChangeFormNpc(
       !raceId.IsUndefined() && !raceId.IsNull()) {
     auto raceIdExtracted = NapiHelper::ExtractUInt32(raceId, "npcData.raceId");
     changeFormNpc->race = SaveFile_::ChangeFormNPC_::RaceChange();
-    changeFormNpc->race->defaultRace = FormIdToRefId(raceIdExtracted);
-    changeFormNpc->race->myRaceNow = FormIdToRefId(raceIdExtracted);
+    changeFormNpc->race->defaultRace = FormIdToRefId(*save, raceIdExtracted);
+    changeFormNpc->race->myRaceNow = FormIdToRefId(*save, raceIdExtracted);
   }
 
   // TODO: why mismatch with skyrimPlatform.ts: instead of 'npcData' this is in
@@ -92,7 +82,7 @@ std::unique_ptr<SaveFile_::ChangeFormNPC_> CreateChangeFormNpc(
         auto jHpId = headPartIdsExtracted.Get(i);
         std::string comment = fmt::format("npcData.headPartIds[{}]", i);
         auto hpId = NapiHelper::ExtractUInt32(jHpId, comment.data());
-        changeFormNpc->face->headParts.push_back(FormIdToRefId(hpId));
+        changeFormNpc->face->headParts.push_back(FormIdToRefId(*save, hpId));
       }
     }
 
@@ -113,7 +103,7 @@ std::unique_ptr<SaveFile_::ChangeFormNPC_> CreateChangeFormNpc(
         !headTextureSetId.IsUndefined() && !headTextureSetId.IsNull()) {
       auto id = NapiHelper::ExtractUInt32(headTextureSetId,
                                           "npcData.headTextureSetId");
-      changeFormNpc->face->headTextureSet = FormIdToRefId(id);
+      changeFormNpc->face->headTextureSet = FormIdToRefId(*save, id);
     }
   }
 
@@ -149,6 +139,69 @@ std::unique_ptr<std::vector<std::string>> CreateLoadOrder(
   return loadOrder;
 }
 
+double InitialInventoryInteger(Napi::Value value, double minimum, double maximum)
+{
+  if (!value.IsNumber()) throw std::runtime_error("Initial inventory value must be numeric");
+  const auto number = value.As<Napi::Number>().DoubleValue();
+  if (!std::isfinite(number) || std::trunc(number) != number || number < minimum || number > maximum)
+    throw std::runtime_error("Initial inventory value must be an integer in range");
+  return number;
+}
+
+// Initial creation accepts its complete basic starter inventory. Complex saved
+// item metadata remains on the established returning-character path.
+std::unique_ptr<std::vector<InitialInventory::Item>> CreateInitialInventory(
+  std::shared_ptr<SaveFile_::SaveFile> save, Napi::Object data)
+{
+  struct Totals { int64_t delta = 0; bool worn = false; bool left = false; };
+  std::map<uint32_t, Totals> totals;
+  auto base = RE::TESForm::LookupByID(0x7);
+  auto container = base ? base->As<RE::TESContainer>() : nullptr;
+  if (!container) throw std::runtime_error("Player base container unavailable before initial load");
+  for (uint32_t i = 0; i < container->numContainerObjects; ++i) {
+    auto entry = container->containerObjects[i];
+    if (entry && entry->obj) {
+      if (entry->obj->formID >= 0xff000000 || !entry->obj->IsInventoryObject())
+        throw std::runtime_error("Unsupported player base inventory form");
+      totals[entry->obj->formID].delta -= entry->count;
+    }
+  }
+  auto entries = NapiHelper::ExtractArray(data.Get("entries"), "initialInventory.entries");
+  if (entries.Length() > 4096) throw std::runtime_error("Excessive initial inventory");
+  for (uint32_t i = 0; i < entries.Length(); ++i) {
+    auto entry = NapiHelper::ExtractObject(entries.Get(i), "initialInventory.entry");
+    auto keys = entry.GetPropertyNames();
+    for (uint32_t j = 0; j < keys.Length(); ++j) {
+      const auto key = keys.Get(j).ToString().Utf8Value();
+      if (key != "baseId" && key != "count" && key != "worn" && key != "wornLeft")
+        throw std::runtime_error("Unsupported initial inventory metadata: " + key);
+    }
+    auto id = static_cast<uint32_t>(InitialInventoryInteger(entry.Get("baseId"), 1, UINT32_MAX));
+    auto count = static_cast<int32_t>(InitialInventoryInteger(entry.Get("count"), 1, INT32_MAX));
+    const auto item = RE::TESForm::LookupByID(id);
+    if (id >= 0xff000000 || !item || !item->IsInventoryObject() || count <= 0)
+      throw std::runtime_error("Invalid initial inventory item");
+    auto worn = entry.Get("worn"); auto left = entry.Get("wornLeft");
+    if ((!worn.IsUndefined() && !worn.IsBoolean()) || (!left.IsUndefined() && !left.IsBoolean()))
+      throw std::runtime_error("Invalid initial worn flags");
+    auto& total = totals[id]; total.delta += count;
+    const bool wear = worn.IsBoolean() && worn.ToBoolean().Value();
+    const bool wearLeft = left.IsBoolean() && left.ToBoolean().Value();
+    if (wear && wearLeft) throw std::runtime_error("One initial stack cannot occupy both hands");
+    if ((wear || wearLeft) && count != 1) throw std::runtime_error("Initial worn stack must contain one item");
+    if ((wear && total.worn) || (wearLeft && total.left)) throw std::runtime_error("Duplicate initial worn stack");
+    total.worn |= wear; total.left |= wearLeft;
+  }
+  auto result = std::make_unique<std::vector<InitialInventory::Item>>();
+  for (auto& [id, total] : totals) {
+    if (total.delta < INT32_MIN || total.delta > INT32_MAX) throw std::runtime_error("Initial inventory count overflow");
+    if (!total.delta && !total.worn && !total.left) continue;
+    const auto ref = SaveFile_::RefID::CreateRefId(*save, id);
+    result->push_back({{ref.byte0, ref.byte1, ref.byte2},
+                       static_cast<int32_t>(total.delta), total.worn, total.left});
+  }
+  return result;
+}
 }
 
 Napi::Value LoadGameApi::LoadGame(const Napi::CallbackInfo& info)
@@ -184,6 +237,9 @@ Napi::Value LoadGameApi::LoadGame(const Napi::CallbackInfo& info)
     ? nullptr
     : CreateTime(save, NapiHelper::ExtractObject(info[5], "time"));
 
+  auto inventory = (info[6].IsUndefined() || info[6].IsNull()) ? nullptr
+    : CreateInitialInventory(save, NapiHelper::ExtractObject(info[6], "initialInventory"));
+
   const auto& _baseSavefile = save;
   const auto& _pos = pos;
   const auto& _angle = angle;
@@ -193,7 +249,20 @@ Napi::Value LoadGameApi::LoadGame(const Napi::CallbackInfo& info)
   SaveFile_::ChangeFormNPC_* _changeFormNPC = changeFormNpc.get();
   std::vector<std::string>* _loadOrder = saveLoadOrder.get();
   LoadGame::Run(_baseSavefile, _pos, _angle, _cellOrWorld, _time, _weather,
-                _changeFormNPC, _loadOrder);
+                _changeFormNPC, _loadOrder, inventory.get());
 
   return info.Env().Undefined();
+}
+
+Napi::Value LoadGameApi::GetExteriorCellCoordinates(const Napi::CallbackInfo& info)
+{
+  const auto id = NapiHelper::ExtractUInt32(info[0], "cellId");
+  const auto cell = RE::TESForm::LookupByID<RE::TESObjectCELL>(id);
+  if (!cell || !cell->IsExteriorCell()) return info.Env().Undefined();
+  const auto coordinates = cell->GetCoordinates();
+  if (!coordinates) return info.Env().Undefined();
+  auto result = Napi::Array::New(info.Env(), 2);
+  result.Set(uint32_t(0), coordinates->cellX);
+  result.Set(uint32_t(1), coordinates->cellY);
+  return result;
 }

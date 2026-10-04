@@ -18,9 +18,10 @@ assert.equal(diff(distinct, {entries: []}, true).entries.length, 2, 'names and c
 
 function fixture(save = false, options = {}) {
   let frame = 0, loadedAt = 20, paused = false, opens = 0, removals = 0;
+  let initialInventory, firstMoveInventory, baseResets = 0, appearanceApplies = 0, moveCalls = 0;
   const items = new Map(), worn = new Set(), jobs = [], onceHandlers = {update: [], tick: []}, onHandlers = {update: []};
   const hands = new Map(); let equipFailures = options.equipFailures || 0;
-  let rejectedAdds = options.rejectedAdds || 0, positionX = 1, cellId = 9;
+  let rejectedAdds = options.rejectedAdds || 0, positionX = options.pos?.[0] ?? 1, cellId = options.sourceCell || 9;
   let partialThrow = !!options.partialThrow;
   const spellWrites = []; let basePrepared = !!options.basePrepared;
   if (options.initialWorn) for (const id of options.initialWorn) worn.add(id);
@@ -28,7 +29,7 @@ function fixture(save = false, options = {}) {
   const forms = id => ({id, getFormID: () => id, getName: () => 'base' + id});
   const actor = {
     is3DLoaded: () => frame >= loadedAt, getFormID: () => 0x14,
-    getPositionX: () => positionX, getPositionY: () => 2, getPositionZ: () => 3,
+    getPositionX: () => positionX, getPositionY: () => options.pos?.[1] ?? 2, getPositionZ: () => 3,
     getParentCell: () => forms(cellId), getWorldSpace: () => options.exterior ? forms(9) : null,
     getRace: () => forms(123),
     getItemCount: f => items.get(f.id) || 0, isEquipped: f => worn.has(f.id),
@@ -58,6 +59,7 @@ function fixture(save = false, options = {}) {
     }
   };
   const sp = {
+    getExteriorCellCoordinates: id => options.coordinates === null ? undefined : options.coordinates?.[id] || (id === 9 ? [0, 0] : [1, 0]),
     getInventoryQueueFence() {
       let finished = false;
       const at = Math.max(frame + 1, ...jobs.map(job => job.at + 1));
@@ -68,7 +70,7 @@ function fixture(save = false, options = {}) {
     Cell: {from: x => x}, WorldSpace: {from: () => null}, Weapon: {from: f => f?.id === 200 ? f : null},
     Game: {getPlayer: () => actor, getFormEx: forms, getModCount: () => 0, showRaceMenu: () => {paused = true; opens++;}},
     Ui: {isMenuOpen: name => name === 'RaceSex Menu' && paused},
-    TESModPlatform: {moveRefrToPosition() {}},
+    TESModPlatform: {moveRefrToPosition() {if (!firstMoveInventory) firstMoveInventory = inventory(); if (options.moveCell) { if (options.transitionDelay) { if (++moveCalls === 1) jobs.push({at: frame + options.transitionDelay, run: () => {cellId = options.moveCell;}}); } else if (options.moveDelay && ++moveCalls === 1) loadedAt = frame + options.moveDelay; else cellId = options.moveCell; }}},
     Utility: {wait: seconds => new Promise(resolve => jobs.push({at: frame + Math.max(1, Math.ceil(seconds * 10)), run: resolve}))},
     once: (event, fn) => onceHandlers[event].push(fn), on: (event, fn) => { (onHandlers[event] ||= []).push(fn); },
     printConsole() {}
@@ -77,7 +79,8 @@ function fixture(save = false, options = {}) {
   sp.storage.worldModel = world;
   const listeners = new Map();
   const controller = {emitter: {on: (name, fn) => listeners.set(name, fn), emit() {}}, lookupListener: () => ({
-    getTime: () => ({newGameHourValue: 12}), loadGame: () => {loadedAt = frame + 20;}
+    getTime: () => ({newGameHourValue: 12}), loadGame: (...args) => {initialInventory = args[6]; loadedAt = frame + 20;
+      if (options.nativePreload && initialInventory) for (const e of initialInventory.entries) {items.set(e.baseId, (items.get(e.baseId) || 0) + e.count); if (e.worn) worn.add(e.baseId);}}
   })};
   class IdManager { allocateIdFor(id) {return id;} getId(id) {return id;} }
   sp.storage.idManager = new IdManager();
@@ -86,9 +89,9 @@ function fixture(save = false, options = {}) {
       if (name === 'skyrimPlatform') return sp;
       if (name.endsWith('/clientListener')) return {ClientListener: class {}};
       if (name.endsWith('/idManager')) return {IdManager};
-      if (name.endsWith('/inventory')) return {resetInventoryBase() {if(basePrepared) return false; basePrepared = true; jobs.push({at: frame + (options.nativeDelay || 2), run: () => {items.clear();worn.clear();hands.clear();}});return true;}, applyInventory, getInventory: inventory, getDiff: diff, inventoryEntriesEqual: invSandbox.exports.inventoryEntriesEqual};
+      if (name.endsWith('/inventory')) return {acceptPreloadedInventoryBase() {basePrepared = true;}, resetInventoryBase() {baseResets++;if(basePrepared) return false; basePrepared = true; jobs.push({at: frame + (options.nativeDelay || 2), run: () => {items.clear();worn.clear();hands.clear();}});return true;}, applyInventory, getInventory: inventory, getDiff: diff, inventoryEntriesEqual: invSandbox.exports.inventoryEntriesEqual};
       if (name.endsWith('/equipment')) return {isBadMenuShown: () => false, syncSpellEquipment() {}, SpellType: {}, applyEquipment: () => {removals++; items.clear(); worn.clear();}};
-      if (name.endsWith('/appearance')) return {applyAppearanceToPlayer() {worn.clear();}};
+      if (name.endsWith('/appearance')) return {applyAppearanceToPlayer() {appearanceApplies++;worn.clear();}};
       if (name.endsWith('/spell')) return {removeAllSpells() {spellWrites.push('remove');}, learnSpells(_actor, ids) {spellWrites.push(...ids);}};
       if (name.endsWith('/logging')) return {logTrace(...args) {if (process.env.CREATION_DEBUG) console.log(...args.slice(1));}, logError(...args) {if (process.env.CREATION_DEBUG) console.log(...args.slice(1));}};
       if (name.endsWith('/messages')) return {MsgType: {SetRaceMenuOpen: 1, SetInventory: 2}};
@@ -98,8 +101,9 @@ function fixture(save = false, options = {}) {
   const remote = new sandbox.exports.RemoteServer(sp, controller);
   const emit = (name, message) => listeners.get(name)({message});
   const spawn = (initialMenu = false, idx = 0) => emit('createActorMessage', {idx, refrId: 0xff000015 + idx, isMe: true,
-    transform: {worldOrCell: 9, pos: [1, 2, 3], rot: [0, 0, 0]}, customPropsJsonDumps: options.returning ? [] : [{propName: 'thornswoodWear', propValueJsonDump: '{"creation":true}'}],
+    transform: {worldOrCell: 9, pos: options.pos || [1, 2, 3], rot: [0, 0, 0]}, customPropsJsonDumps: options.returning ? [] : [{propName: 'thornswoodWear', propValueJsonDump: '{"creation":true}'}],
     props: {learnedSpells: options.spells, isRaceMenuOpen: initialMenu, inventory: {entries: options.entries || [{baseId: 100, count: 1, worn: true}, {baseId: 101, count: 1, worn: true}]}},
+    appearance: options.appearance,
     equipment: {inv: {entries: options.equipment || []}, numChanges: 0}});
   const runEvent = event => {const callbacks = onceHandlers[event].splice(0); for (const fn of [...(onHandlers[event] || []), ...callbacks]) fn();};
   const advance = async (n, updates = true) => {
@@ -110,7 +114,7 @@ function fixture(save = false, options = {}) {
       for (let k = 0; k < 8; k++) await Promise.resolve();
     }
   };
-  return {spawn, emit, advance, move: x => {positionX = x;}, changeCell: id => {cellId = id;}, recreate: () => new sandbox.exports.RemoteServer(sp, controller), get diagnostic() {return JSON.parse(sp.storage.ownerOutfitDiagnostic);}, get opens() {return opens;}, items, worn, hands, spellWrites, get settling() {return sp.storage.ownerInventorySettling === true;}, get removals() {return removals;}};
+  return {spawn, emit, advance, move: x => {positionX = x;}, changeCell: id => {cellId = id;}, recreate: () => new sandbox.exports.RemoteServer(sp, controller), get diagnostic() {return typeof sp.storage.ownerOutfitDiagnostic === 'string' ? JSON.parse(sp.storage.ownerOutfitDiagnostic) : undefined;}, get baseResets() {return baseResets;}, get appearanceApplies() {return appearanceApplies;}, get initialInventory() {return initialInventory;}, get firstMoveInventory() {return firstMoveInventory;}, get opens() {return opens;}, items, worn, hands, spellWrites, get settling() {return sp.storage.ownerInventorySettling === true;}, get removals() {return removals;}};
 }
 
 (async () => {
@@ -129,6 +133,37 @@ function fixture(save = false, options = {}) {
   assert.equal(moving.opens, 1, 'moving inside the spawn cell after arrival cannot strand creation');
   const wrongCell = fixture(true); wrongCell.spawn(true); await wrongCell.advance(30); wrongCell.changeCell(10); await wrongCell.advance(1300);
   assert.equal(wrongCell.opens, 0, 'a different cell is still not the authoritative spawn');
+  const borderMove = fixture(false, {exterior: true, sourceCell: 10, moveCell: 9});
+  borderMove.spawn(true); await borderMove.advance(1500);
+  assert.equal(borderMove.opens, 1, 'preparing in a nearby exterior cell cannot latch that source cell across the move');
+  assert.equal(borderMove.settling, false);
+  const delayedBorderMove = fixture(false, {exterior: true, sourceCell: 10, moveCell: 9, moveDelay: 15});
+  delayedBorderMove.spawn(true); await delayedBorderMove.advance(1700);
+  assert.equal(delayedBorderMove.opens, 1, 'an asynchronous exterior transition must refresh the source latch after the actual move');
+  const pendingBorderMove = fixture(false, {exterior: true, sourceCell: 10, moveCell: 9, transitionDelay: 100});
+  pendingBorderMove.spawn(true); await pendingBorderMove.advance(100);
+  assert.equal(pendingBorderMove.opens, 0, 'the still-loaded source exterior cell cannot open creation while movement is pending');
+  await pendingBorderMove.advance(300); assert.equal(pendingBorderMove.opens, 1, 'the destination exterior cell releases creation');
+  const negativeGrid = fixture(true, {exterior: true, pos: [-1, -4097, 3], coordinates: {9: [-1, -2]}});
+  negativeGrid.spawn(true); await negativeGrid.advance(3, false); await negativeGrid.advance(300);
+  assert.equal(negativeGrid.opens, 1, 'negative world positions use floor division for exterior cells');
+  const absentGrid = fixture(true, {exterior: true, coordinates: null});
+  absentGrid.spawn(true); await absentGrid.advance(3, false); await absentGrid.advance(1500);
+  assert.equal(absentGrid.opens, 0, 'missing engine cell coordinates cannot fail open');
+  const beforeMove = fixture(); beforeMove.spawn(true); await beforeMove.advance(300);
+  assert.equal(beforeMove.firstMoveInventory.entries.filter(e => e.worn).length, 2, 'move path must equip both clothes before entering the room');
+  const populated = fixture(true, {nativePreload: true}); populated.spawn(true); await populated.advance(3, false); await populated.advance(300);
+  assert.equal(populated.opens, 1); assert.equal(populated.baseResets, 0, 'both reset paths must respect the native-preloaded base');
+  assert.equal(populated.items.get(100), 1); assert.equal(populated.items.get(101), 1); assert.equal(populated.worn.size, 2);
+  for (const synthetic of [false, true]) {
+    const face = fixture(synthetic, {appearance: {name: 'Adventurer'}, nativePreload: true}); face.spawn(true); if (synthetic) await face.advance(3, false); await face.advance(300);
+    assert.equal(face.opens, 1); assert.equal(face.appearanceApplies, 1, 'full appearance must be applied once on either route');
+    assert.equal(face.worn.size, 2, 'appearance-induced unequipping must settle before creation');
+    if (!synthetic) assert.equal(face.firstMoveInventory.entries.filter(e => e.worn).length, 2);
+  }
+  const preload = fixture(true); preload.spawn(true); await preload.advance(3, false);
+  assert.ok(preload.initialInventory, 'initial load must receive inventory before room loading');
+  assert.deepEqual(JSON.parse(JSON.stringify(preload.initialInventory)), {entries: [{baseId: 100, count: 1, worn: true}, {baseId: 101, count: 1, worn: true}]}, 'creation inventory must reach loadGame before the room is loaded');
   const exterior = fixture(true, {exterior: true}); exterior.spawn(true); await exterior.advance(30);
   exterior.move(4000); exterior.changeCell(10); await exterior.advance(300);
   assert.equal(exterior.opens, 0, 'crossing an exterior cell cannot open creation in the same worldspace');
@@ -162,7 +197,8 @@ function fixture(save = false, options = {}) {
   const early = fixture(); early.emit('setRaceMenuOpenMessage', {open: true}); await early.advance(10);
   assert.equal(early.opens, 0, 'an out-of-order request waits for its actor'); early.spawn(); await early.advance(100);
   assert.equal(early.opens, 1); assert.equal(early.worn.size, 2);
-  const changed = fixture(); changed.spawn(true); await changed.advance(42);
+  const changed = fixture(); changed.spawn(true);
+  for (let frame = 0; frame < 100 && changed.diagnostic?.stage !== 'outfit-ready'; ++frame) await changed.advance(1);
   assert.equal(changed.opens, 0, 'the revision change is exercised before the menu opens');
   changed.emit('setInventoryMessage', {inventory: {entries: [{baseId: 102, count: 1, worn: true}]}});
   await changed.advance(100); assert.equal(changed.opens, 1); assert(changed.worn.has(102)); assert.equal(changed.items.size, 1);

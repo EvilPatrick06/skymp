@@ -1,4 +1,5 @@
 #include "PapyrusTESModPlatform.h"
+#include "InventoryLoadEpoch.h"
 #include "CallNativeApi.h"
 #include "ConsoleApi.h"
 #include "ExceptionPrinter.h"
@@ -657,13 +658,14 @@ void TESModPlatform::AddItemEx(
     return;
 
   const auto refrId = containerRefr->GetFormID();
+  const auto inventoryEpoch = InventoryLoadEpoch::Capture();
 
   auto boundObject = item->As<RE::TESBoundObject>();
   if (!boundObject) {
     return;
   }
 
-  RE::ExtraDataList* extraList = nullptr;
+  auto queuedExtra = std::make_shared<RE::ExtraDataList*>(nullptr);
 
   const bool isShieldLike =
     (item->formType == RE::FormType::Armor &&
@@ -676,75 +678,77 @@ void TESModPlatform::AddItemEx(
     (item->formType == RE::FormType::Armor && !isShieldLike) ||
     isTorch;
 
-  if (health > 1 || enchantment || chargePercent > 0 ||
-      strlen(textDisplayData.data()) > 0 || (soul > 0 && soul <= 5) ||
-      poison) {
-    extraList = CreateExtraDataList();
-
-    auto extraList_ = reinterpret_cast<void*>(extraList);
-
-    if (health > 1) {
-      auto extra = RE::malloc<RE::ExtraHealth>();
-      if (extra) {
-        ::new (extra) RE::ExtraHealth(health);
-        addExtra(extraList_, static_cast<uint32_t>(RE::ExtraDataType::kHealth),
-                 extra);
-      }
-    }
-
-    if (enchantment) {
-      auto extra = RE::malloc<RE::ExtraEnchantment>();
-      if (extra) {
-        ::new (extra) RE::ExtraEnchantment(enchantment, maxCharge,
-                                           removeEnchantmentOnUnequip);
-        addExtra(extraList_,
-                 static_cast<uint32_t>(RE::ExtraDataType::kEnchantment),
-                 extra);
-      }
-    }
-
-    if (chargePercent > 0) {
-      auto extra = RE::malloc<RE::ExtraCharge>();
-      if (extra) {
-        ::new (extra) RE::ExtraCharge();
-        extra->charge = chargePercent;
-        addExtra(extraList_, static_cast<uint32_t>(RE::ExtraDataType::kCharge),
-                 extra);
-      }
-    }
-
-    if (strlen(textDisplayData.data()) > 0) {
-      auto extra = RE::malloc<RE::ExtraTextDisplayData>();
-      if (extra) {
-        ::new (extra) RE::ExtraTextDisplayData(textDisplayData.data());
-        addExtra(extraList_,
-                 static_cast<uint32_t>(RE::ExtraDataType::kTextDisplayData),
-                 extra);
-      }
-    }
-
-    if (soul > 0 && soul <= 5) {
-      auto extra = RE::malloc<RE::ExtraSoul>();
-      if (extra) {
-        ::new (extra) RE::ExtraSoul(static_cast<RE::SOUL_LEVEL>(soul));
-        addExtra(extraList_, static_cast<uint32_t>(RE::ExtraDataType::kSoul),
-                 extra);
-      }
-    }
-
-    if (poison) {
-      auto extra = RE::malloc<RE::ExtraPoison>();
-      if (extra) {
-        ::new (extra) RE::ExtraPoison(poison, poisonCount);
-        addExtra(extraList_, static_cast<uint32_t>(RE::ExtraDataType::kPoison),
-                 extra);
-      }
-    }
-  }
-
   g_nativeCallRequirements.gameThrQ->AddTask([=](Viet::Void) {
+    if (!InventoryLoadEpoch::IsCurrent(inventoryEpoch)) return;
     if (containerRefr != RE::TESForm::LookupByID<RE::TESObjectREFR>(refrId))
       return;
+
+    RE::ExtraDataList* extraList = nullptr;
+    if (item->formType != RE::FormType::Ammo && (health > 1 || enchantment || chargePercent > 0 ||
+        strlen(textDisplayData.data()) > 0 || (soul > 0 && soul <= 5) ||
+        poison)) {
+      extraList = CreateExtraDataList();
+
+      auto extraList_ = reinterpret_cast<void*>(extraList);
+
+      if (health > 1) {
+        auto extra = RE::malloc<RE::ExtraHealth>();
+        if (extra) {
+          ::new (extra) RE::ExtraHealth(health);
+          addExtra(extraList_, static_cast<uint32_t>(RE::ExtraDataType::kHealth),
+                   extra);
+        }
+      }
+
+      if (enchantment) {
+        auto extra = RE::malloc<RE::ExtraEnchantment>();
+        if (extra) {
+          ::new (extra) RE::ExtraEnchantment(enchantment, maxCharge,
+                                             removeEnchantmentOnUnequip);
+          addExtra(extraList_,
+                   static_cast<uint32_t>(RE::ExtraDataType::kEnchantment),
+                   extra);
+        }
+      }
+
+      if (chargePercent > 0) {
+        auto extra = RE::malloc<RE::ExtraCharge>();
+        if (extra) {
+          ::new (extra) RE::ExtraCharge();
+          extra->charge = chargePercent;
+          addExtra(extraList_, static_cast<uint32_t>(RE::ExtraDataType::kCharge),
+                   extra);
+        }
+      }
+
+      if (strlen(textDisplayData.data()) > 0) {
+        auto extra = RE::malloc<RE::ExtraTextDisplayData>();
+        if (extra) {
+          ::new (extra) RE::ExtraTextDisplayData(textDisplayData.data());
+          addExtra(extraList_,
+                   static_cast<uint32_t>(RE::ExtraDataType::kTextDisplayData),
+                   extra);
+        }
+      }
+
+      if (soul > 0 && soul <= 5) {
+        auto extra = RE::malloc<RE::ExtraSoul>();
+        if (extra) {
+          ::new (extra) RE::ExtraSoul(static_cast<RE::SOUL_LEVEL>(soul));
+          addExtra(extraList_, static_cast<uint32_t>(RE::ExtraDataType::kSoul),
+                   extra);
+        }
+      }
+
+      if (poison) {
+        auto extra = RE::malloc<RE::ExtraPoison>();
+        if (extra) {
+          ::new (extra) RE::ExtraPoison(poison, poisonCount);
+          addExtra(extraList_, static_cast<uint32_t>(RE::ExtraDataType::kPoison),
+                   extra);
+        }
+      }
+    }
 
     auto optExtraList =
       item->formType == RE::FormType::Ammo ? nullptr : extraList;
@@ -757,6 +761,7 @@ void TESModPlatform::AddItemEx(
                                 RE::ITEM_REMOVE_REASON::kRemove, optExtraList,
                                 nullptr);
     }
+    *queuedExtra = optExtraList;
   });
 
   const bool needEquipWeap =
@@ -794,7 +799,6 @@ void TESModPlatform::AddItemEx(
             RE::TESForm::LookupByID(LeftHand));
 
         if (item->formType == RE::FormType::Ammo) {
-          extraList = nullptr;
           slot = nullptr;
         }
 
@@ -806,15 +810,17 @@ void TESModPlatform::AddItemEx(
 
         if (countDelta > 0) {
           g_nativeCallRequirements.gameThrQ->AddTask([=](Viet::Void) {
+            if (!InventoryLoadEpoch::IsCurrent(inventoryEpoch)) return;
             if (actor != (void*)RE::TESForm::LookupByID(refrId))
               return;
-            s->EquipObject(actor, boundObject, extraList, 1, slot);
+            s->EquipObject(actor, boundObject, *queuedExtra, 1, slot);
           });
         } else if (countDelta < 0)
           g_nativeCallRequirements.gameThrQ->AddTask([=](Viet::Void) {
+            if (!InventoryLoadEpoch::IsCurrent(inventoryEpoch)) return;
             if (actor != (void*)RE::TESForm::LookupByID(refrId))
               return;
-            s->UnequipObject(actor, boundObject, extraList, 1, slot);
+            s->UnequipObject(actor, boundObject, *queuedExtra, 1, slot);
           });
       }
     }

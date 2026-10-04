@@ -1,4 +1,5 @@
 import { ClientListener, CombinedController, Sp } from "./clientListener";
+import { Inventory } from "../../sync/inventory";
 import { ChangeFormNpc } from "skyrimPlatform";
 
 export class LoadGameService extends ClientListener {
@@ -7,7 +8,7 @@ export class LoadGameService extends ClientListener {
         this.controller.on("loadGame", () => this.onLoadGame());
     }
 
-    public loadGame(pos: number[], rot: number[], worldOrCell: number, changeFormNpc?: ChangeFormNpc, loadOrder?: string[], time?: { seconds: number, minutes: number, hours: number }) {
+    public loadGame(pos: number[], rot: number[], worldOrCell: number, changeFormNpc?: ChangeFormNpc, loadOrder?: string[], time?: { seconds: number, minutes: number, hours: number }, inventory?: Inventory) {
         // THORNSWOOD PATCH. The flag goes up before the call, not after.
         //
         // sp.loadGame does not return and then load later. The load happens
@@ -17,11 +18,11 @@ export class LoadGameService extends ClientListener {
         this._isCausedBySkyrimPlatform = true;
         try {
             // @ts-ignore
-            this.sp.loadGame(pos, rot, worldOrCell, changeFormNpc, loadOrder, time);
+            this.sp.loadGame(pos, rot, worldOrCell, changeFormNpc, loadOrder, time, inventory);
         } catch (e) {
             // Hotfix non-vanilla headparts bug
             // @ts-ignore
-            this.sp.loadGame(pos, rot, worldOrCell, undefined, loadOrder, time);
+            this.sp.loadGame(pos, rot, worldOrCell, undefined, loadOrder, time, inventory);
         }
     }
 
