@@ -10,6 +10,7 @@ import {
   Ui,
   Utility,
   WorldSpace,
+  Weapon,
   on, // TODO: use this.controller.on instead
   once, // TODO: use this.controller.once instead
   storage, // TODO: use this.sp.storage instead
@@ -23,8 +24,8 @@ import { IdManager } from '../../lib/idManager';
 import { nameof } from '../../lib/nameof';
 import { setActorValuePercentage } from '../../sync/actorvalues';
 import { applyAppearanceToPlayer } from '../../sync/appearance';
-import { applyEquipment, isBadMenuShown } from '../../sync/equipment';
-import { Inventory, applyInventory, getDiff, getInventory } from '../../sync/inventory';
+import { applyEquipment, isBadMenuShown, syncSpellEquipment, SpellType } from '../../sync/equipment';
+import { Inventory, applyInventory, getDiff, getInventory, inventoryEntriesEqual, resetInventoryBase } from '../../sync/inventory';
 import { Movement } from '../../sync/movement';
 import { learnSpells, removeAllSpells } from '../../sync/spell';
 import { ModelApplyUtils } from '../../view/modelApplyUtils';
@@ -113,7 +114,8 @@ let pcInvStuckFor = 0;
 const PC_INV_GIVE_UP_AFTER = 3;
 
 on('update', () => {
-  if (isBadMenuShown()) {
+  if (storage['ownerInventorySettling']) { return; }
+  if (isBadMenuShown() || Ui.isMenuOpen('RaceSex Menu')) {
     return;
   }
   if (Date.now() - pcInvLastApply <= 5000) {
@@ -189,6 +191,9 @@ export class RemoteServer extends ClientListener {
     this.controller.emitter.on("deathStateContainerMessage", (e) => this.onDeathStateContainerMessage(e));
 
     this.controller.emitter.on("connectionAccepted", () => this.handleConnectionAccepted());
+    this.controller.emitter.on("connectionDisconnect", () => this.handleConnectionAccepted());
+    this.controller.emitter.on("connectionFailed", () => this.handleConnectionAccepted());
+    this.controller.emitter.on("connectionDenied", () => this.handleConnectionAccepted());
 
     this.controller.emitter.on("spellCastMessage", (e) => this.onSpellCastMessage(e));
     this.controller.emitter.on("updateAnimVariablesMessage", (e) => this.onUpdateAnimVariablesMessage(e));
@@ -227,7 +232,11 @@ export class RemoteServer extends ClientListener {
     this.numSetInventory++;
 
     const msg = event.message;
+    this.ownerInventory = msg.inventory;
+    this.ownerInventoryIsSnapshot = false;
+    const epoch = this.ownerSpawnEpoch;
     once('update', () => {
+      if (epoch !== this.ownerSpawnEpoch) { return; }
       setPcInventory(msg.inventory);
 
       let blocked = false;
@@ -493,83 +502,158 @@ export class RemoteServer extends ClientListener {
     });
 
     if (msg.isMe) {
+      const earlyMenuRequest = this.worldModel.playerCharacterFormIdx < 0 && this.raceMenuRequested;
+      this.cancelOwnerSpawn();
+      this.raceMenuRequested = earlyMenuRequest;
+      this.ownerInventory = msg.props?.inventory ?? msg.equipment?.inv;
+      this.ownerInventoryIsSnapshot = true;
+      storage['ownerInventorySettling'] = true;
+      this.ownerSpawnReady = new Promise<boolean>(resolve => this.finishOwnerSpawn = resolve);
       this.worldModel.playerCharacterFormIdx = i;
       this.worldModel.playerCharacterRefrId = msg.refrId || 0;
+      const epoch = this.ownerSpawnEpoch;
+      once('update', () => {
+        if (epoch === this.ownerSpawnEpoch && this.ownerInventory) { setPcInventory(this.ownerInventory); }
+      });
     }
+    const ownerEpoch = this.ownerSpawnEpoch;
+    const ownerIsCurrent = () => ownerEpoch === this.ownerSpawnEpoch;
 
     // TODO: move to a separate module
 
     if (msg.props && !msg.props.isHostedByOther) {
     }
 
-    if (msg.props && msg.props.isRaceMenuOpen && msg.isMe) {
+    // Inventory is authoritative for the owner. Fresh creation packets may
+    // contain worn clothes here and an empty, independently saved equipment
+    // record. Applying that record would remove the starting clothes.
+    const ownerIsLoaded = (): boolean => {
+      const pc = Game.getPlayer();
+      if (!pc?.is3DLoaded()) { return false; }
+      const location = pc.getWorldSpace()?.getFormID() || pc.getParentCell()?.getFormID();
+      if (location !== msg.transform.worldOrCell) { return false; }
+      const distance = Math.hypot(pc.getPositionX() - msg.transform.pos[0],
+        pc.getPositionY() - msg.transform.pos[1], pc.getPositionZ() - msg.transform.pos[2]);
+      return distance < 256;
+    };
+    const applyPcInv = (): boolean => {
+      const pc = Game.getPlayer();
+      let inv = this.ownerInventory;
+      if (!pc?.is3DLoaded() || !inv || isBadMenuShown() || Ui.isMenuOpen('RaceSex Menu')) { return false; }
+      const wear = (form as Record<string, unknown>)['thornswoodWear'] as {creation?: boolean} | undefined;
+      const creation = wear?.creation === true || msg.props?.isRaceMenuOpen === true;
+      if (this.ownerInventoryIsSnapshot && !creation && form.equipment) {
+        inv = JSON.parse(JSON.stringify(inv)) as Inventory;
+        for (const entry of inv.entries) { delete entry.worn; delete entry.wornLeft; }
+        for (const equipped of form.equipment.inv.entries) {
+          if (equipped.count <= 0 || (!equipped.worn && !equipped.wornLeft)) { continue; }
+          const owned = inv.entries.find(entry => entry.count > 0 && !entry.worn && !entry.wornLeft && inventoryEntriesEqual(entry, equipped, true));
+          if (!owned) { return false; }
+          if (owned.count > 1) { inv.entries.push({...owned, count: owned.count - 1}); owned.count = 1; }
+          owned.worn = equipped.worn; owned.wornLeft = equipped.wornLeft;
+        }
+      }
+      // Base-container reset queues a full removal. Wait for that removal
+      // before calculating additions, otherwise retained starter pieces can
+      // be omitted from the diff and removed by the older native job.
+      if (resetInventoryBase(pc)) {
+        this.ownerInventoryPending = {entries: []};
+        return false;
+      }
+      const actual = getInventory(pc);
+      if (this.ownerInventoryPending) {
+        // Never enqueue another inventory batch while the previous batch is
+        // outstanding, even when a newer server snapshot has arrived.
+        if (getDiff(this.ownerInventoryPending, actual, true).entries.length !== 0) { return false; }
+        this.ownerInventoryPending = undefined;
+      }
+      setPcInventory(inv);
+      if (getDiff(inv, actual, true).entries.length !== 0) {
+        this.ownerInventoryPending = JSON.parse(JSON.stringify(inv)) as Inventory;
+        applyInventory(pc, inv, false, true);
+        return false;
+      }
+      let ready = true;
+      // Inventory ownership and saved equipment are separate records. Restore
+      // deliberate unequips too, without deleting owned items.
+      for (const entry of actual.entries) {
+        if (entry.count <= 0 || (!entry.worn && !entry.wornLeft)) { continue; }
+        const item = Game.getFormEx(entry.baseId);
+        if (!item || Ammo.from(item)) { continue; }
+        const expected = inv.entries.filter(value => value.count > 0 && value.baseId === entry.baseId);
+        if (Weapon.from(item)) {
+          if (entry.worn && !expected.some(value => value.worn)) { pc.unequipItemEx(item, 1, false); ready = false; }
+          if (entry.wornLeft && !expected.some(value => value.wornLeft)) { pc.unequipItemEx(item, 2, false); ready = false; }
+        } else if (!expected.some(value => value.worn || value.wornLeft)) {
+          pc.unequipItem(item, false, true); ready = false;
+        }
+      }
+      for (const entry of inv.entries) {
+        if (entry.count <= 0 || (!entry.worn && !entry.wornLeft)) { continue; }
+        const item = Game.getFormEx(entry.baseId);
+        if (!item) { ready = false; continue; }
+        if (Ammo.from(item)) { continue; }
+        const weapon = Weapon.from(item);
+        const equipped = weapon
+          ? ((!entry.worn || pc.getEquippedWeapon(false)?.getFormID() === entry.baseId)
+            && (!entry.wornLeft || pc.getEquippedWeapon(true)?.getFormID() === entry.baseId))
+          : pc.isEquipped(item);
+        if (!equipped) {
+          if (pc.getItemCount(item) > 0) {
+            if (weapon) {
+              if (entry.worn) { pc.equipItemEx(item, 1, false, false); }
+              if (entry.wornLeft) { pc.equipItemEx(item, 2, false, false); }
+            } else { pc.equipItem(item, false, true); }
+          }
+          ready = false;
+        }
+      }
+      // Base-ID equip checks cannot distinguish improved or enchanted copies.
+      // Refuse readiness if the wrong instance is worn; retain all metadata.
+      const worn = (inventory: Inventory): Inventory => ({ entries: inventory.entries.filter(entry =>
+        entry.count > 0 && (entry.worn || entry.wornLeft) && !Ammo.from(Game.getFormEx(entry.baseId))) });
+      return ready && getDiff(worn(inv), worn(getInventory(pc)), false).entries.length === 0;
+    };
+    if (msg.isMe) { this.ownerOutfitIsReady = () => ownerIsCurrent() && ownerIsLoaded() && applyPcInv(); }
+    if (msg.isMe && (msg.props?.isRaceMenuOpen || this.raceMenuRequested)) {
       this.onSetRaceMenuOpenMessage({ message: { t: MsgType.SetRaceMenuOpen, open: true } });
     }
 
-    const numSetInventory = this.numSetInventory;
-
-    /*
-      THORNSWOOD. DID THE EQUIPMENT ACTUALLY GO ON.
-
-      applyEquipment answers true unconditionally: it removes everything,
-      unequips everything and hands the worn items to the setInventory native,
-      and none of that reports back. So there has never been a way to know
-      whether somebody ended up dressed, and the only two attempts were on a
-      fixed clock, a second and 1.3 seconds after the spawn update.
-
-      This reads the game instead. Every entry the server says was worn is
-      looked up and asked whether it is equipped. Ammo is left out: a quiver
-      reads as equipped or not depending on what else is in hand, and being
-      wrong about arrows is not worth refusing to settle over.
-    */
-    const equipmentIsOn = (): boolean => {
-      const eq = msg.equipment;
-      if (!eq || !eq.inv || !eq.inv.entries) {
-        return true;   // nothing to put on is not a failure
-      }
-      const pc = Game.getPlayer();
-      if (!pc) {
-        return false;
-      }
-      const ac = Actor.from(pc);
-      if (!ac) {
-        return false;
-      }
-      for (const e of eq.inv.entries) {
-        if (!e.worn && !e.wornLeft) {
-          continue;
+    const settleOwner = async (): Promise<void> => {
+      try {
+        if (!ownerIsCurrent()) { return; }
+        if (msg.appearance) {
+          applyAppearanceToPlayer(msg.appearance);
+          await Utility.wait(0.25);
         }
-        const f = Game.getFormEx(e.baseId);
-        if (!f) {
-          continue;
-        }
-        if (Ammo.from(f)) {
-          continue;
-        }
-        if (!ac.isEquipped(f)) {
-          return false;
-        }
-      }
-      return true;
-    };
-
-    const applyPcInv = () => {
-      if (msg.equipment) {
-        applyEquipment(Game.getPlayer()!, msg.equipment)
-      }
-
-      if (numSetInventory !== this.numSetInventory) {
-        logTrace(this, 'Skipping inventory apply due to newer setInventory message');
-        return;
-      }
-
-      if (msg.props && msg.props.inventory) {
-        this.onSetInventoryMessage({
-          message: {
-            t: MsgType.SetInventory,
-            inventory: msg.props.inventory
+        for (let attempt = 1; attempt <= 120 && ownerIsCurrent(); attempt++) {
+          try {
+            if (ownerIsLoaded() && applyPcInv()) {
+              const pc = Game.getPlayer()!;
+              if (msg.equipment) {
+                syncSpellEquipment(pc, msg.equipment.leftSpell, SpellType.Left);
+                syncSpellEquipment(pc, msg.equipment.rightSpell, SpellType.Right);
+                syncSpellEquipment(pc, msg.equipment.voiceSpell, SpellType.Voice);
+                syncSpellEquipment(pc, msg.equipment.instantSpell, SpellType.Instant);
+              }
+              pc.queueNiNodeUpdate();
+              logTrace(this, 'Owner inventory and outfit ready at attempt', attempt);
+              this.ownerSpawnSettled = true;
+              this.finishOwnerSpawn?.(true);
+              if (!this.raceMenuRequested) { delete storage['ownerInventorySettling']; }
+              return;
+            }
+          } catch (e) {
+            if (attempt === 1) { logError(this, 'Retrying owner outfit after native failure', e); }
           }
-        });
+          await Utility.wait(1);
+        }
+      } catch (e) { logError(this, 'Owner outfit loading failed', e); }
+      if (ownerIsCurrent()) {
+        this.finishOwnerSpawn?.(false);
+        // Keep background inventory writes blocked after failed settlement.
+        // Reconnection supplies a fresh authoritative owner snapshot.
+        logError(this, 'Owner inventory or outfit did not finish loading; face menu stays closed');
       }
     };
 
@@ -577,7 +661,9 @@ export class RemoteServer extends ClientListener {
       const learnedSpells = msg.props.learnedSpells;
 
       once('update', () => {
+        if (!ownerIsCurrent()) { return; }
         Utility.wait(1).then(() => {
+          if (!ownerIsCurrent()) { return; }
           const player = Game.getPlayer();
 
           if (player) {
@@ -605,103 +691,28 @@ export class RemoteServer extends ClientListener {
     if (msg.isMe) {
       const spawnTask = { running: false };
       once('update', () => {
+        if (!ownerIsCurrent()) { return; }
         // Use MoveRefrToPosition to spawn if possible (not in main menu)
         // In case of connection lost this is essential
         if (!spawnTask.running) {
           spawnTask.running = true;
           logTrace(this, 'Using moveRefrToPosition to spawn player');
           (async () => {
-            while (true) {
-              logTrace(this, 'Spawning...');
-              TESModPlatform.moveRefrToPosition(
-                Game.getPlayer(),
-                Cell.from(Game.getFormEx(msg.transform.worldOrCell)),
-                WorldSpace.from(Game.getFormEx(msg.transform.worldOrCell)),
-                msg.transform.pos[0],
-                msg.transform.pos[1],
-                msg.transform.pos[2],
-                msg.transform.rot[0],
-                msg.transform.rot[1],
-                msg.transform.rot[2],
-              );
-              await Utility.wait(1);
-              const pl = Game.getPlayer();
-              if (!pl) {
-                break;
+            try {
+              for (let attempt = 0; attempt < 120 && ownerIsCurrent(); attempt++) {
+                TESModPlatform.moveRefrToPosition(
+                  Game.getPlayer(),
+                  Cell.from(Game.getFormEx(msg.transform.worldOrCell)),
+                  WorldSpace.from(Game.getFormEx(msg.transform.worldOrCell)),
+                  msg.transform.pos[0], msg.transform.pos[1], msg.transform.pos[2],
+                  msg.transform.rot[0], msg.transform.rot[1], msg.transform.rot[2],
+                );
+                await Utility.wait(1);
+                if (!ownerIsCurrent()) { return; }
+                if (ownerIsLoaded()) { await settleOwner(); return; }
               }
-              const pos = [
-                pl.getPositionX(),
-                pl.getPositionY(),
-                pl.getPositionZ(),
-              ];
-              const sqr = (x: number) => x * x;
-              const distance = Math.sqrt(
-                sqr(pos[0] - msg.transform.pos[0]) +
-                sqr(pos[1] - msg.transform.pos[1]),
-              );
-              if (distance < 256) {
-                break;
-              }
-            }
-          })();
-          /*
-            THORNSWOOD. KEEP PUTTING THE CLOTHES ON UNTIL THEY ARE ON.
-
-            Patrick, 21 September: "I still spawned in with my clothes not on
-            when I left the server with them on". The server's record was
-            right; it was this that never landed.
-
-            THIS USED TO BE TWO FIXED WAITS, a second and 1.3 seconds after the
-            spawn update, with the comment "Unfortunatelly it requires two
-            calls to work", which is an admission that it is timing and not a
-            rule. Three lines above, the spawn itself is a `while (true)` that
-            calls moveRefrToPosition once a second until the person is within
-            256 units of where they belong. On a machine that loads slowly, and
-            slow loads are most of what the testers have, both attempts land
-            while the person is still being teleported, applyEquipment removes
-            everything and hands the worn items over to a body that is then
-            moved out from under it, and nothing tries again. The person stands
-            there with nothing on and the server still holding the right
-            record.
-
-            So it retries until equipmentIsOn agrees, and stops. Fifteen goes
-            at a second apart covers a load far slower than anything measured
-            here and ends by itself rather than fighting somebody who takes
-            their own coat off a minute later. Each go is logged with its
-            number, because "dressed on attempt 9" and "gave up after 15" are
-            different problems and the log could not tell them apart before.
-          */
-          /*
-            THORNSWOOD. APPEARANCE BEFORE EQUIPMENT (#614).
-
-            Appearance calls queueNiNodeUpdate. If worn armor is applied first
-            (or in parallel), Riekling/Goblin armor addons remount on the wrong
-            neck and go transparent after rejoin / cell load, while isEquipped
-            still says they are on. Humans rarely show it.
-
-            Apply the face/race first, give the NiNode a beat, then settle
-            equipment, then rebuild once more so AA bind to the race body.
-          */
-          (async () => {
-            if (msg.appearance) {
-              applyAppearanceToPlayer(msg.appearance);
-              await Utility.wait(0.25);
-            }
-            for (let attempt = 1; attempt <= 15; attempt++) {
-              applyPcInv();
-              await Utility.wait(attempt === 1 ? 0.3 : 1);
-              if (equipmentIsOn()) {
-                if (attempt > 1) {
-                  logTrace(this, 'equipment went on at attempt', attempt);
-                }
-                try {
-                  Game.getPlayer()?.queueNiNodeUpdate();
-                } catch (_e) { }
-                return;
-              }
-            }
-            logError(this, 'equipment never went on after 15 attempts; the '
-              + 'person is standing there undressed and the server record is fine');
+            } catch (e) { logError(this, 'Owner movement failed', e); }
+            if (ownerIsCurrent()) { this.finishOwnerSpawn?.(false); }
           })();
         }
 
@@ -741,6 +752,7 @@ export class RemoteServer extends ClientListener {
       });
       once('tick', () => {
         once('tick', () => {
+          if (!ownerIsCurrent()) { return; }
           if (!spawnTask.running) {
             /*
               THORNSWOOD PATCH. Let the other spawn path have it.
@@ -831,21 +843,7 @@ export class RemoteServer extends ClientListener {
               loadOrder,
               { minutes: 0, seconds: 0, hours: this.controller.lookupListener(TimeService).getTime().newGameHourValue }
             );
-            once('update', () => {
-              // #614: appearance before equipment so race AA remount cleanly.
-              (async () => {
-                if (msg.appearance) {
-                  applyAppearanceToPlayer(msg.appearance);
-                  await Utility.wait(0.25);
-                }
-                applyPcInv();
-                await Utility.wait(0.3);
-                applyPcInv();
-                try {
-                  Game.getPlayer()?.queueNiNodeUpdate();
-                } catch (_e) { }
-              })();
-            });
+            once('update', () => { void settleOwner(); });
           }
         });
       });
@@ -872,6 +870,7 @@ export class RemoteServer extends ClientListener {
     }
 
     if (this.worldModel.playerCharacterFormIdx === i) {
+      this.cancelOwnerSpawn();
       this.worldModel.playerCharacterFormIdx = -1;
       this.worldModel.playerCharacterRefrId = 0;
 
@@ -1045,6 +1044,7 @@ export class RemoteServer extends ClientListener {
   }
 
   private handleConnectionAccepted(): void {
+    this.cancelOwnerSpawn();
     this.worldModel.forms = [];
     this.worldModel.playerCharacterFormIdx = -1;
     this.worldModel.playerCharacterRefrId = 0;
@@ -1076,21 +1076,59 @@ export class RemoteServer extends ClientListener {
     });
   }
 
-  private onSetRaceMenuOpenMessage(event: ConnectionMessage<SetRaceMenuOpenMessage>): void {
-    const msg = event.message;
+  private cancelOwnerSpawn(): void {
+    this.ownerSpawnEpoch++;
+    this.raceMenuRequest++;
+    this.raceMenuRequested = false;
+    this.finishOwnerSpawn?.(false);
+    this.finishOwnerSpawn = undefined;
+    this.ownerSpawnReady = undefined;
+    this.ownerInventory = undefined;
+    this.ownerInventoryPending = undefined;
+    this.ownerInventoryIsSnapshot = false;
+    this.ownerSpawnSettled = false;
+    this.ownerOutfitIsReady = undefined;
+    delete storage['pcInv'];
+    delete storage['ownerInventorySettling'];
+  }
 
-    if (msg.open) {
-      // wait 0.3s cause we can see visual bugs when teleporting
-      // and showing this menu at the same time in onConnect
-      once('update', () =>
-        Utility.wait(0.3).then(() => {
-          unequipIronHelmet();
-          Game.showRaceMenu();
-        }),
-      );
-    } else {
-      // TODO: Implement closeMenu in SkyrimPlatform
+  private onSetRaceMenuOpenMessage(event: ConnectionMessage<SetRaceMenuOpenMessage>): void {
+    this.raceMenuRequested = event.message.open;
+    const request = ++this.raceMenuRequest;
+    if (!event.message.open) {
+      if (this.ownerSpawnSettled && !this.ownerInventoryPending) { delete storage['ownerInventorySettling']; }
+      return;
     }
+    if (this.worldModel.playerCharacterFormIdx < 0) { return; }
+    const epoch = this.ownerSpawnEpoch;
+    const ready = this.ownerSpawnReady;
+    if (!ready || !this.ownerOutfitIsReady) {
+      logError(this, 'Creation has no owner readiness state; waiting for a fresh owner packet');
+      return;
+    }
+    storage['ownerInventorySettling'] = true;
+    once('update', async () => {
+      if (ready && !await ready) { return; }
+      await Utility.wait(0.3);
+      for (let attempt = 0; attempt < 120; attempt++) {
+        if (epoch !== this.ownerSpawnEpoch || request !== this.raceMenuRequest || !this.raceMenuRequested) { return; }
+        try {
+          // A newer authoritative inventory may arrive after initial settlement.
+          if (this.ownerOutfitIsReady && this.ownerOutfitIsReady()) {
+            if (!Ui.isMenuOpen('RaceSex Menu')) {
+              unequipIronHelmet();
+              Game.showRaceMenu();
+            }
+            delete storage['ownerInventorySettling'];
+            return;
+          }
+        } catch (e) {
+          if (attempt === 0) { logError(this, 'Retrying menu outfit check after native failure', e); }
+        }
+        await Utility.wait(1);
+      }
+      logError(this, 'Menu outfit check did not settle; face menu stays closed');
+    });
   }
 
   /** Packet handlers end **/
@@ -1224,4 +1262,14 @@ export class RemoteServer extends ClientListener {
   }
 
   private numSetInventory = 0;
+  private ownerSpawnEpoch = 0;
+  private ownerSpawnReady?: Promise<boolean>;
+  private finishOwnerSpawn?: (ready: boolean) => void;
+  private ownerInventory?: Inventory;
+  private ownerInventoryPending?: Inventory;
+  private ownerInventoryIsSnapshot = false;
+  private ownerSpawnSettled = false;
+  private ownerOutfitIsReady?: () => boolean;
+  private raceMenuRequested = false;
+  private raceMenuRequest = 0;
 }
