@@ -1081,6 +1081,14 @@ void MpObjectReference::Subscribe(MpObjectReference* emitter,
     return;
   }
 
+  // Keep the owner self-subscribe so the race menu can run. Do not add
+  // neighbors until a face is stored, or they would receive a bodyless actor
+  // and ForceSubscriptionsUpdate would never retry the create packet.
+  if (emitter != listener && actorEmitter &&
+      !actorEmitter->ShouldPublishToOtherClients()) {
+    return;
+  }
+
   if (!emitter->pImpl->onInitEventSent &&
       listener->GetChangeForm().profileId != -1) {
     emitter->pImpl->onInitEventSent = true;

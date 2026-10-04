@@ -13,6 +13,7 @@ TEST_CASE(
   actor.SetEquipment(Equipment());
   actor.SetRaceMenuOpen(true);
 
+  REQUIRE(actor.HasStoredAppearance());
   REQUIRE(actor.GetChangeForm().appearanceDump == appearance.ToJson());
   REQUIRE(actor.GetChangeForm().equipment == Equipment());
   REQUIRE(actor.GetChangeForm().isRaceMenuOpen == true);

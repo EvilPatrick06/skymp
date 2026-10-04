@@ -101,7 +101,12 @@ TEST_CASE("UpdateAppearance1", "[PartOne]")
   auto doAppearance = [&] { DoMessage(partOne, 0, jAppearance); };
   doAppearance();
 
-  REQUIRE(partOne.Messages().size() == 2);
+  REQUIRE(std::find_if(partOne.Messages().begin(), partOne.Messages().end(),
+                       [&](auto m) {
+                         return m.j["t"] == MsgType::CreateActor &&
+                           m.j["idx"] == 0 && m.reliable && m.userId == 1 &&
+                           m.j["appearance"] == jAppearance["data"];
+                       }) != partOne.Messages().end());
   REQUIRE(std::find_if(partOne.Messages().begin(), partOne.Messages().end(),
                        [&](auto m) {
                          return m.j["t"] == MsgType::UpdateAppearance &&
@@ -134,7 +139,12 @@ TEST_CASE("UpdateAppearance2", "[PartOne]")
   auto doAppearance = [&] { DoMessage(partOne, 0, jAppearance); };
   doAppearance();
 
-  REQUIRE(partOne.Messages().size() == 2);
+  REQUIRE(std::find_if(partOne.Messages().begin(), partOne.Messages().end(),
+                       [&](auto m) {
+                         return m.j["t"] == MsgType::CreateActor &&
+                           m.j["idx"] == 0 && m.reliable && m.userId == 1 &&
+                           m.j["appearance"] == jAppearance["data"];
+                       }) != partOne.Messages().end());
   REQUIRE(std::find_if(partOne.Messages().begin(), partOne.Messages().end(),
                        [&](auto m) {
                          return m.j["t"] == MsgType::UpdateAppearance &&

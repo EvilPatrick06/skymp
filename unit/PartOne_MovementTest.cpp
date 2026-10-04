@@ -16,6 +16,8 @@ TEST_CASE("Hypothesis: UpdateMovement may send nothing when actor without "
       continue;
 
     DoConnect(partOne, i + 1);
+    GiveStoredAppearance(
+      partOne.worldState.GetFormAt<MpActor>(i + 0xff000000));
     partOne.SetUserActor(i + 1, i + 0xff000000);
 
     DoUpdateMovement(partOne, i + 0xff000000, i + 1);
@@ -23,6 +25,7 @@ TEST_CASE("Hypothesis: UpdateMovement may send nothing when actor without "
 
   DoConnect(partOne, 0);
   partOne.CreateActor(0xffffffff, { 1.f, 2.f, 3.f }, 180.f, 0x3c);
+  GiveStoredAppearance(partOne.worldState.GetFormAt<MpActor>(0xffffffff));
   partOne.SetUserActor(0, 0xffffffff);
   partOne.Messages().clear();
 
@@ -39,6 +42,8 @@ TEST_CASE("UpdateMovement when neighbour has been disconnected", "[PartOne]")
   for (int i = 0; i < 2; ++i) {
     DoConnect(partOne, i);
     partOne.CreateActor(i + 0xff000ABC, { 1.f, 2.f, 3.f }, 180.f, 0x3c);
+    GiveStoredAppearance(
+      partOne.worldState.GetFormAt<MpActor>(i + 0xff000ABC));
     partOne.SetUserActor(i, i + 0xff000ABC);
     auto m = jMovement;
     m["idx"] = i;
@@ -67,6 +72,7 @@ TEST_CASE("UpdateMovement", "[PartOne]")
   REQUIRE(partOne.Messages().size() == 0); // No actor - no movement
 
   partOne.CreateActor(0xff000ABC, { 1.f, 2.f, 3.f }, 180.f, 0x3c);
+  GiveStoredAppearance(partOne.worldState.GetFormAt<MpActor>(0xff000ABC));
   partOne.SetUserActor(0, 0xff000ABC);
   partOne.Messages().clear();
   doMovement();
@@ -84,6 +90,7 @@ TEST_CASE("UpdateMovement", "[PartOne]")
   // Another player connects and see us
   DoConnect(partOne, 1);
   partOne.CreateActor(0xff00ABCD, { 1.f, 2.f, 3.f }, 180.f, 0x3c);
+  GiveStoredAppearance(partOne.worldState.GetFormAt<MpActor>(0xff00ABCD));
   partOne.Messages().clear();
   partOne.SetUserActor(1, 0xff00ABCD);
   REQUIRE(partOne.Messages().size() == 3);
@@ -104,11 +111,6 @@ TEST_CASE("UpdateMovement", "[PartOne]")
                          return m.j["t"] == MsgType::CreateActor &&
                            m.j["idx"] == 1 && m.reliable && m.userId == 1;
                        }) != partOne.Messages().end());
-
-  // Appearance must be empty by default
-  REQUIRE(std::find_if(partOne.Messages().begin(), partOne.Messages().end(),
-                       [&](auto m) { return m.j["appearance"] != nullptr; }) ==
-          partOne.Messages().end());
 
   partOne.Messages().clear();
   doMovement();

@@ -10,6 +10,9 @@ Napi::Value OnlinePlayersBinding::Get(Napi::Env env, ScampServer& scampServer,
   thread_local std::vector<uint32_t> g_onlineActorsBuffer(kMaxPlayers);
   size_t numOnlineActors = 0;
 
+  // Includes connected players who are not yet published to other clients.
+  // Gamemode ticks and voice read this list; hiding unfinished faces from
+  // neighbors must not drop them here or the race menu cannot be asked again.
   for (size_t i = 0, n = partOne->serverState.maxConnectedId; i <= n; ++i) {
     if (auto actor = partOne->serverState.ActorByUser(i)) {
       g_onlineActorsBuffer[numOnlineActors] = actor->GetFormId();
