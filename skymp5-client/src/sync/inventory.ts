@@ -84,7 +84,7 @@ const checkIfNameIsGeneratedByGame = (
 ) => {
   if (!aStr.length && bStr.startsWith(formName)) {
     const bEnding = bStr.substr(formName.length);
-    if (bEnding.match(/^\s\(.*\)$/)) {
+    if (!bEnding.length || bEnding.match(/^\s\(.*\)$/)) {
       return true;
     }
   }
@@ -119,14 +119,17 @@ const extrasEqual = (a: Entry, b: Entry, ignoreWorn = false) => {
     a.enchantmentId === b.enchantmentId &&
     a.maxCharge === b.maxCharge &&
     !!a.removeEnchantmentOnUnequip === !!b.removeEnchantmentOnUnequip &&
-    //a.chargePercent === b.chargePercent &&
-    //namesEqual(a, b) &&
+    (a.chargePercent ?? 0) === (b.chargePercent ?? 0) &&
+    namesEqual(a, b) &&
     a.soul === b.soul &&
     a.poisonId === b.poisonId &&
     a.poisonCount === b.poisonCount &&
     ((!!a.worn === !!b.worn && !!a.wornLeft === !!b.wornLeft) || ignoreWorn)
   );
 };
+
+export const inventoryEntriesEqual = (a: Entry, b: Entry, ignoreWorn = false): boolean =>
+  a.baseId === b.baseId && extrasEqual(a, b, ignoreWorn);
 
 export const hasExtras = (e: Entry): boolean => {
   return !extrasEqual(e, { baseId: 0, count: 0 });
@@ -189,10 +192,10 @@ const extractExtraData = (
   });
 };
 
-const squash = (inv: Inventory): Inventory => {
+const squash = (inv: Inventory, ignoreWorn = false): Inventory => {
   const res = new Array<Entry>();
   inv.entries.forEach((e) => {
-    const same = res.find((x) => e.baseId === x.baseId && extrasEqual(x, e));
+    const same = res.find((x) => e.baseId === x.baseId && extrasEqual(x, e, ignoreWorn));
     if (same) {
       same.count += e.count;
     } else {
@@ -285,8 +288,8 @@ export const getDiff = (
   rhs: Inventory,
   ignoreWorn: boolean
 ): Inventory => {
-  const lhsCopy: Inventory = JSON.parse(JSON.stringify(lhs));
-  const rhsCopy: Inventory = JSON.parse(JSON.stringify(rhs));
+  const lhsCopy: Inventory = squash(JSON.parse(JSON.stringify(lhs)), ignoreWorn);
+  const rhsCopy: Inventory = squash(JSON.parse(JSON.stringify(rhs)), ignoreWorn);
 
   rhsCopy.entries.forEach((e) => {
     const sameFromLeft = lhsCopy.entries.find(
@@ -320,7 +323,7 @@ const basesReset = (): Set<number> => {
   return storage["basesReset"] as Set<number>;
 };
 
-const resetBase = (refr: ObjectReference): void => {
+export const resetInventoryBase = (refr: ObjectReference): boolean => {
   const base = refr.getBaseObject();
   const baseId = base ? base.getFormID() : 0;
   if (!basesReset().has(baseId)) {
@@ -328,7 +331,9 @@ const resetBase = (refr: ObjectReference): void => {
     TESModPlatform.resetContainer(base);
 
     refr.removeAllItems(null, false, true);
+    return true;
   }
+  return false;
 };
 
 export const applyInventory = (
@@ -337,7 +342,7 @@ export const applyInventory = (
   enableCrashProtection: boolean,
   ignoreWorn = false
 ): boolean => {
-  resetBase(refr);
+  resetInventoryBase(refr);
   const diff = getDiff(newInventory, getInventory(refr), ignoreWorn).entries;
 
   let res = true;
