@@ -619,6 +619,11 @@ void TESModPlatform::AddItemEx(
   FixedString textDisplayData, int32_t soul, RE::AlchemyItem* poison,
   int32_t poisonCount)
 {
+  // Consume the next-item flags even when this call is rejected while paused.
+  const bool worn = g_worn;
+  const bool wornLeft = g_wornLeft;
+  g_worn = false;
+  g_wornLeft = false;
   auto markType = [](RE::BaseExtraList::PresenceBitfield* presence,
                      uint32_t type, bool bCleared) {
     uint32_t index = (type >> 3);
@@ -664,11 +669,12 @@ void TESModPlatform::AddItemEx(
     (item->formType == RE::FormType::Armor &&
      reinterpret_cast<RE::TESObjectARMO*>(item)->IsShield());
 
-  const bool isTorch = item->formType == RE::FormType::Light;
+  const auto light = item->As<RE::TESObjectLIGH>();
+  const bool isTorch = light && light->CanBeCarried();
 
   const bool isClothes =
     (item->formType == RE::FormType::Armor && !isShieldLike) ||
-    item->formType == RE::FormType::Light;
+    isTorch;
 
   if (health > 1 || enchantment || chargePercent > 0 ||
       strlen(textDisplayData.data()) > 0 || (soul > 0 && soul <= 5) ||
@@ -754,14 +760,18 @@ void TESModPlatform::AddItemEx(
   });
 
   const bool needEquipWeap =
-    (g_worn || g_wornLeft) && item->formType == RE::FormType::Weapon;
+    (worn || wornLeft) && item->formType == RE::FormType::Weapon;
 
-  const bool needEquipShieldLike = (g_worn || g_wornLeft) && isShieldLike;
+  const bool needEquipShieldLike = (worn || wornLeft) && isShieldLike;
+
+  // RemoveItem handles worn armor removal itself. Only queue a new clothing
+  // equip for additions, while their exact extra list is still owned.
+  const bool needEquipClothes = countDelta > 0 && (worn || wornLeft) && isClothes;
 
   const bool needEquipAmmo =
-    (g_worn || g_wornLeft) && item->formType == RE::FormType::Ammo;
+    (worn || wornLeft) && item->formType == RE::FormType::Ammo;
 
-  if (needEquipWeap || needEquipShieldLike || needEquipAmmo) {
+  if (needEquipWeap || needEquipShieldLike || needEquipAmmo || needEquipClothes) {
     auto s = RE::ActorEquipManager::GetSingleton();
     if (containerRefr->formType == RE::FormType::ActorCharacter) {
 
@@ -779,12 +789,18 @@ void TESModPlatform::AddItemEx(
         auto slot = reinterpret_cast<RE::BGSEquipSlot*>(
           RE::TESForm::LookupByID(RightHand));
 
-        if (g_wornLeft && !needEquipShieldLike) // wornLeft + shield = deadlock
+        if (wornLeft && !needEquipShieldLike) // wornLeft + shield = deadlock
           slot = reinterpret_cast<RE::BGSEquipSlot*>(
             RE::TESForm::LookupByID(LeftHand));
 
         if (item->formType == RE::FormType::Ammo) {
           extraList = nullptr;
+          slot = nullptr;
+        }
+
+        // Biped clothing uses its armor addons, not a weapon hand slot.
+        // Equip through the manager after addition, with the same extra list.
+        if (needEquipClothes && !isTorch) {
           slot = nullptr;
         }
 
@@ -804,8 +820,6 @@ void TESModPlatform::AddItemEx(
     }
   }
 
-  g_worn = false;
-  g_wornLeft = false;
 }
 
 void TESModPlatform::UpdateEquipment(IVM* vm, StackID stackId,

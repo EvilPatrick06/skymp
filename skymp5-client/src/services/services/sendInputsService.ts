@@ -260,8 +260,11 @@ export class SendInputsService extends ClientListener {
 
     private sendEquipment(_refrId?: number) {
         if (_refrId) {
-          return;
+            return;
         }
+        // Load/equip callbacks fire while the owner inventory is being rebuilt.
+        // Preserve the dirty flag until the complete outfit can be reported.
+        if (this.sp.storage['ownerInventorySettling']) { return; }
         if (this.equipmentChanged) {
             this.equipmentChanged = false;
 
