@@ -208,6 +208,10 @@ public:
 
   void EquipBestWeapon();
 
+  // THORNSWOOD #1560. Replaces what this actor wears and tells everybody who
+  // can see it. The change is counted here. See EquipmentBinding::Set.
+  void ReplaceEquipment(Equipment newEquipment);
+
   void AddSpell(uint32_t spellId);
   void RemoveSpell(uint32_t spellId);
 

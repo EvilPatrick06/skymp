@@ -100,11 +100,17 @@ function fixture(save = false, options = {}) {
   vm.runInNewContext(js, sandbox);
   const remote = new sandbox.exports.RemoteServer(sp, controller);
   const emit = (name, message) => listeners.get(name)({message});
+  // Thornswood #1560: the server writes a new character's equipment record
+  // when it makes the character, so a creation packet carries the worn clothes
+  // in the record as well as in the pack. A returning character's record is
+  // whatever its game last reported.
+  const packEntries = () => options.entries || [{baseId: 100, count: 1, worn: true}, {baseId: 101, count: 1, worn: true}];
+  const wornOf = entries => entries.filter(e => e.worn || e.wornLeft).map(e => ({...e}));
   const spawn = (initialMenu = false, idx = 0) => emit('createActorMessage', {idx, refrId: 0xff000015 + idx, isMe: true,
-    transform: {worldOrCell: 9, pos: options.pos || [1, 2, 3], rot: [0, 0, 0]}, customPropsJsonDumps: options.returning ? [] : [{propName: 'thornswoodWear', propValueJsonDump: '{"creation":true}'}],
-    props: {learnedSpells: options.spells, isRaceMenuOpen: initialMenu, inventory: {entries: options.entries || [{baseId: 100, count: 1, worn: true}, {baseId: 101, count: 1, worn: true}]}},
+    transform: {worldOrCell: 9, pos: options.pos || [1, 2, 3], rot: [0, 0, 0]}, customPropsJsonDumps: [],
+    props: {learnedSpells: options.spells, isRaceMenuOpen: initialMenu, inventory: {entries: packEntries()}},
     appearance: options.appearance,
-    equipment: {inv: {entries: options.equipment || []}, numChanges: 0}});
+    equipment: {inv: {entries: options.equipment || (options.returning ? [] : wornOf(packEntries()))}, numChanges: 0}});
   const runEvent = event => {const callbacks = onceHandlers[event].splice(0); for (const fn of [...(onHandlers[event] || []), ...callbacks]) fn();};
   const advance = async (n, updates = true) => {
     for (let i = 0; i < n; i++) {
@@ -170,13 +176,13 @@ function fixture(save = false, options = {}) {
   for (const initialMenu of [false, true]) {
     const f = fixture(); f.spawn(initialMenu); if (!initialMenu) f.emit('setRaceMenuOpenMessage', {open: true});
     await f.advance(10);
-    assert.equal(f.opens, 0, 'the face menu must wait for loading and native inventory, even with empty equipment');
+    assert.equal(f.opens, 0, 'the face menu must wait for loading and native inventory');
     await f.advance(90);
     assert.equal(f.opens, 1); assert.equal(f.worn.size, 2, 'both original pieces are equipped before pausing');
     assert.equal(f.diagnostic.stage, 'before-face-menu');
     assert.equal(f.diagnostic.actual.filter(entry => entry.worn).length, 2, 'capture actual engine worn state for connected diagnostics');
     assert.equal(f.items.get(100), 1, 'queued work must not duplicate the shirt');
-    assert.equal(f.items.get(101), 1); assert.equal(f.removals, 0, 'empty equipment must not remove the full starter inventory');
+    assert.equal(f.items.get(101), 1); assert.equal(f.removals, 0, 'dressing from the record must not remove the starter inventory');
   }
   const save = fixture(true); save.spawn(); save.emit('setRaceMenuOpenMessage', {open: true});
   await save.advance(2, false); await save.advance(100);
@@ -245,5 +251,10 @@ function fixture(save = false, options = {}) {
   const lostState = fixture(); lostState.spawn(); await lostState.advance(100); lostState.worn.clear(); lostState.recreate();
   lostState.emit('setRaceMenuOpenMessage', {open: true}); await lostState.advance(100);
   assert.equal(lostState.opens, 0, 'retained model without readiness evidence must not fail open');
+  // The record decides what is worn, at creation too: a pack that marks the
+  // clothes worn beside a record that does not is dressed from the record.
+  const recordDecides = fixture(false, {equipment: []}); recordDecides.spawn(true); await recordDecides.advance(300);
+  assert.equal(recordDecides.opens, 1); assert.equal(recordDecides.worn.size, 0, 'the equipment record, not the pack, says what is worn');
+  assert.equal(recordDecides.items.get(100), 1, 'and the pack still holds the clothes');
   console.log('PASS real creation handlers: delayed inventory, asynchronous equip, both spawn paths, cancellation and early request');
 })().catch(e => { console.error(e); process.exitCode = 1; });

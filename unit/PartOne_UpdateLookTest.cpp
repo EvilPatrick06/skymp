@@ -16,8 +16,8 @@ TEST_CASE("SetRaceMenuOpen failures", "[PartOne]")
             .isRaceMenuOpen == false);
 
   partOne.SetRaceMenuOpen(0xff000000, true);
-  // warns with "Actor with id 0xff000000 is not attached to any of users" but
-  // sets flag
+  // sets the flag; with no owner yet there is nobody to tell, and the first
+  // packet an owner gets carries it (Thornswood #1560)
   REQUIRE(partOne.worldState.GetFormAt<MpObjectReference>(0xff000000)
             .GetChangeForm()
             .isRaceMenuOpen == true);
