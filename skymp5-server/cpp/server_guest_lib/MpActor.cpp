@@ -354,12 +354,19 @@ void MpActor::SetRaceMenuOpen(bool isOpen)
 
 void MpActor::SetAppearance(const Appearance* newAppearance)
 {
+  const bool hadAppearance = HasStoredAppearance();
   EditChangeForm([&](MpChangeForm& changeForm) {
     if (newAppearance)
       changeForm.appearanceDump = newAppearance->ToJson();
     else
       changeForm.appearanceDump.clear();
   });
+
+  // The race menu is only a request. Neighbors are subscribed the moment a
+  // face is actually stored, not when the menu opens or the actor logs in.
+  if (!hadAppearance && HasStoredAppearance()) {
+    ForceSubscriptionsUpdate();
+  }
 }
 
 void MpActor::SetEquipment(const Equipment& newEquipment)
@@ -1060,6 +1067,31 @@ std::unique_ptr<const Appearance> MpActor::GetAppearance() const
 const std::string& MpActor::GetAppearanceAsJson()
 {
   return ChangeForm().appearanceDump;
+}
+
+bool MpActor::HasStoredAppearance() const
+{
+  return !ChangeForm().appearanceDump.empty();
+}
+
+bool MpActor::ShouldPublishToOtherClients() const
+{
+  if (!IsCreatedAsPlayer() || HasStoredAppearance()) {
+    return true;
+  }
+
+  // Profile-backed characters stay off other clients until a face is stored,
+  // including the window between createActor and setUserActor.
+  if (GetProfileId() >= 0) {
+    return false;
+  }
+
+  if (callbacks && callbacks->getUserId &&
+      GetUserId() != Networking::InvalidUserId) {
+    return false;
+  }
+
+  return true;
 }
 
 namespace {
