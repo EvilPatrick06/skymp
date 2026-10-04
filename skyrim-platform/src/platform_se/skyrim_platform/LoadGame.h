@@ -1,4 +1,5 @@
 #pragma once
+#include "InitialInventory.h"
 
 namespace SaveFile_ {
 struct PlayerLocation;
@@ -43,7 +44,8 @@ public:
                   const std::array<float, 3>& angle, uint32_t cellOrWorld,
                   Time* time = nullptr, SaveFile_::Weather* _weather = nullptr,
                   SaveFile_::ChangeFormNPC_* changeFormNPC = nullptr,
-                  std::vector<std::string>* loadOrder = nullptr);
+                  std::vector<std::string>* loadOrder = nullptr,
+                  const std::vector<InitialInventory::Item>* inventory = nullptr);
 
   static std::wstring GetPathToMyDocuments();
 
@@ -79,7 +81,8 @@ private:
   static void ModifyEssStructure(std::shared_ptr<SaveFile_::SaveFile> save,
                                  std::array<float, 3> pos,
                                  std::array<float, 3> angle,
-                                 uint32_t cellOrWorld);
+                                 uint32_t cellOrWorld,
+                                 const std::vector<InitialInventory::Item>* inventory);
 
   static void ModifyPluginInfo(std::shared_ptr<SaveFile_::SaveFile>& save);
 

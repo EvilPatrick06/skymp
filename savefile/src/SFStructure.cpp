@@ -6,32 +6,25 @@
 SaveFile_::RefID SaveFile_::RefID::CreateRefId(SaveFile& parentSaveFile,
                                                uint32_t formId)
 {
+  if (parentSaveFile.formIDArrayCount != parentSaveFile.formIDArray.size())
+    throw std::runtime_error("Inconsistent save FormID array count");
+  auto existing = parentSaveFile.FindIndexInFormIdArray(formId);
+  uint32_t index;
+  if (existing >= 0) {
+    index = static_cast<uint32_t>(existing) + 1;
+  } else {
+    // RefIDs reserve their upper two bits for the namespace.
+    if (parentSaveFile.formIDArray.size() >= 0x3fffff)
+      throw std::runtime_error("Save FormID array is full");
+    parentSaveFile.formIDArray.push_back(formId);
+    parentSaveFile.formIDArrayCount = static_cast<uint32_t>(parentSaveFile.formIDArray.size());
+    parentSaveFile.fileLocationTable.unknownTable3Offset += 4;
+    index = parentSaveFile.formIDArrayCount;
+  }
   RefID res;
-
-  const auto countWas = parentSaveFile.formIDArrayCount;
-  const size_t n = countWas + 1;
-  uint32_t* newFormIDArray = new uint32_t[n];
-
-  memcpy(newFormIDArray, parentSaveFile.formIDArray.data(), countWas);
-  newFormIDArray[countWas] = formId;
-
-  parentSaveFile.formIDArray = { newFormIDArray, newFormIDArray + n };
-  parentSaveFile.formIDArrayCount = countWas + 1;
-
-  // fix offset
-  parentSaveFile.fileLocationTable.unknownTable3Offset += 4;
-
-  // 255 => 00 00 FF
-  // 256 => 00 01 00
-  // 65536 => error
-  const auto index =
-    countWas + 1; // as uesp.net says, formIDArray index starts in 1
-  if (index >= 65536)
-    throw std::runtime_error("too many elements was in FormIDArray (" +
-                             std::to_string(countWas) + ")");
-  res.byte0 = 0;
-  res.byte1 = (index / 256) % 256;
-  res.byte2 = index % 256;
+  res.byte0 = static_cast<uint8_t>(index >> 16);
+  res.byte1 = static_cast<uint8_t>(index >> 8);
+  res.byte2 = static_cast<uint8_t>(index);
 
   return res;
 }

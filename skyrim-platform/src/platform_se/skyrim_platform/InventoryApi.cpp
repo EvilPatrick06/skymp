@@ -2,6 +2,7 @@
 #include "CallNativeApi.h"
 #include "NullPointerException.h"
 #include "InventoryQueueFence.h"
+#include "InventoryLoadEpoch.h"
 
 extern CallNativeApi::NativeCallRequirements g_nativeCallRequirements;
 
@@ -314,7 +315,9 @@ Napi::Value InventoryApi::SetInventory(const Napi::CallbackInfo& info)
     objects.push_back({ baseId, count, slot });
   }
 
-  g_nativeCallRequirements.gameThrQ->AddTask([formId, objects](Viet::Void) {
+  const auto inventoryEpoch = InventoryLoadEpoch::Capture();
+  g_nativeCallRequirements.gameThrQ->AddTask([formId, objects, inventoryEpoch](Viet::Void) {
+    if (!InventoryLoadEpoch::IsCurrent(inventoryEpoch)) return;
     RE::Actor* pActor = RE::TESForm::LookupByID<RE::Actor>(formId);
 
     if (!pActor) {
