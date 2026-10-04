@@ -1,0 +1,24 @@
+'use strict';
+const assert = require('node:assert/strict'), fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
+const ts = require('../../skymp5-client/node_modules/typescript');
+const source = fs.readFileSync(path.join(__dirname, '../../skymp5-client/src/services/services/sendInputsService.ts'), 'utf8');
+const reports = [], callbacks = {}, storage = {ownerInventorySettling: true};
+let reads = 0;
+const sandbox = {exports: {}, require(name) {
+  if (name === './clientListener') return {ClientListener: class {}};
+  if (name.endsWith('/equipment')) return {getEquipment() { reads++; return {inv:{entries:[{baseId:100,count:1,worn:true}]}}; }};
+  if (name.endsWith('/messages')) return {MsgType:{UpdateEquipment:1}};
+  return new Proxy({}, {get: () => class {}});
+}};
+vm.runInNewContext(ts.transpileModule(source, {compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2018}}).outputText, sandbox);
+const input = new sandbox.exports.SendInputsService({storage,Game:{getPlayer:()=>({})}}, {on(name,fn){callbacks[name]=fn;},emitter:{emit(name,data){reports.push(data);}}});
+input.equipmentChanged = true;
+input.sendEquipment();
+assert.equal(reports.length,0,'transient loading equipment cannot overwrite the saved outfit');
+assert.equal(reads,0,'do not read an incomplete character inventory');
+assert.equal(input.equipmentChanged,true,'retain the report until the outfit is ready');
+delete storage.ownerInventorySettling;
+input.sendEquipment();
+assert.equal(reports.length,1); assert.equal(reports[0].message.data.inv.entries[0].worn,true);
+input.sendEquipment(); assert.equal(reports.length,1,'release one complete report, not duplicates');
+console.log('PASS equipment reports wait for the loaded owner outfit');
