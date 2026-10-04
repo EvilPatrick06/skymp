@@ -114,7 +114,7 @@ let pcInvStuckFor = 0;
 const PC_INV_GIVE_UP_AFTER = 3;
 
 on('update', () => {
-  if (storage['ownerInventorySettling']) { return; }
+  if (storage['ownerInventorySettling'] === true) { return; }
   if (isBadMenuShown() || Ui.isMenuOpen('RaceSex Menu')) {
     return;
   }
@@ -506,8 +506,12 @@ export class RemoteServer extends ClientListener {
       const earlyMenuRequest = this.worldModel.playerCharacterFormIdx < 0 && this.raceMenuRequested;
       this.cancelOwnerSpawn();
       this.raceMenuRequested = earlyMenuRequest;
+      this.ownerSpawnTarget = msg.transform;
       this.ownerInventory = msg.props?.inventory ?? msg.equipment?.inv;
       this.ownerInventoryIsSnapshot = true;
+      // Old owner work may still target the same local reference after a
+      // reconnect. Drain it before this snapshot is compared or applied.
+      this.ownerInventoryPending = this.sp.getInventoryQueueFence();
       storage['ownerInventorySettling'] = true;
       this.ownerSpawnReady = new Promise<boolean>(resolve => this.finishOwnerSpawn = resolve);
       this.worldModel.playerCharacterFormIdx = i;
@@ -531,14 +535,20 @@ export class RemoteServer extends ClientListener {
     // Inventory is authoritative for the owner. Fresh creation packets may
     // contain worn clothes here and an empty, independently saved equipment
     // record. Applying that record would remove the starting clothes.
+    let ownerArrived = false;
+    let ownerArrivalCell = 0;
+    let ownerBasePrepared = false;
     const ownerIsLoaded = (): boolean => {
       const pc = Game.getPlayer();
       if (!pc?.is3DLoaded()) { return false; }
       const location = pc.getWorldSpace()?.getFormID() || pc.getParentCell()?.getFormID();
       if (location !== msg.transform.worldOrCell) { return false; }
+      if (ownerArrived) { return pc.getParentCell()?.getFormID() === ownerArrivalCell; }
       const distance = Math.hypot(pc.getPositionX() - msg.transform.pos[0],
         pc.getPositionY() - msg.transform.pos[1], pc.getPositionZ() - msg.transform.pos[2]);
-      return distance < 256;
+      ownerArrived = distance < 256;
+      if (ownerArrived) { ownerArrivalCell = pc.getParentCell()?.getFormID() || 0; }
+      return ownerArrived;
     };
     const applyPcInv = (): boolean => {
       const pc = Game.getPlayer();
@@ -562,21 +572,27 @@ export class RemoteServer extends ClientListener {
       // Base-container reset queues a full removal. Wait for that removal
       // before calculating additions, otherwise retained starter pieces can
       // be omitted from the diff and removed by the older native job.
-      if (resetInventoryBase(pc)) {
-        this.ownerInventoryPending = {entries: []};
+      if (this.ownerInventoryPending) {
+        // Wait for execution, not the desired result. Paused natives can
+        // reject a batch, and a newer snapshot can supersede its contents.
+        if (!this.ownerInventoryPending()) { return false; }
+        this.ownerInventoryPending = undefined;
+      }
+      if (!ownerBasePrepared) {
+        try { resetInventoryBase(pc); }
+        finally {
+          ownerBasePrepared = true;
+          this.ownerInventoryPending = this.sp.getInventoryQueueFence();
+        }
         return false;
       }
       const actual = getInventory(pc);
-      if (this.ownerInventoryPending) {
-        // Never enqueue another inventory batch while the previous batch is
-        // outstanding, even when a newer server snapshot has arrived.
-        if (getDiff(this.ownerInventoryPending, actual, true).entries.length !== 0) { return false; }
-        this.ownerInventoryPending = undefined;
-      }
       setPcInventory(inv);
       if (getDiff(inv, actual, true).entries.length !== 0) {
-        this.ownerInventoryPending = JSON.parse(JSON.stringify(inv)) as Inventory;
-        applyInventory(pc, inv, false, true);
+        // Even a partial apply that throws may have queued earlier entries.
+        // Fence those entries before the next diff so they cannot duplicate.
+        try { applyInventory(pc, inv, false, true); }
+        finally { this.ownerInventoryPending = this.sp.getInventoryQueueFence(); }
         return false;
       }
       let ready = true;
@@ -634,6 +650,7 @@ export class RemoteServer extends ClientListener {
         }
         for (let attempt = 1; attempt <= 120 && ownerIsCurrent(); attempt++) {
           try {
+            if ([1, 5, 30, 120].includes(attempt)) { this.recordOwnerOutfit('outfit-wait-' + attempt); }
             if (ownerIsLoaded() && applyPcInv()) {
               const pc = Game.getPlayer()!;
               if (msg.equipment) {
@@ -1096,6 +1113,7 @@ export class RemoteServer extends ClientListener {
     this.ownerInventoryIsSnapshot = false;
     this.ownerSpawnSettled = false;
     this.ownerOutfitIsReady = undefined;
+    this.ownerSpawnTarget = undefined;
     delete storage['pcInv'];
     delete storage['ownerInventorySettling'];
   }
@@ -1112,7 +1130,16 @@ export class RemoteServer extends ClientListener {
         version: 'native-outfit-v1', at: Date.now(), stage, epoch: this.ownerSpawnEpoch,
         loaded: !!pc?.is3DLoaded(), race: pc?.getRace()?.getFormID() || 0,
         desired: summarize(this.ownerInventory), actual: pc ? summarize(getInventory(pc)) : [],
+        cell: pc?.getParentCell()?.getFormID() || 0,
+        world: pc?.getWorldSpace()?.getFormID() || 0,
+        pendingQueue: !!this.ownerInventoryPending,
+        queueComplete: this.ownerInventoryPending ? this.ownerInventoryPending() : true,
+        target: this.ownerSpawnTarget,
+        position: pc ? [pc.getPositionX(), pc.getPositionY(), pc.getPositionZ()] : undefined,
       });
+      // Native exports (including storage) are recreated for each plugin.
+      // This console reaches the disk log even when the front cannot see it.
+      logTrace(this, 'Owner outfit', storage['ownerOutfitDiagnostic']);
     } catch (e) { logError(this, 'Could not capture owner outfit', e); }
   }
 
@@ -1291,10 +1318,11 @@ export class RemoteServer extends ClientListener {
   private ownerSpawnReady?: Promise<boolean>;
   private finishOwnerSpawn?: (ready: boolean) => void;
   private ownerInventory?: Inventory;
-  private ownerInventoryPending?: Inventory;
+  private ownerInventoryPending?: () => boolean;
   private ownerInventoryIsSnapshot = false;
   private ownerSpawnSettled = false;
   private ownerOutfitIsReady?: () => boolean;
+  private ownerSpawnTarget?: CreateActorMessage['transform'];
   private raceMenuRequested = false;
   private raceMenuRequest = 0;
 }

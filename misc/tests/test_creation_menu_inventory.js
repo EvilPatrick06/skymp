@@ -20,14 +20,16 @@ function fixture(save = false, options = {}) {
   let frame = 0, loadedAt = 20, paused = false, opens = 0, removals = 0;
   const items = new Map(), worn = new Set(), jobs = [], onceHandlers = {update: [], tick: []}, onHandlers = {update: []};
   const hands = new Map(); let equipFailures = options.equipFailures || 0;
+  let rejectedAdds = options.rejectedAdds || 0, positionX = 1, cellId = 9;
+  let partialThrow = !!options.partialThrow;
   const spellWrites = []; let basePrepared = !!options.basePrepared;
   if (options.initialWorn) for (const id of options.initialWorn) worn.add(id);
   const world = {forms: [], playerCharacterFormIdx: -1, playerCharacterRefrId: 0};
   const forms = id => ({id, getFormID: () => id, getName: () => 'base' + id});
   const actor = {
     is3DLoaded: () => frame >= loadedAt, getFormID: () => 0x14,
-    getPositionX: () => 1, getPositionY: () => 2, getPositionZ: () => 3,
-    getParentCell: () => forms(9), getWorldSpace: () => null,
+    getPositionX: () => positionX, getPositionY: () => 2, getPositionZ: () => 3,
+    getParentCell: () => forms(cellId), getWorldSpace: () => options.exterior ? forms(9) : null,
     getRace: () => forms(123),
     getItemCount: f => items.get(f.id) || 0, isEquipped: f => worn.has(f.id),
     equipItem: f => {if (equipFailures-- > 0) throw Error('native equip temporarily unavailable');jobs.push({at: frame + 2, run: () => { if (items.has(f.id)) {worn.add(f.id); if (f.id === 200) hands.set(1, f.id);} }});},
@@ -47,12 +49,21 @@ function fixture(save = false, options = {}) {
     return [{baseId, count, ...(worn.has(baseId) ? {worn: true} : {})}];
   })});
   const applyInventory = (_actor, expected) => {
-    if (paused) return; // Native rejects before enqueueing, not at execution.
-    for (const e of diff(expected, inventory(), true).entries) jobs.push({at: frame + (options.nativeDelay || 2), run: () => {
-      const count = (items.get(e.baseId) || 0) + e.count; if (count > 0) items.set(e.baseId, count); else {items.delete(e.baseId);worn.delete(e.baseId);}
-    }});
+    if (paused || rejectedAdds-- > 0) return; // Native rejects before enqueueing, not at execution.
+    for (const e of diff(expected, inventory(), true).entries) {
+      jobs.push({at: frame + (options.nativeDelay || 2), run: () => {
+        const count = (items.get(e.baseId) || 0) + e.count; if (count > 0) items.set(e.baseId, count); else {items.delete(e.baseId);worn.delete(e.baseId);}
+      }});
+      if (partialThrow) {partialThrow = false; throw Error('later native entry failed after first addition queued');}
+    }
   };
   const sp = {
+    getInventoryQueueFence() {
+      let finished = false;
+      const at = Math.max(frame + 1, ...jobs.map(job => job.at + 1));
+      jobs.push({at, run: () => {finished = true;}});
+      return () => finished;
+    },
     storage: {worldModel: world}, Actor: {from: x => x}, Armor: {from: x => x}, Ammo: {from: () => null},
     Cell: {from: x => x}, WorldSpace: {from: () => null}, Weapon: {from: f => f?.id === 200 ? f : null},
     Game: {getPlayer: () => actor, getFormEx: forms, getModCount: () => 0, showRaceMenu: () => {paused = true; opens++;}},
@@ -62,6 +73,8 @@ function fixture(save = false, options = {}) {
     once: (event, fn) => onceHandlers[event].push(fn), on: (event, fn) => { (onHandlers[event] ||= []).push(fn); },
     printConsole() {}
   };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../skyrim-platform/src/platform_se/skyrim_platform/assets/storageProxy.js'), 'utf8'))(sp);
+  sp.storage.worldModel = world;
   const listeners = new Map();
   const controller = {emitter: {on: (name, fn) => listeners.set(name, fn), emit() {}}, lookupListener: () => ({
     getTime: () => ({newGameHourValue: 12}), loadGame: () => {loadedAt = frame + 20;}
@@ -97,10 +110,28 @@ function fixture(save = false, options = {}) {
       for (let k = 0; k < 8; k++) await Promise.resolve();
     }
   };
-  return {spawn, emit, advance, recreate: () => new sandbox.exports.RemoteServer(sp, controller), get diagnostic() {return JSON.parse(sp.storage.ownerOutfitDiagnostic);}, get opens() {return opens;}, items, worn, hands, spellWrites, get settling() {return !!sp.storage.ownerInventorySettling;}, get removals() {return removals;}};
+  return {spawn, emit, advance, move: x => {positionX = x;}, changeCell: id => {cellId = id;}, recreate: () => new sandbox.exports.RemoteServer(sp, controller), get diagnostic() {return JSON.parse(sp.storage.ownerOutfitDiagnostic);}, get opens() {return opens;}, items, worn, hands, spellWrites, get settling() {return sp.storage.ownerInventorySettling === true;}, get removals() {return removals;}};
 }
 
 (async () => {
+  const rejected = fixture(true, {rejectedAdds: 1}); rejected.spawn(true); await rejected.advance(300);
+  assert.equal(rejected.opens, 1, 'a silently rejected native add must retry after its queue completes');
+  assert.equal(rejected.items.get(100), 1); assert.equal(rejected.items.get(101), 1);
+  const partial = fixture(true, {partialThrow: true, nativeDelay: 20}); partial.spawn(true); await partial.advance(400);
+  assert.equal(partial.opens, 1); assert.equal(partial.items.get(100), 1); assert.equal(partial.items.get(101), 1);
+  const replacementOptions = {basePrepared: true, nativeDelay: 20};
+  const replacement = fixture(true, replacementOptions); replacement.spawn(true); await replacement.advance(43);
+  replacementOptions.entries = [{baseId: 102, count: 1, worn: true}]; replacement.items.set(102, 1); replacement.worn.add(102);
+  replacement.spawn(true, 1); await replacement.advance(400);
+  assert.equal(replacement.opens, 1, 'only the current owner can open creation after old queued work drains');
+  assert.equal(replacement.items.size, 1); assert.equal(replacement.items.get(102), 1);
+  const moving = fixture(true); moving.spawn(true); await moving.advance(30); moving.move(400); await moving.advance(300);
+  assert.equal(moving.opens, 1, 'moving inside the spawn cell after arrival cannot strand creation');
+  const wrongCell = fixture(true); wrongCell.spawn(true); await wrongCell.advance(30); wrongCell.changeCell(10); await wrongCell.advance(1300);
+  assert.equal(wrongCell.opens, 0, 'a different cell is still not the authoritative spawn');
+  const exterior = fixture(true, {exterior: true}); exterior.spawn(true); await exterior.advance(30);
+  exterior.move(4000); exterior.changeCell(10); await exterior.advance(300);
+  assert.equal(exterior.opens, 0, 'crossing an exterior cell cannot open creation in the same worldspace');
   for (const initialMenu of [false, true]) {
     const f = fixture(); f.spawn(initialMenu); if (!initialMenu) f.emit('setRaceMenuOpenMessage', {open: true});
     await f.advance(10);
@@ -147,6 +178,9 @@ function fixture(save = false, options = {}) {
   assert.equal(oldSpells.spellWrites.length, 0, 'cancelled delayed work must not replace another spellbook');
   const newSpells = fixture(false, {spells: [7]}); newSpells.spawn(); await newSpells.advance(100);
   assert.deepEqual(newSpells.spellWrites, ['remove', 7], 'current owner spells still load');
+  newSpells.emit('setInventoryMessage', {inventory: {entries: [{baseId: 102, count: 1}]}});
+  await newSpells.advance(100);
+  assert.equal(newSpells.items.get(102), 1, 'background inventory resumes with the real storage proxy after owner settlement');
   const plainWorn = [{baseId: 100, count: 1, worn: true}, {baseId: 100, count: 1, health: 2}];
   const wrongVariant = fixture(false, {entries: [{baseId: 100, count: 1}, {baseId: 100, count: 1, health: 2, worn: true}], actualEntries: plainWorn, initialWorn: [100], basePrepared: true});
   wrongVariant.items.set(100, 2); wrongVariant.spawn(true); await wrongVariant.advance(1300);

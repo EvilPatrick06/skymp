@@ -1,6 +1,7 @@
 #include "InventoryApi.h"
 #include "CallNativeApi.h"
 #include "NullPointerException.h"
+#include "InventoryQueueFence.h"
 
 extern CallNativeApi::NativeCallRequirements g_nativeCallRequirements;
 
@@ -343,6 +344,17 @@ Napi::Value InventoryApi::SetInventory(const Napi::CallbackInfo& info)
 
 void InventoryApi::Register(Napi::Env env, Napi::Object& exports)
 {
+  // Call after synchronous inventory native dispatch. Completion means its
+  // queued work has run; callers must still compare actual inventory to the
+  // authoritative snapshot, since a paused AddItemEx can reject the call.
+  exports.Set("getInventoryQueueFence", Napi::Function::New(
+    env, NapiHelper::WrapCppExceptions([](const Napi::CallbackInfo& info) -> Napi::Value {
+      if (!g_nativeCallRequirements.gameThrQ) { throw NullPointerException("gameThrQ"); }
+      auto complete = CreateInventoryQueueFence(*g_nativeCallRequirements.gameThrQ);
+      return Napi::Function::New(info.Env(), [complete](const Napi::CallbackInfo& poll) {
+        return Napi::Boolean::New(poll.Env(), complete());
+      });
+    })));
   exports.Set("getExtraContainerChanges",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(GetExtraContainerChanges)));
