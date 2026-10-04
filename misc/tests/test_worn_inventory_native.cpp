@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 #include "../../viet/include/TaskQueue.h"
+#include "../../skyrim-platform/src/platform_se/skyrim_platform/InventoryQueueFence.h"
 using IVM = void;
 using StackID = int;
 struct FixedString { const char* value; const char* data() const { return value; } };
@@ -130,5 +131,27 @@ int main() {
   queue.flush(); assert(!actor.worn.count(4)); // Rejected calls cannot leak worn state.
   add(actor, shirt, true, false, "My shirt", -1, 1.5f); queue.flush();
   assert(actor.bag[1] == 0 && !actor.worn.count(1)); // No post-removal armor extra use.
+  RE::UI::GetSingleton()->paused = true;
+  add(actor, shirt, true);
+  auto rejected = CreateInventoryQueueFence(queue.native);
+  assert(!rejected()); queue.flush(); assert(rejected() && actor.bag[1] == 0);
+  RE::UI::GetSingleton()->paused = false;
+  add(actor, shirt, true);
+  auto accepted = CreateInventoryQueueFence(queue.native);
+  assert(!accepted() && actor.bag[1] == 0); queue.flush();
+  assert(accepted() && actor.bag[1] == 1 && actor.worn.count(1));
+  auto cancelled = CreateInventoryQueueFence(queue.native);
+  queue.native.Clear(); queue.flush(); assert(!cancelled());
+  std::function<bool()> older, newer;
+  bool sawGap = false;
+  queue.native.AddTask([&](const Viet::Void&) {
+    newer = CreateInventoryQueueFence(queue.native);
+    queue.native.AddTask([&](const Viet::Void&) {sawGap = newer() && !older();});
+    throw std::runtime_error("native failure");
+  });
+  older = CreateInventoryQueueFence(queue.native);
+  try {queue.flush(); assert(false);} catch (const std::runtime_error&) {}
+  assert(!older() && !newer()); queue.flush();
+  assert(sawGap && older() && newer()); // A later fence never acknowledges the older gap.
   std::cout << "PASS native worn clothing, exact extras, queue order, hands, ammunition and paused-call isolation\n";
 }
