@@ -56,6 +56,8 @@ public:
 
   std::unique_ptr<const Appearance> GetAppearance() const;
   const std::string& GetAppearanceAsJson();
+  bool HasStoredAppearance() const;
+  bool ShouldPublishToOtherClients() const;
   std::string GetLastAnimEventAsJson() const;
   const Equipment& GetEquipment() const;
   std::array<std::optional<Inventory::Entry>, 2> GetEquippedWeapon() const;
