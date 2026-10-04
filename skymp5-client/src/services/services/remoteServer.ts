@@ -238,6 +238,7 @@ export class RemoteServer extends ClientListener {
     once('update', () => {
       if (epoch !== this.ownerSpawnEpoch) { return; }
       setPcInventory(msg.inventory);
+      this.recordOwnerOutfit('inventory-received');
 
       let blocked = false;
 
@@ -513,7 +514,10 @@ export class RemoteServer extends ClientListener {
       this.worldModel.playerCharacterRefrId = msg.refrId || 0;
       const epoch = this.ownerSpawnEpoch;
       once('update', () => {
-        if (epoch === this.ownerSpawnEpoch && this.ownerInventory) { setPcInventory(this.ownerInventory); }
+        if (epoch === this.ownerSpawnEpoch && this.ownerInventory) {
+          setPcInventory(this.ownerInventory);
+          this.recordOwnerOutfit('spawn-snapshot');
+        }
       });
     }
     const ownerEpoch = this.ownerSpawnEpoch;
@@ -542,10 +546,12 @@ export class RemoteServer extends ClientListener {
       if (!pc?.is3DLoaded() || !inv || isBadMenuShown() || Ui.isMenuOpen('RaceSex Menu')) { return false; }
       const wear = (form as Record<string, unknown>)['thornswoodWear'] as {creation?: boolean} | undefined;
       const creation = wear?.creation === true || msg.props?.isRaceMenuOpen === true;
-      if (this.ownerInventoryIsSnapshot && !creation && form.equipment) {
+      if (this.ownerInventoryIsSnapshot && !creation && msg.equipment) {
         inv = JSON.parse(JSON.stringify(inv)) as Inventory;
         for (const entry of inv.entries) { delete entry.worn; delete entry.wornLeft; }
-        for (const equipped of form.equipment.inv.entries) {
+        // Incoming equipment echoes update the live model while loading.
+        // Restore the original saved snapshot, not that transient model.
+        for (const equipped of msg.equipment.inv.entries) {
           if (equipped.count <= 0 || (!equipped.worn && !equipped.wornLeft)) { continue; }
           const owned = inv.entries.find(entry => entry.count > 0 && !entry.worn && !entry.wornLeft && inventoryEntriesEqual(entry, equipped, true));
           if (!owned) { return false; }
@@ -638,6 +644,7 @@ export class RemoteServer extends ClientListener {
               }
               pc.queueNiNodeUpdate();
               logTrace(this, 'Owner inventory and outfit ready at attempt', attempt);
+              this.recordOwnerOutfit('outfit-ready');
               this.ownerSpawnSettled = true;
               this.finishOwnerSpawn?.(true);
               if (!this.raceMenuRequested) { delete storage['ownerInventorySettling']; }
@@ -654,6 +661,7 @@ export class RemoteServer extends ClientListener {
         // Keep background inventory writes blocked after failed settlement.
         // Reconnection supplies a fresh authoritative owner snapshot.
         logError(this, 'Owner inventory or outfit did not finish loading; face menu stays closed');
+        this.recordOwnerOutfit('outfit-failed');
       }
     };
 
@@ -1092,6 +1100,22 @@ export class RemoteServer extends ClientListener {
     delete storage['ownerInventorySettling'];
   }
 
+  private recordOwnerOutfit(stage: string): void {
+    try {
+      const pc = Game.getPlayer();
+      const summarize = (inv?: Inventory) => (inv?.entries || []).slice(0, 32).map(entry => ({
+        baseId: entry.baseId, count: entry.count, worn: !!entry.worn, wornLeft: !!entry.wornLeft,
+      }));
+      // The front writes these bounded transitions to its existing disk log.
+      // Console-only readiness messages could not diagnose connected failures.
+      storage['ownerOutfitDiagnostic'] = JSON.stringify({
+        version: 'native-outfit-v1', at: Date.now(), stage, epoch: this.ownerSpawnEpoch,
+        loaded: !!pc?.is3DLoaded(), race: pc?.getRace()?.getFormID() || 0,
+        desired: summarize(this.ownerInventory), actual: pc ? summarize(getInventory(pc)) : [],
+      });
+    } catch (e) { logError(this, 'Could not capture owner outfit', e); }
+  }
+
   private onSetRaceMenuOpenMessage(event: ConnectionMessage<SetRaceMenuOpenMessage>): void {
     this.raceMenuRequested = event.message.open;
     const request = ++this.raceMenuRequest;
@@ -1117,6 +1141,7 @@ export class RemoteServer extends ClientListener {
           if (this.ownerOutfitIsReady && this.ownerOutfitIsReady()) {
             if (!Ui.isMenuOpen('RaceSex Menu')) {
               unequipIronHelmet();
+              this.recordOwnerOutfit('before-face-menu');
               Game.showRaceMenu();
             }
             delete storage['ownerInventorySettling'];

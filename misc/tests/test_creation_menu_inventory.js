@@ -28,6 +28,7 @@ function fixture(save = false, options = {}) {
     is3DLoaded: () => frame >= loadedAt, getFormID: () => 0x14,
     getPositionX: () => 1, getPositionY: () => 2, getPositionZ: () => 3,
     getParentCell: () => forms(9), getWorldSpace: () => null,
+    getRace: () => forms(123),
     getItemCount: f => items.get(f.id) || 0, isEquipped: f => worn.has(f.id),
     equipItem: f => {if (equipFailures-- > 0) throw Error('native equip temporarily unavailable');jobs.push({at: frame + 2, run: () => { if (items.has(f.id)) {worn.add(f.id); if (f.id === 200) hands.set(1, f.id);} }});},
     equipItemEx: (f, slot) => jobs.push({at: frame + 2, run: () => {if(items.has(f.id)){hands.set(slot, f.id);worn.add(f.id);}}}),
@@ -96,7 +97,7 @@ function fixture(save = false, options = {}) {
       for (let k = 0; k < 8; k++) await Promise.resolve();
     }
   };
-  return {spawn, emit, advance, recreate: () => new sandbox.exports.RemoteServer(sp, controller), get opens() {return opens;}, items, worn, hands, spellWrites, get settling() {return !!sp.storage.ownerInventorySettling;}, get removals() {return removals;}};
+  return {spawn, emit, advance, recreate: () => new sandbox.exports.RemoteServer(sp, controller), get diagnostic() {return JSON.parse(sp.storage.ownerOutfitDiagnostic);}, get opens() {return opens;}, items, worn, hands, spellWrites, get settling() {return !!sp.storage.ownerInventorySettling;}, get removals() {return removals;}};
 }
 
 (async () => {
@@ -106,6 +107,8 @@ function fixture(save = false, options = {}) {
     assert.equal(f.opens, 0, 'the face menu must wait for loading and native inventory, even with empty equipment');
     await f.advance(90);
     assert.equal(f.opens, 1); assert.equal(f.worn.size, 2, 'both original pieces are equipped before pausing');
+    assert.equal(f.diagnostic.stage, 'before-face-menu');
+    assert.equal(f.diagnostic.actual.filter(entry => entry.worn).length, 2, 'capture actual engine worn state for connected diagnostics');
     assert.equal(f.items.get(100), 1, 'queued work must not duplicate the shirt');
     assert.equal(f.items.get(101), 1); assert.equal(f.removals, 0, 'empty equipment must not remove the full starter inventory');
   }
@@ -157,6 +160,11 @@ function fixture(save = false, options = {}) {
   const saved = fixture(false, {returning: true, entries: [{baseId: 200, count: 1}], equipment: [{baseId: 200, count: 1, wornLeft: true}]});
   saved.spawn(); saved.emit('setRaceMenuOpenMessage', {open: true}); await saved.advance(100);
   assert.equal(saved.opens, 1); assert.equal(saved.hands.get(2), 200, 'saved equipment overlays ownership inventory');
+  const loadingEcho = fixture(false, {returning: true, entries: [{baseId: 100, count: 1}], equipment: [{baseId: 100, count: 1, worn: true}]});
+  loadingEcho.spawn(); await loadingEcho.advance(10);
+  loadingEcho.emit('updateEquipmentMessage', {idx: 0, data: {inv: {entries: [{baseId: 100, count: 1}]}, numChanges: 1}});
+  await loadingEcho.advance(100);
+  assert(loadingEcho.worn.has(100), 'a transient loading echo must not replace the saved outfit being restored');
   const unequipped = fixture(false, {returning: true, basePrepared: true, initialWorn: [100], entries: [{baseId: 100, count: 1, worn: true}]});
   unequipped.items.set(100, 1);
   unequipped.spawn(); unequipped.emit('setRaceMenuOpenMessage', {open: true}); await unequipped.advance(100);
