@@ -25,7 +25,7 @@ import { nameof } from '../../lib/nameof';
 import { setActorValuePercentage } from '../../sync/actorvalues';
 import { applyAppearanceToPlayer } from '../../sync/appearance';
 import { applyEquipment, isBadMenuShown, syncSpellEquipment, SpellType } from '../../sync/equipment';
-import { Inventory, applyInventory, getDiff, getInventory, inventoryEntriesEqual, resetInventoryBase } from '../../sync/inventory';
+import { Inventory, acceptPreloadedInventoryBase, applyInventory, getDiff, getInventory, inventoryEntriesEqual, resetInventoryBase } from '../../sync/inventory';
 import { Movement } from '../../sync/movement';
 import { learnSpells, removeAllSpells } from '../../sync/spell';
 import { ModelApplyUtils } from '../../view/modelApplyUtils';
@@ -538,6 +538,7 @@ export class RemoteServer extends ClientListener {
     let ownerArrived = false;
     let ownerArrivalCell = 0;
     let ownerBasePrepared = false;
+    let initialInventoryLoaded = false;
     const ownerIsLoaded = (): boolean => {
       const pc = Game.getPlayer();
       if (!pc?.is3DLoaded()) { return false; }
@@ -577,6 +578,10 @@ export class RemoteServer extends ClientListener {
         // reject a batch, and a newer snapshot can supersede its contents.
         if (!this.ownerInventoryPending()) { return false; }
         this.ownerInventoryPending = undefined;
+      }
+      if (!ownerBasePrepared && initialInventoryLoaded) {
+        acceptPreloadedInventoryBase(pc);
+        ownerBasePrepared = true;
       }
       if (!ownerBasePrepared) {
         try { resetInventoryBase(pc); }
@@ -641,13 +646,18 @@ export class RemoteServer extends ClientListener {
       this.onSetRaceMenuOpenMessage({ message: { t: MsgType.SetRaceMenuOpen, open: true } });
     }
 
+    let appearancePrepared = false;
+    const prepareOwnerAppearance = async (): Promise<void> => {
+      if (!appearancePrepared && msg.appearance) {
+        applyAppearanceToPlayer(msg.appearance);
+        await Utility.wait(0.25);
+      }
+      appearancePrepared = true;
+    };
     const settleOwner = async (): Promise<void> => {
       try {
         if (!ownerIsCurrent()) { return; }
-        if (msg.appearance) {
-          applyAppearanceToPlayer(msg.appearance);
-          await Utility.wait(0.25);
-        }
+        await prepareOwnerAppearance();
         for (let attempt = 1; attempt <= 120 && ownerIsCurrent(); attempt++) {
           try {
             if ([1, 5, 30, 120].includes(attempt)) { this.recordOwnerOutfit('outfit-wait-' + attempt); }
@@ -724,6 +734,24 @@ export class RemoteServer extends ClientListener {
           logTrace(this, 'Using moveRefrToPosition to spawn player');
           (async () => {
             try {
+              const creation = ((form as Record<string, unknown>)["thornswoodWear"] as {creation?: boolean} | undefined)?.creation === true || msg.props?.isRaceMenuOpen === true;
+              if (creation) {
+                // Prepare while still at the source location. Entering the hall
+                // must not reveal the old empty inventory for several frames.
+                await prepareOwnerAppearance();
+                let prepared = false;
+                for (let attempt = 0; attempt < 1200 && ownerIsCurrent(); ++attempt) {
+                  // Retain a valid arrival if the loaded save already is here.
+                  ownerIsLoaded();
+                  try { if (applyPcInv()) { prepared = true; break; } }
+                  catch (e) { if (attempt === 0) { logError(this, "Retrying inventory before entering creation", e); } }
+                  await Utility.wait(0.1);
+                }
+                if (!prepared || !ownerIsCurrent()) {
+                  if (ownerIsCurrent()) { this.finishOwnerSpawn?.(false); }
+                  return;
+                }
+              }
               for (let attempt = 0; attempt < 120 && ownerIsCurrent(); attempt++) {
                 TESModPlatform.moveRefrToPosition(
                   Game.getPlayer(),
@@ -734,6 +762,12 @@ export class RemoteServer extends ClientListener {
                 );
                 await Utility.wait(1);
                 if (!ownerIsCurrent()) { return; }
+                // Preparation may have latched a nearby source cell. Refresh
+                // after an actual move crosses its exterior boundary.
+                if (ownerArrived && Game.getPlayer()?.getParentCell()?.getFormID() !== ownerArrivalCell) {
+                  ownerArrived = false;
+                  ownerArrivalCell = 0;
+                }
                 if (ownerIsLoaded()) { await settleOwner(); return; }
               }
             } catch (e) { logError(this, 'Owner movement failed', e); }
@@ -843,6 +877,8 @@ export class RemoteServer extends ClientListener {
 
             logTrace(this, `loading game in world/cell`, msg.transform.worldOrCell.toString(16));
             const loadGameService = this.controller.lookupListener(LoadGameService);
+            const initialInventory = ((form as Record<string, unknown>)["thornswoodWear"] as {creation?: boolean} | undefined)?.creation === true || msg.props?.isRaceMenuOpen === true
+              ? this.ownerInventory : undefined;
             loadGameService.loadGame(
               msg.transform.pos,
               msg.transform.rot,
@@ -866,8 +902,10 @@ export class RemoteServer extends ClientListener {
                 }
                 : undefined,
               loadOrder,
-              { minutes: 0, seconds: 0, hours: this.controller.lookupListener(TimeService).getTime().newGameHourValue }
+              { minutes: 0, seconds: 0, hours: this.controller.lookupListener(TimeService).getTime().newGameHourValue },
+              initialInventory
             );
+            initialInventoryLoaded = !!initialInventory;
             once('update', () => { void settleOwner(); });
           }
         });

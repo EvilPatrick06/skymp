@@ -28,26 +28,11 @@ void SaveFile_::SeekerOfDifferences::ZlibDecompress(const uint8_t* in,
                                                     uint8_t* out,
                                                     size_t outSize)
 {
-  z_stream infstream;
-  infstream.zalloc = Z_NULL;
-  infstream.zfree = Z_NULL;
-  infstream.opaque = Z_NULL;
+  uLongf actual = static_cast<uLongf>(outSize);
+  const int result = uncompress(out, &actual, in, static_cast<uLong>(inSize));
+  if (result != Z_OK || actual != outSize)
+    throw std::runtime_error("Invalid compressed save data");
 
-  infstream.avail_in = inSize;
-  infstream.next_in = const_cast<uint8_t*>(in);
-  infstream.avail_out = outSize;
-  infstream.next_out = out;
-
-  inflateInit(&infstream);
-
-  int res = inflate(&infstream, Z_NO_FLUSH);
-  if (res < Z_OK)
-    throw std::runtime_error("inflate() failed with code " +
-                             std::to_string(res));
-  res = inflateEnd(&infstream);
-  if (res < Z_OK)
-    throw std::runtime_error("inflateEnd() failed with code " +
-                             std::to_string(res));
 }
 
 size_t SaveFile_::SeekerOfDifferences::ZlibCompress(const uint8_t* in,
@@ -55,24 +40,11 @@ size_t SaveFile_::SeekerOfDifferences::ZlibCompress(const uint8_t* in,
                                                     uint8_t* out,
                                                     size_t outMaxSize)
 {
-  z_stream defstream;
-  defstream.zalloc = Z_NULL;
-  defstream.zfree = Z_NULL;
-  defstream.opaque = Z_NULL;
+  uLongf actual = static_cast<uLongf>(outMaxSize);
+  const int result = compress2(out, &actual, in, static_cast<uLong>(inSize), Z_BEST_COMPRESSION);
+  if (result != Z_OK) throw std::runtime_error("Save compression did not finish");
+  return actual;
 
-  defstream.avail_in = inSize;
-  defstream.next_in = const_cast<uint8_t*>(in);
-  defstream.avail_out = outMaxSize;
-  defstream.next_out = out;
-
-  // the actual compression work.
-  deflateInit(&defstream, Z_BEST_COMPRESSION);
-  int res = deflate(&defstream, Z_FINISH);
-
-  const auto outputSize = defstream.next_out - (uint8_t*)out;
-  res = deflateEnd(&defstream);
-
-  return outputSize;
 }
 
 SaveFile_::SeekerOfDifferences::ComparisonDifferences

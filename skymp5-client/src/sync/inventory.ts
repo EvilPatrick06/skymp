@@ -323,6 +323,11 @@ const basesReset = (): Set<number> => {
   return storage["basesReset"] as Set<number>;
 };
 
+export const acceptPreloadedInventoryBase = (refr: ObjectReference): void => {
+  const base = refr.getBaseObject();
+  if (base) { basesReset().add(base.getFormID()); }
+};
+
 export const resetInventoryBase = (refr: ObjectReference): boolean => {
   const base = refr.getBaseObject();
   const baseId = base ? base.getFormID() : 0;

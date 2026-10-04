@@ -6,6 +6,7 @@
 #include "savefile/SFReader.h"
 #include "savefile/SFSeekerOfDifferences.h"
 #include "savefile/SFWriter.h"
+#include <zlib.h>
 
 namespace fs = std::filesystem;
 
@@ -93,7 +94,8 @@ void LoadGame::Run(std::shared_ptr<SaveFile_::SaveFile> save,
                    const std::array<float, 3>& angle, uint32_t cellOrWorld,
                    Time* time, SaveFile_::Weather* _weather,
                    SaveFile_::ChangeFormNPC_* changeFormNPC,
-                   std::vector<std::string>* loadOrder)
+                   std::vector<std::string>* loadOrder,
+                   const std::vector<InitialInventory::Item>* inventory)
 {
   if (!save) {
     throw std::runtime_error("Bad SaveFile");
@@ -105,7 +107,7 @@ void LoadGame::Run(std::shared_ptr<SaveFile_::SaveFile> save,
   ModifySaveWeather(save, _weather);
   ModifyPlayerFormNPC(save, changeFormNPC);
   ModifyLoadOrder(save, loadOrder);
-  ModifyEssStructure(save, pos, angle, cellOrWorld);
+  ModifyEssStructure(save, pos, angle, cellOrWorld, inventory);
 
   auto name = g_saveFilePrefix + GenerateGuid();
   if (!SaveFile_::Writer(save).CreateSaveFile(GetSaveFullPath(name))) {
@@ -259,7 +261,8 @@ void LoadGame::FillChangeForm(
 void LoadGame::ModifyEssStructure(std::shared_ptr<SaveFile_::SaveFile> save,
                                   std::array<float, 3> pos,
                                   std::array<float, 3> angle,
-                                  uint32_t cellOrWorld)
+                                  uint32_t cellOrWorld,
+                                  const std::vector<InitialInventory::Item>* inventory)
 {
   auto playerLoc = FindSectionWithPlayerLocation(save);
   if (!playerLoc) {
@@ -281,6 +284,9 @@ void LoadGame::ModifyEssStructure(std::shared_ptr<SaveFile_::SaveFile> save,
   }
 
   auto uncompressed = Decompress(*player);
+  if (inventory) {
+    uncompressed = InitialInventory::Replace(uncompressed, player->changeFlags, *inventory);
+  }
   EditChangeForm(uncompressed, pos, angle, worldRefId);
   auto compressed = Compress(uncompressed);
   WriteChangeForm(save, *player, compressed, uncompressed.size());
@@ -348,7 +354,7 @@ void LoadGame::EditChangeForm(std::vector<uint8_t>& data,
 std::vector<uint8_t> LoadGame::Compress(
   const std::vector<uint8_t>& uncompressed)
 {
-  size_t newCompressedSizeMax = uncompressed.size();
+  size_t newCompressedSizeMax = compressBound(static_cast<uLong>(uncompressed.size()));
   std::vector<uint8_t> newCompressed(newCompressedSizeMax, 0);
   const auto newCompressedSize = SaveFile_::SeekerOfDifferences::ZlibCompress(
     uncompressed.data(), uncompressed.size(), newCompressed.data(),
@@ -369,9 +375,16 @@ void LoadGame::WriteChangeForm(std::shared_ptr<SaveFile_::SaveFile> save,
   changeForm.data.resize(changeForm.length1);
   std::copy(compressed.begin(), compressed.end(), changeForm.data.begin());
 
-  // fix offsets
+  // The type's upper bits select 1, 2 or 4 byte lengths. Growing the
+  // record can also grow its header, which affects every following section.
+  const auto oldWidth = 1u << (changeForm.type >> 6);
+  const auto largest = std::max(changeForm.length1, changeForm.length2);
+  const auto newWidth = largest <= UINT8_MAX ? 1u : largest <= UINT16_MAX ? 2u : 4u;
+  const auto kind = newWidth == 1 ? 0 : newWidth == 2 ? 1 : 2;
+  changeForm.type = (changeForm.type & 0x3f) | (kind << 6);
   const auto diff = static_cast<int64_t>(previousSize) -
-    static_cast<int64_t>(compressed.size());
+    static_cast<int64_t>(compressed.size()) -
+    2 * (static_cast<int64_t>(newWidth) - oldWidth);
   save->fileLocationTable.formIDArrayCountOffset -= diff;
   save->fileLocationTable.unknownTable3Offset -= diff;
   save->fileLocationTable.globalDataTable3Offset -= diff;
