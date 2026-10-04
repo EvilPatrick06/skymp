@@ -21,7 +21,7 @@ function fixture(save = false, options = {}) {
   let initialInventory, firstMoveInventory, baseResets = 0, appearanceApplies = 0, moveCalls = 0;
   const items = new Map(), worn = new Set(), jobs = [], onceHandlers = {update: [], tick: []}, onHandlers = {update: []};
   const hands = new Map(); let equipFailures = options.equipFailures || 0;
-  let rejectedAdds = options.rejectedAdds || 0, positionX = 1, cellId = options.sourceCell || 9;
+  let rejectedAdds = options.rejectedAdds || 0, positionX = options.pos?.[0] ?? 1, cellId = options.sourceCell || 9;
   let partialThrow = !!options.partialThrow;
   const spellWrites = []; let basePrepared = !!options.basePrepared;
   if (options.initialWorn) for (const id of options.initialWorn) worn.add(id);
@@ -29,7 +29,7 @@ function fixture(save = false, options = {}) {
   const forms = id => ({id, getFormID: () => id, getName: () => 'base' + id});
   const actor = {
     is3DLoaded: () => frame >= loadedAt, getFormID: () => 0x14,
-    getPositionX: () => positionX, getPositionY: () => 2, getPositionZ: () => 3,
+    getPositionX: () => positionX, getPositionY: () => options.pos?.[1] ?? 2, getPositionZ: () => 3,
     getParentCell: () => forms(cellId), getWorldSpace: () => options.exterior ? forms(9) : null,
     getRace: () => forms(123),
     getItemCount: f => items.get(f.id) || 0, isEquipped: f => worn.has(f.id),
@@ -59,6 +59,7 @@ function fixture(save = false, options = {}) {
     }
   };
   const sp = {
+    getExteriorCellCoordinates: id => options.coordinates === null ? undefined : options.coordinates?.[id] || (id === 9 ? [0, 0] : [1, 0]),
     getInventoryQueueFence() {
       let finished = false;
       const at = Math.max(frame + 1, ...jobs.map(job => job.at + 1));
@@ -69,7 +70,7 @@ function fixture(save = false, options = {}) {
     Cell: {from: x => x}, WorldSpace: {from: () => null}, Weapon: {from: f => f?.id === 200 ? f : null},
     Game: {getPlayer: () => actor, getFormEx: forms, getModCount: () => 0, showRaceMenu: () => {paused = true; opens++;}},
     Ui: {isMenuOpen: name => name === 'RaceSex Menu' && paused},
-    TESModPlatform: {moveRefrToPosition() {if (!firstMoveInventory) firstMoveInventory = inventory(); if (options.moveCell) { if (options.moveDelay && ++moveCalls === 1) loadedAt = frame + options.moveDelay; else cellId = options.moveCell; }}},
+    TESModPlatform: {moveRefrToPosition() {if (!firstMoveInventory) firstMoveInventory = inventory(); if (options.moveCell) { if (options.transitionDelay) { if (++moveCalls === 1) jobs.push({at: frame + options.transitionDelay, run: () => {cellId = options.moveCell;}}); } else if (options.moveDelay && ++moveCalls === 1) loadedAt = frame + options.moveDelay; else cellId = options.moveCell; }}},
     Utility: {wait: seconds => new Promise(resolve => jobs.push({at: frame + Math.max(1, Math.ceil(seconds * 10)), run: resolve}))},
     once: (event, fn) => onceHandlers[event].push(fn), on: (event, fn) => { (onHandlers[event] ||= []).push(fn); },
     printConsole() {}
@@ -100,7 +101,7 @@ function fixture(save = false, options = {}) {
   const remote = new sandbox.exports.RemoteServer(sp, controller);
   const emit = (name, message) => listeners.get(name)({message});
   const spawn = (initialMenu = false, idx = 0) => emit('createActorMessage', {idx, refrId: 0xff000015 + idx, isMe: true,
-    transform: {worldOrCell: 9, pos: [1, 2, 3], rot: [0, 0, 0]}, customPropsJsonDumps: options.returning ? [] : [{propName: 'thornswoodWear', propValueJsonDump: '{"creation":true}'}],
+    transform: {worldOrCell: 9, pos: options.pos || [1, 2, 3], rot: [0, 0, 0]}, customPropsJsonDumps: options.returning ? [] : [{propName: 'thornswoodWear', propValueJsonDump: '{"creation":true}'}],
     props: {learnedSpells: options.spells, isRaceMenuOpen: initialMenu, inventory: {entries: options.entries || [{baseId: 100, count: 1, worn: true}, {baseId: 101, count: 1, worn: true}]}},
     appearance: options.appearance,
     equipment: {inv: {entries: options.equipment || []}, numChanges: 0}});
@@ -139,6 +140,16 @@ function fixture(save = false, options = {}) {
   const delayedBorderMove = fixture(false, {exterior: true, sourceCell: 10, moveCell: 9, moveDelay: 15});
   delayedBorderMove.spawn(true); await delayedBorderMove.advance(1700);
   assert.equal(delayedBorderMove.opens, 1, 'an asynchronous exterior transition must refresh the source latch after the actual move');
+  const pendingBorderMove = fixture(false, {exterior: true, sourceCell: 10, moveCell: 9, transitionDelay: 100});
+  pendingBorderMove.spawn(true); await pendingBorderMove.advance(100);
+  assert.equal(pendingBorderMove.opens, 0, 'the still-loaded source exterior cell cannot open creation while movement is pending');
+  await pendingBorderMove.advance(300); assert.equal(pendingBorderMove.opens, 1, 'the destination exterior cell releases creation');
+  const negativeGrid = fixture(true, {exterior: true, pos: [-1, -4097, 3], coordinates: {9: [-1, -2]}});
+  negativeGrid.spawn(true); await negativeGrid.advance(3, false); await negativeGrid.advance(300);
+  assert.equal(negativeGrid.opens, 1, 'negative world positions use floor division for exterior cells');
+  const absentGrid = fixture(true, {exterior: true, coordinates: null});
+  absentGrid.spawn(true); await absentGrid.advance(3, false); await absentGrid.advance(1500);
+  assert.equal(absentGrid.opens, 0, 'missing engine cell coordinates cannot fail open');
   const beforeMove = fixture(); beforeMove.spawn(true); await beforeMove.advance(300);
   assert.equal(beforeMove.firstMoveInventory.entries.filter(e => e.worn).length, 2, 'move path must equip both clothes before entering the room');
   const populated = fixture(true, {nativePreload: true}); populated.spawn(true); await populated.advance(3, false); await populated.advance(300);

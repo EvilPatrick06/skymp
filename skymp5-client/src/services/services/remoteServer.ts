@@ -544,6 +544,13 @@ export class RemoteServer extends ClientListener {
       if (!pc?.is3DLoaded()) { return false; }
       const location = pc.getWorldSpace()?.getFormID() || pc.getParentCell()?.getFormID();
       if (location !== msg.transform.worldOrCell) { return false; }
+      if (pc.getWorldSpace()) {
+        // Distance alone can accept a nearby source cell while MoveTo is
+        // pending. Check Skyrim's actual loaded cell grid before latching.
+        const coordinates = this.sp.getExteriorCellCoordinates(pc.getParentCell()?.getFormID() || 0);
+        if (!coordinates || coordinates[0] !== Math.floor(msg.transform.pos[0] / 4096)
+          || coordinates[1] !== Math.floor(msg.transform.pos[1] / 4096)) { return false; }
+      }
       if (ownerArrived) { return pc.getParentCell()?.getFormID() === ownerArrivalCell; }
       const distance = Math.hypot(pc.getPositionX() - msg.transform.pos[0],
         pc.getPositionY() - msg.transform.pos[1], pc.getPositionZ() - msg.transform.pos[2]);

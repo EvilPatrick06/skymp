@@ -253,3 +253,16 @@ Napi::Value LoadGameApi::LoadGame(const Napi::CallbackInfo& info)
 
   return info.Env().Undefined();
 }
+
+Napi::Value LoadGameApi::GetExteriorCellCoordinates(const Napi::CallbackInfo& info)
+{
+  const auto id = NapiHelper::ExtractUInt32(info[0], "cellId");
+  const auto cell = RE::TESForm::LookupByID<RE::TESObjectCELL>(id);
+  if (!cell || !cell->IsExteriorCell()) return info.Env().Undefined();
+  const auto coordinates = cell->GetCoordinates();
+  if (!coordinates) return info.Env().Undefined();
+  auto result = Napi::Array::New(info.Env(), 2);
+  result.Set(uint32_t(0), coordinates->cellX);
+  result.Set(uint32_t(1), coordinates->cellY);
+  return result;
+}
