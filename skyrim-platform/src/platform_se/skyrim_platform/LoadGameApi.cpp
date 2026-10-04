@@ -160,7 +160,11 @@ std::unique_ptr<std::vector<InitialInventory::Item>> CreateInitialInventory(
   if (!container) throw std::runtime_error("Player base container unavailable before initial load");
   for (uint32_t i = 0; i < container->numContainerObjects; ++i) {
     auto entry = container->containerObjects[i];
-    if (entry && entry->obj) totals[entry->obj->formID].delta -= entry->count;
+    if (entry && entry->obj) {
+      if (entry->obj->formID >= 0xff000000 || !entry->obj->IsInventoryObject())
+        throw std::runtime_error("Unsupported player base inventory form");
+      totals[entry->obj->formID].delta -= entry->count;
+    }
   }
   auto entries = NapiHelper::ExtractArray(data.Get("entries"), "initialInventory.entries");
   if (entries.Length() > 4096) throw std::runtime_error("Excessive initial inventory");
@@ -174,7 +178,8 @@ std::unique_ptr<std::vector<InitialInventory::Item>> CreateInitialInventory(
     }
     auto id = static_cast<uint32_t>(InitialInventoryInteger(entry.Get("baseId"), 1, UINT32_MAX));
     auto count = static_cast<int32_t>(InitialInventoryInteger(entry.Get("count"), 1, INT32_MAX));
-    if (!id || !RE::TESForm::LookupByID(id) || count <= 0)
+    const auto item = RE::TESForm::LookupByID(id);
+    if (id >= 0xff000000 || !item || !item->IsInventoryObject() || count <= 0)
       throw std::runtime_error("Invalid initial inventory item");
     auto worn = entry.Get("worn"); auto left = entry.Get("wornLeft");
     if ((!worn.IsUndefined() && !worn.IsBoolean()) || (!left.IsUndefined() && !left.IsBoolean()))

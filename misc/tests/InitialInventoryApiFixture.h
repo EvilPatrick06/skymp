@@ -53,6 +53,8 @@ struct TESContainer;
 struct TESForm {
   uint32_t formID;
   TESContainer* container = nullptr;
+  bool inventoryObject = true;
+  bool IsInventoryObject() const { return inventoryObject; }
   static inline std::map<uint32_t, TESForm> forms;
   static TESForm* LookupByID(uint32_t id) {
     auto it = forms.find(id); return it == forms.end() ? nullptr : &it->second;

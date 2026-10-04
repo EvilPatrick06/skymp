@@ -1,5 +1,6 @@
 #pragma comment(lib, "shell32.lib")
 #include "LoadGame.h"
+#include "InventoryLoadEpoch.h"
 #include "NullPointerException.h"
 #include "PapyrusTESModPlatform.h"
 #include "savefile/SFChangeFormNPC.h"
@@ -118,6 +119,7 @@ void LoadGame::Run(std::shared_ptr<SaveFile_::SaveFile> save,
   static LoadGameEventSink g_sink;
 
   if (auto saveLoadManager = RE::BGSSaveLoadManager::GetSingleton()) {
+    if (inventory) { InventoryLoadEpoch::Advance(); }
     return saveLoadManager->Load(name.data());
   } else {
     throw NullPointerException("saveLoadManager");
@@ -243,18 +245,7 @@ void LoadGame::FillChangeForm(
   std::pair<uint32_t, std::vector<uint8_t>>& newValues)
 {
 
-  save->fileLocationTable.formIDArrayCountOffset -= form->length1;
-  save->fileLocationTable.formIDArrayCountOffset += newValues.second.size();
-
-  save->fileLocationTable.unknownTable3Offset -= form->length1;
-  save->fileLocationTable.unknownTable3Offset += newValues.second.size();
-
-  save->fileLocationTable.globalDataTable3Offset -= form->length1;
-  save->fileLocationTable.globalDataTable3Offset += newValues.second.size();
-
-  form->length2 = 0;
-  form->length1 = newValues.second.size();
-  form->data = newValues.second;
+  WriteChangeForm(save, *form, newValues.second, 0);
   form->changeFlags = newValues.first;
 }
 

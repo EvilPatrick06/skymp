@@ -5,7 +5,7 @@ $taskScratch=Join-Path ([IO.Path]::GetTempPath()) ('thornswood-initial-save-'+[g
 New-Item -ItemType Directory -Path $taskScratch | Out-Null
 $taskSource=[IO.File]::ReadAllText((Join-Path $taskRepo 'skyrim-platform\src\platform_se\skyrim_platform\LoadGame.cpp'))
 $taskParts=@()
-foreach($name in 'Decompress','Compress','WriteChangeForm'){
+foreach($name in 'Decompress','Compress','WriteChangeForm','FillChangeForm'){
  $start=$taskSource.IndexOf('LoadGame::'+$name+'(')
  if($start -lt 0){throw ('Missing native function: '+$name)}
  $start=$taskSource.LastIndexOf("`n",$start-1)+1
@@ -28,6 +28,12 @@ foreach($signature in 'double InitialInventoryInteger(', 'std::unique_ptr<std::v
  $taskApiParts+=$taskApiSource.Substring($start,$end-$start)
 }
 [IO.File]::WriteAllText((Join-Path $taskScratch 'InitialInventoryApiUnderTest.inc'),($taskApiParts -join "`n"))
+$taskQueuedSource=[IO.File]::ReadAllText((Join-Path $taskRepo 'skyrim-platform\src\platform_se\skyrim_platform\PapyrusTESModPlatform.cpp'))
+$start=$taskQueuedSource.IndexOf('g_nativeCallRequirements.gameThrQ->AddTask([=](Viet::Void) {',$taskQueuedSource.IndexOf('void TESModPlatform::AddItemEx('))
+$brace=$taskQueuedSource.IndexOf('{',$start);$depth=1;$end=$brace+1
+while($depth -gt 0 -and $end -lt $taskQueuedSource.Length){if($taskQueuedSource[$end] -eq '{'){$depth++};if($taskQueuedSource[$end] -eq '}'){$depth--};$end++}
+if($start -lt 0 -or $depth){throw 'Queued inventory function missing'}
+[IO.File]::WriteAllText((Join-Path $taskScratch 'InitialQueuedInventoryUnderTest.inc'),$taskQueuedSource.Substring($start,$end-$start)+');')
 $taskVs='C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools'
 $taskEnv=cmd /c "`"$taskVs\VC\Auxiliary\Build\vcvars64.bat`" >nul && set"
 foreach($value in $taskEnv){if($value -match '^([^=]+)=(.*)$'){[Environment]::SetEnvironmentVariable($matches[1],$matches[2],'Process')}}
@@ -45,5 +51,13 @@ try{
  if($LASTEXITCODE){throw 'Initial reference test compilation failed'}
  & .\initial-refs.exe
  if($LASTEXITCODE){throw 'Initial reference regression failed'}
+ & $taskCl /nologo /EHsc /std:c++17 /MT ('/I'+(Join-Path $taskRepo 'viet\include')) ('/I'+(Join-Path $taskRepo 'skyrim-platform\src\platform_se\skyrim_platform')) (Join-Path $taskRepo 'misc\tests\test_inventory_load_epoch.cpp') /Fe:initial-epoch.exe
+ if($LASTEXITCODE){throw 'Inventory epoch test compilation failed'}
+ & .\initial-epoch.exe
+ if($LASTEXITCODE){throw 'Inventory epoch regression failed'}
+ & $taskCl /nologo /EHsc /std:c++17 /MT ('/I'+$taskScratch) ('/I'+(Join-Path $taskRepo 'viet\include')) ('/I'+(Join-Path $taskRepo 'skyrim-platform\src\platform_se\skyrim_platform')) (Join-Path $taskRepo 'misc\tests\test_queued_inventory_load.cpp') /Fe:queued-inventory.exe
+ if($LASTEXITCODE){throw 'Queued inventory test compilation failed'}
+ & .\queued-inventory.exe
+ if($LASTEXITCODE){throw 'Queued inventory ownership regression failed'}
  Write-Output ('PASS actual native save functions and full ESS Reader/Writer: inventory splice, RefIDs, compression, length widths. Evidence '+$taskScratch)
 }finally{Pop-Location}

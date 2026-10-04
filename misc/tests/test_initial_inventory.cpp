@@ -8,6 +8,7 @@
 class LoadGame { public:
  static std::vector<uint8_t> Compress(const std::vector<uint8_t>&);
  static std::vector<uint8_t> Decompress(const SaveFile_::ChangeForm&);
+ static void FillChangeForm(std::shared_ptr<SaveFile_::SaveFile>,SaveFile_::ChangeForm*,std::pair<uint32_t,std::vector<uint8_t>>&);
  static void WriteChangeForm(std::shared_ptr<SaveFile_::SaveFile>, SaveFile_::ChangeForm&,const std::vector<uint8_t>&,size_t);
 };
 #include "InitialSaveFunctionsUnderTest.inc"
@@ -54,6 +55,9 @@ void TestInventoryBuilder(std::shared_ptr<SaveFile_::SaveFile> save) {
     rejects(json::array({{{"baseId",100},{"count",value}}}));
   for (auto value : {100.5, 0.0, -1.0, 4294967396.0})
     rejects(json::array({{{"baseId",value},{"count",1}}}));
+  RE::TESForm::forms.emplace(999, RE::TESForm{999, nullptr, false});
+  RE::TESForm::forms.emplace(0xff000100, RE::TESForm{0xff000100});
+  rejects(json::array({{{"baseId",0xff000100},{"count",1}}}));
   rejects(json::array({{{"baseId",999},{"count",1}}}));
   rejects(json::array({{{"baseId",100},{"count",1},{"name","must not discard"}}}));
   rejects(json::array({{{"baseId",100},{"count",1},{"worn",1}}}));
@@ -133,6 +137,18 @@ int main(int argc, char** argv) {
     reread=SaveFile_::Reader(std::string(argv[2])).GetStructure();
     restored=reread->GetChangeFormByRefID(SaveFile_::RefID(SaveFile_::RefID::Player),1);
     assert(LoadGame::Decompress(*restored)==sample);
+  }
+  auto npc = save->GetChangeFormByRefID(SaveFile_::RefID(SaveFile_::RefID::PlayerBase),9);
+  assert(npc);
+  for (auto size : {32u, 258u, 70000u}) {
+    std::pair<uint32_t,std::vector<uint8_t>> appearance{npc->changeFlags,std::vector<uint8_t>(size,1)};
+    LoadGame::FillChangeForm(save,npc,appearance);
+    assert((npc->type >> 6)==(size<=255 ? 0 : size<=65535 ? 1 : 2));
+    assert(SaveFile_::Writer(save).CreateSaveFile(argv[2]));
+    reread=SaveFile_::Reader(std::string(argv[2])).GetStructure();
+    auto restoredNpc=reread->GetChangeFormByRefID(SaveFile_::RefID(SaveFile_::RefID::PlayerBase),9);
+    assert(restoredNpc && restoredNpc->data==appearance.second);
+    assert(reread->formIDArray==save->formIDArray);
   }
   bool rejected=false; try { InitialInventory::Replace({1,2,3},0xb8000022,entries); } catch (...) {rejected=true;} assert(rejected);
   rejected=false;uint8_t tiny[1];try{SaveFile_::SeekerOfDifferences::ZlibCompress(large.data(),large.size(),tiny,1);}catch(...){rejected=true;}assert(rejected);
