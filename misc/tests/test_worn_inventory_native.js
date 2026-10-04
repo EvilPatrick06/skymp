@@ -9,7 +9,8 @@ try {
   const fixture = path.join(__dirname, 'test_worn_inventory_native.cpp');
   const exe = path.join(work, process.platform === 'win32' ? 'outfit.exe' : 'outfit');
   const compiler = process.env.CXX || (process.platform === 'win32' ? 'cl.exe' : 'c++');
-  const args = process.platform === 'win32' ? ['/nologo', '/EHsc', '/std:c++17', '/I' + work, '/Fe:' + exe, '/Fo:' + path.join(work, 'outfit.obj'), fixture] : ['-std=c++17', '-I' + work, fixture, '-o', exe];
+  const vietHeaders = path.join(__dirname, '../../viet/include');
+  const args = process.platform === 'win32' ? ['/nologo', '/EHsc', '/std:c++17', '/I' + work, '/I' + vietHeaders, '/Fe:' + exe, '/Fo:' + path.join(work, 'outfit.obj'), fixture] : ['-std=c++17', '-I' + work, '-I' + vietHeaders, fixture, '-o', exe];
   const build = cp.spawnSync(compiler, args, {encoding:'utf8', cwd:work});
   process.stdout.write(build.stdout || ''); process.stderr.write(build.stderr || '');
   if (build.error) throw build.error;
