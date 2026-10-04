@@ -264,7 +264,7 @@ export class SendInputsService extends ClientListener {
         }
         // Load/equip callbacks fire while the owner inventory is being rebuilt.
         // Preserve the dirty flag until the complete outfit can be reported.
-        if (this.sp.storage['ownerInventorySettling']) { return; }
+        if (this.sp.storage['ownerInventorySettling'] === true) { return; }
         if (this.equipmentChanged) {
             this.equipmentChanged = false;
 

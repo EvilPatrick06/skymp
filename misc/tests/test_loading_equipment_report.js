@@ -2,7 +2,10 @@
 const assert = require('node:assert/strict'), fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
 const ts = require('../../skymp5-client/node_modules/typescript');
 const source = fs.readFileSync(path.join(__dirname, '../../skymp5-client/src/services/services/sendInputsService.ts'), 'utf8');
-const reports = [], callbacks = {}, storage = {ownerInventorySettling: true};
+const platform = {};
+vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../skyrim-platform/src/platform_se/skyrim_platform/assets/storageProxy.js'), 'utf8'))(platform);
+const reports = [], callbacks = {}, storage = platform.storage;
+storage.ownerInventorySettling = true;
 let reads = 0;
 const sandbox = {exports: {}, require(name) {
   if (name === './clientListener') return {ClientListener: class {}};
@@ -18,6 +21,7 @@ assert.equal(reports.length,0,'transient loading equipment cannot overwrite the 
 assert.equal(reads,0,'do not read an incomplete character inventory');
 assert.equal(input.equipmentChanged,true,'retain the report until the outfit is ready');
 delete storage.ownerInventorySettling;
+assert.equal(typeof storage.ownerInventorySettling, 'function', 'use the actual native storage contract for deleted keys');
 input.sendEquipment();
 assert.equal(reports.length,1); assert.equal(reports[0].message.data.inv.entries[0].worn,true);
 input.sendEquipment(); assert.equal(reports.length,1,'release one complete report, not duplicates');

@@ -9,6 +9,9 @@ export interface ClientListenerEvents {
 // these are only available in the git version, so we augment the module
 // TODO: use typings from the current codebase, not npm module
 declare module "skyrimPlatform" {
+    // Poll completion of work queued before this call. It does not imply
+    // successful mutation: compare inventory after completion and retry.
+    function getInventoryQueueFence(): () => boolean;
     function setTextsVisibility(visibility: 'inheritBrowser' | 'off' | 'on'): void;
     function getTextsVisibility(): 'inheritBrowser' | 'off' | 'on';
     function setTextRefr(textId: number, refrFormId: number): void; // pass 0 to detach
