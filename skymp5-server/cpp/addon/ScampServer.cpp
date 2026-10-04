@@ -430,7 +430,27 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
                                                defaultLanguage);
     }
 
-    auto espm = new espm::Loader(pluginPaths);
+    // Thornswood #1602. Every plugin is read into memory here, once, before
+    // the server takes a connection. The default maps each file and reads a
+    // record only when something first asks for it, and the first time
+    // somebody walks into a cell that is thousands of page faults served from
+    // the VPS disk on the main thread. Measured 4 Oct on dev: the loop stopped
+    // for 25 to 29 s at each new cell, the main thread waiting on PageIn with
+    // no CPU, about 380 pages a second coming in from disk and 10 GB of
+    // memory free. Read up front, a cell's records are already in memory.
+    uintmax_t pluginBytes = 0;
+    float pluginSeconds = 0.f;
+    auto espm = new espm::Loader(
+      pluginPaths,
+      [&pluginBytes, &pluginSeconds](std::string, float readDuration,
+                                     float parseDuration, uintmax_t fileSize) {
+        pluginBytes += fileSize;
+        pluginSeconds += readDuration + parseDuration;
+      },
+      espm::Loader::BufferType::AllocatedBuffer);
+    logger->info("Read {} plugins ({} MB) into memory in {:.1f} s",
+                 pluginPaths.size(), pluginBytes / (1024 * 1024),
+                 pluginSeconds);
     std::string password = serverSettings.contains("password")
       ? std::string(kNetworkingPasswordPrefix) +
         static_cast<std::string>(serverSettings["password"])
