@@ -19,8 +19,10 @@ const main = async () => {
     ],
   });
 
+  // A new actor already wears its base record's outfit (the native creation
+  // outfit, fork PRs 15 to 17), so this reads what it wears rather than
+  // assuming nothing; the write below replaces it whatever it was.
   const before = mp.get(actorId, "equipment");
-  assert.deepEqual(before.inv.entries, []);
 
   mp.set(actorId, "equipment", {
     inv: {
