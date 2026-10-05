@@ -26,6 +26,7 @@
 #include <NiPoint3.h>
 #include <TimeUtils.h>
 #include <algorithm>
+#include <vector>
 #include <atomic>
 #include <chrono>
 #include <functional>
@@ -352,14 +353,49 @@ void MpActor::SetRaceMenuOpen(bool isOpen)
     [&](MpChangeForm& changeForm) { changeForm.isRaceMenuOpen = isOpen; });
 }
 
+namespace {
+void UnsubscribeOtherListeners(MpActor& actor)
+{
+  std::vector<MpObjectReference*> others;
+  others.reserve(actor.GetListeners().size());
+  for (MpObjectReference* listener : actor.GetListeners()) {
+    // Objects stay on the list. Subscribe records flowers and doors on
+    // purpose so a later refresh does not send a second CreateActor.
+    if (listener != &actor && listener->AsActor()) {
+      others.push_back(listener);
+    }
+  }
+  for (MpObjectReference* listener : others) {
+    MpObjectReference::Unsubscribe(&actor, listener);
+  }
+}
+}
+
 void MpActor::SetAppearance(const Appearance* newAppearance)
 {
+  std::string dump;
+  if (newAppearance) {
+    dump = newAppearance->ToJson();
+  }
+  const bool willHaveAppearance = !dump.empty();
+  const bool wasPublished = ShouldPublishToOtherClients();
+  const bool willBePublished = ShouldPublishToOtherClients(willHaveAppearance);
+
+  // Unsubscribe while this actor is still published, so each neighbour gets
+  // one DestroyActor. The onUnsubscribe guard blocks a later second send.
+  if (wasPublished && !willBePublished) {
+    UnsubscribeOtherListeners(*this);
+  }
+
   EditChangeForm([&](MpChangeForm& changeForm) {
-    if (newAppearance)
-      changeForm.appearanceDump = newAppearance->ToJson();
-    else
-      changeForm.appearanceDump.clear();
+    changeForm.appearanceDump = dump;
   });
+
+  // While hidden, other actors were never recorded as listeners.
+  // ForceSubscriptionsUpdate adds those pairs and sends CreateActor once.
+  if (!wasPublished && ShouldPublishToOtherClients()) {
+    ForceSubscriptionsUpdate();
+  }
 }
 
 void MpActor::SetEquipment(const Equipment& newEquipment)
@@ -728,6 +764,16 @@ void MpActor::ApplyChangeForm(const MpChangeForm& newChangeForm)
     throw std::runtime_error(
       "Expected record type to be ACHR, but found REFR");
   }
+
+  // Published-to-hidden only. An NPC stays published with an empty dump, so
+  // an empty dump alone must not remove anyone. Do this before the assign,
+  // while ShouldPublishToOtherClients() is still true.
+  const bool wasPublished = ShouldPublishToOtherClients();
+  if (newChangeForm.appearanceDump.empty() && wasPublished &&
+      !ShouldPublishToOtherClients(false)) {
+    UnsubscribeOtherListeners(*this);
+  }
+
   MpObjectReference::ApplyChangeForm(newChangeForm);
   EditChangeForm(
     [&](MpChangeForm& changeForm) {
@@ -778,6 +824,12 @@ void MpActor::ApplyChangeForm(const MpChangeForm& newChangeForm)
   newChangeForm.isDisabled ? Disable() : Enable();
   SetCellOrWorldObsolete(newChangeForm.worldOrCellDesc);
   SetPos(newChangeForm.position);
+
+  // SetAppearance publishes on hidden-to-visible. A live save load that
+  // writes a face must do the same, or the player stays invisible.
+  if (!wasPublished && ShouldPublishToOtherClients()) {
+    ForceSubscriptionsUpdate();
+  }
 }
 
 uint32_t MpActor::NextSnippetIndex(
@@ -1060,6 +1112,36 @@ std::unique_ptr<const Appearance> MpActor::GetAppearance() const
 const std::string& MpActor::GetAppearanceAsJson()
 {
   return ChangeForm().appearanceDump;
+}
+
+bool MpActor::HasStoredAppearance() const
+{
+  return !ChangeForm().appearanceDump.empty();
+}
+
+bool MpActor::ShouldPublishToOtherClients(bool hasAppearance) const
+{
+  if (!IsCreatedAsPlayer() || hasAppearance) {
+    return true;
+  }
+
+  // Profile-backed characters stay off other clients until a face is stored,
+  // including the window between createActor and setUserActor.
+  if (GetProfileId() >= 0) {
+    return false;
+  }
+
+  if (callbacks && callbacks->getUserId &&
+      GetUserId() != Networking::InvalidUserId) {
+    return false;
+  }
+
+  return true;
+}
+
+bool MpActor::ShouldPublishToOtherClients() const
+{
+  return ShouldPublishToOtherClients(HasStoredAppearance());
 }
 
 namespace {
