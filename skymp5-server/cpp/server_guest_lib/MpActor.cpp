@@ -359,7 +359,9 @@ void UnsubscribeOtherListeners(MpActor& actor)
   std::vector<MpObjectReference*> others;
   others.reserve(actor.GetListeners().size());
   for (MpObjectReference* listener : actor.GetListeners()) {
-    if (listener != &actor) {
+    // Objects stay on the list. Subscribe records flowers and doors on
+    // purpose so a later refresh does not send a second CreateActor.
+    if (listener != &actor && listener->AsActor()) {
       others.push_back(listener);
     }
   }
@@ -766,7 +768,8 @@ void MpActor::ApplyChangeForm(const MpChangeForm& newChangeForm)
   // Published-to-hidden only. An NPC stays published with an empty dump, so
   // an empty dump alone must not remove anyone. Do this before the assign,
   // while ShouldPublishToOtherClients() is still true.
-  if (newChangeForm.appearanceDump.empty() && ShouldPublishToOtherClients() &&
+  const bool wasPublished = ShouldPublishToOtherClients();
+  if (newChangeForm.appearanceDump.empty() && wasPublished &&
       !ShouldPublishToOtherClients(false)) {
     UnsubscribeOtherListeners(*this);
   }
@@ -821,6 +824,12 @@ void MpActor::ApplyChangeForm(const MpChangeForm& newChangeForm)
   newChangeForm.isDisabled ? Disable() : Enable();
   SetCellOrWorldObsolete(newChangeForm.worldOrCellDesc);
   SetPos(newChangeForm.position);
+
+  // SetAppearance publishes on hidden-to-visible. A live save load that
+  // writes a face must do the same, or the player stays invisible.
+  if (!wasPublished && ShouldPublishToOtherClients()) {
+    ForceSubscriptionsUpdate();
+  }
 }
 
 uint32_t MpActor::NextSnippetIndex(
