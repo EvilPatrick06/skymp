@@ -93,9 +93,7 @@ const createApp = (getOriginPort: () => number) => {
   });
 
   if (metricsAuth) {
-    if (metricsAuth.password !== "I know what I'm doing, disable metrics auth") {
-      router.use("/metrics", auth({ name: metricsAuth.user, pass: metricsAuth.password }));
-    }
+    router.use("/metrics", auth({ name: metricsAuth.user, pass: metricsAuth.password }));
     router.get("/metrics", async (ctx: any) => {
       ctx.set("Content-Type", register.contentType);
       ctx.body = await getAggregatedMetrics(gScampServer);
