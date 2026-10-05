@@ -139,7 +139,6 @@ export class Login implements System {
 
         let fetchedRoles: string[] = [];
         let isMemberOfAny = false;
-        let shouldHideIp = false;
 
         if (discordAuth && discordAuth.botToken && discordAuth.guilds && profile.discordId) {
           let isBanned = false;
@@ -172,9 +171,6 @@ export class Login implements System {
               if (guildConfig.banRoleId && guildRoles.indexOf(guildConfig.banRoleId) !== -1) {
                 isBanned = true;
               }
-              if (guildConfig.hideIpRoleId && guildRoles.indexOf(guildConfig.hideIpRoleId) !== -1) {
-                shouldHideIp = true;
-              }
             }
 
             // TODO: enable logging instead of throw
@@ -205,14 +201,12 @@ export class Login implements System {
         }
 
         if (discordAuth && discordAuth.botToken && discordAuth.guilds) {
-          const ipToPrint = shouldHideIp ? "hidden" : ip;
           const actorIds = ctx.svr.getActorsByProfileId(profile.id).map(id => id.toString(16));
 
           for (const guildConfig of discordAuth.guilds) {
             if (guildConfig.eventLogChannelId) {
               this.postServerLoginToDiscord(guildConfig.eventLogChannelId, discordAuth.botToken, {
                 userId,
-                ipToPrint,
                 actorIds,
                 profile,
               });
@@ -240,10 +234,13 @@ export class Login implements System {
     }
   }
 
-  private postServerLoginToDiscord(eventLogChannelId: string, botToken: string, options: { userId: number, ipToPrint: string, actorIds: string[], profile: UserProfile }) {
-    const { userId, ipToPrint, actorIds, profile } = options;
+  // No address goes in this line: the channel keeps it for everybody who can
+  // read it, and the server's own log already has the address beside the
+  // slot ("Connecting a user ... with ip ...").
+  private postServerLoginToDiscord(eventLogChannelId: string, botToken: string, options: { userId: number, actorIds: string[], profile: UserProfile }) {
+    const { userId, actorIds, profile } = options;
 
-    const loginMessage = `Server Login: Server Slot ${userId}, IP ${ipToPrint}, Actor ID ${actorIds}, Master API ${profile.id}, Discord ID ${profile.discordId} <@${profile.discordId}>`;
+    const loginMessage = `Server Login: Server Slot ${userId}, Actor ID ${actorIds}, Master API ${profile.id}, Discord ID ${profile.discordId} <@${profile.discordId}>`;
     console.log(loginMessage);
 
     this.fetchRetry(`https://discord.com/api/channels/${eventLogChannelId}/messages`, {
