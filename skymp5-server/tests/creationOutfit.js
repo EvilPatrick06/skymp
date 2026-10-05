@@ -18,8 +18,10 @@ async function fixture(existing,withHook=true){
   listener(1,42,[]);return calls;
 }
 (async()=>{
-  assert.deepEqual(await fixture(false),[['clothes',7],['packet',7],['face',7]],'a fresh character is dressed before the face menu');
+  // Thornswood #1560: dressed, and the race menu flag set, before the hand-over,
+  // so the first packet the owner gets carries both.
+  assert.deepEqual(await fixture(false),[['clothes',7],['face',7],['packet',7]],'a fresh character is dressed and its race menu flag set before the first packet');
   assert.deepEqual(await fixture(true),[['packet',7]],'a returning character receives no new outfit');
-  assert.deepEqual(await fixture(false,false),[['packet',7],['face',7]],'other gamemodes remain supported');
-  console.log('PASS creation outfit before spawn and face menu; returning outfits preserved');
+  assert.deepEqual(await fixture(false,false),[['face',7],['packet',7]],'other gamemodes remain supported');
+  console.log('PASS creation outfit and race menu flag before the first packet; returning outfits preserved');
 })().catch(error=>{console.error(error);process.exitCode=1;});

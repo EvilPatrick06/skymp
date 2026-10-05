@@ -1,4 +1,5 @@
 #include "WorldState.h"
+#include "Appearance.h"
 #include "FormCallbacks.h"
 #include "MpActor.h"
 #include "MpForm.h"
@@ -158,4 +159,80 @@ TEST_CASE("HasEspmFile is working correctly", "[WorldState]")
   REQUIRE(worldState.HasEspmFile("file1"));
   REQUIRE(worldState.HasEspmFile("file2"));
   REQUIRE_FALSE(worldState.HasEspmFile("BlowSkyrimModIndustry.exe"));
+}
+
+espm::Loader& GetEspmLoader();
+
+namespace {
+// A saved character whose appearance names a race the load order does not
+// have as a RACE record. 0x7 is the player's NPC_ record, so it resolves to a
+// record that is not a race, which is what LoadChangeForm refuses.
+MpChangeForm CharacterWithUnreadableRace(WorldState& worldState,
+                                         uint32_t formId, int32_t profileId)
+{
+  Appearance appearance;
+  appearance.raceId = 0x7;
+  MpChangeForm changeForm;
+  changeForm.recType = MpChangeForm::ACHR;
+  changeForm.formDesc = FormDesc::FromFormId(formId, worldState.espmFiles);
+  changeForm.baseDesc = FormDesc::FromFormId(0x7, worldState.espmFiles);
+  changeForm.worldOrCellDesc = FormDesc::FromString("3c:Skyrim.esm");
+  changeForm.profileId = profileId;
+  changeForm.appearanceDump = appearance.ToJson();
+  return changeForm;
+}
+}
+
+TEST_CASE("A saved character whose race cannot be read keeps its id",
+          "[WorldState][espm]")
+{
+  // Thornswood #1269. The dev server skipped ff000005, ff00000a and ff00000d
+  // at every start ("bad raceId in appearanceDump"), GenerateFormId saw their
+  // ids as free, and the next two new characters were made as ff00000a and
+  // ff00000d, which saved over the records on disk.
+  WorldState worldState;
+  worldState.AttachEspm(&GetEspmLoader(),
+                        [] { return FormCallbacks::DoNothing(); });
+
+  worldState.LoadChangeForm(
+    CharacterWithUnreadableRace(worldState, 0xff000000, 964481319),
+    FormCallbacks::DoNothing());
+  worldState.LoadChangeForm(
+    CharacterWithUnreadableRace(worldState, 0xff000002, -1),
+    FormCallbacks::DoNothing());
+
+  // not loaded, and not counted as the profile's character
+  REQUIRE_FALSE(worldState.LookupFormById(0xff000000));
+  REQUIRE_FALSE(worldState.LookupFormById(0xff000002));
+  REQUIRE(worldState.GetActorsByProfileId(964481319).empty());
+
+  // kept aside, with the profile it belongs to
+  REQUIRE(worldState.GetUnreadableChangeForms() ==
+          std::map<uint32_t, int32_t>{ { 0xff000000, 964481319 },
+                                       { 0xff000002, -1 } });
+
+  // and neither id is handed to a new form, so nothing is saved over them
+  REQUIRE(worldState.GenerateFormId() == 0xff000001);
+  REQUIRE(worldState.GenerateFormId() == 0xff000003);
+  REQUIRE(worldState.GenerateFormId() == 0xff000004);
+}
+
+TEST_CASE("A saved character whose race can be read still loads",
+          "[WorldState][espm]")
+{
+  WorldState worldState;
+  worldState.AttachEspm(&GetEspmLoader(),
+                        [] { return FormCallbacks::DoNothing(); });
+
+  auto changeForm = CharacterWithUnreadableRace(worldState, 0xff000000, 77);
+  Appearance appearance;
+  appearance.raceId = 0x13746; // NordRace, Skyrim.esm
+  changeForm.appearanceDump = appearance.ToJson();
+  worldState.LoadChangeForm(changeForm, FormCallbacks::DoNothing());
+
+  REQUIRE(worldState.LookupFormById(0xff000000));
+  REQUIRE(worldState.GetActorsByProfileId(77) ==
+          std::set<uint32_t>({ 0xff000000 }));
+  REQUIRE(worldState.GetUnreadableChangeForms().empty());
+  REQUIRE(worldState.GenerateFormId() == 0xff000001);
 }
