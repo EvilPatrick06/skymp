@@ -7,6 +7,7 @@ env:
 
 jobs:
     formatting-check:
+        if: github.repository == 'skyrim-multiplayer/skymp'  # upstream only, not the Thornswood fork (Thornswood #1774)
         name: Formatting Check
         runs-on: ubuntu-latest
         steps:
