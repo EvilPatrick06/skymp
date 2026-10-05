@@ -9,3 +9,13 @@ node_modules
 # vim
 .*.swp
 skyrim_data_files/
+
+# Server settings hold secrets: server-settings.json carries masterKey,
+# discordAuth.botToken and the settings repo tokens; the build copies it into
+# server-settings-base.json, and the server writes server-settings-dump.json and
+# server-settings-merged.json next to it. No leading slash: they appear wherever
+# a build or server directory sits.
+server-settings.json
+server-settings-base.json
+server-settings-dump.json
+server-settings-merged.json
