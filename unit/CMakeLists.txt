@@ -11,8 +11,9 @@ if(BUILD_UNIT_TESTS AND NOT EMSCRIPTEN)
   add_papyrus_library_ck(
     NAME papyrus_test_files 
     DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/papyrus_test_files
-    OUTPUT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/papyrus_test_files/pex
+    PREBUILT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/papyrus_test_files/pex
     COMPILER_EXECUTABLE_PATH "${SKYRIM_DIR}/Papyrus compiler/PapyrusCompiler.exe"
+    PEX_DIR_VARIABLE papyrus_test_files_pex_dir
   )
 
   #
@@ -48,7 +49,7 @@ if(BUILD_UNIT_TESTS AND NOT EMSCRIPTEN)
 
   target_compile_definitions(unit PRIVATE
     TEST_PEX_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/papyrus_test_files/standard_scripts\"
-    BUILT_PEX_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/papyrus_test_files/pex\"
+    BUILT_PEX_DIR=\"${papyrus_test_files_pex_dir}\"
     SKYRIM_DIR=\"${SKYRIM_DIR}\"
     UNIT_DATA_DIR=\"${UNIT_DATA_DIR}\"
     DIST_DIR=\"${CMAKE_BINARY_DIR}/dist\"
