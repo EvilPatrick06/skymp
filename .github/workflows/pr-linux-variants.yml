@@ -13,6 +13,7 @@ env:
 
 jobs:
     pr-docker:
+        if: github.repository == 'skyrim-multiplayer/skymp'  # upstream only, not the Thornswood fork (Thornswood #1774)
         strategy:
           fail-fast: false
           matrix:
