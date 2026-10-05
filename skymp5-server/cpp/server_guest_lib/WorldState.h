@@ -240,6 +240,11 @@ public:
     const std::string& propertyName,
     const std::string& propertyValueStringified);
   uint32_t GenerateFormId();
+  // The server's own forms whose saved ChangeForm could not be read at load,
+  // by form id, with the profile id the record carries (-1 for none). They
+  // are left on disk as they are and their ids are never generated again
+  // (Thornswood #1269).
+  const std::map<uint32_t, int32_t>& GetUnreadableChangeForms() const;
   void SetRelootTime(const std::string& recordType,
                      std::chrono::system_clock::duration time);
   std::optional<std::chrono::system_clock::duration> GetRelootTime(
@@ -339,6 +344,7 @@ private:
 
   void RememberInventoryReceipt(MpObjectReference& ref);
   void ForgetInventoryReceipt(MpObjectReference& ref);
+  void KeepUnreadableChangeForm(uint32_t formId, int32_t profileId);
   bool AttachEspmRecord(const espm::CombineBrowser& br,
                         const espm::RecordHeader* record,
                         const espm::IdMapping& mapping,
