@@ -60,6 +60,7 @@ public:
   Napi::Value MakeEventSource(const Napi::CallbackInfo& info);
   Napi::Value Get(const Napi::CallbackInfo& info);
   Napi::Value Set(const Napi::CallbackInfo& info);
+  Napi::Value ValidateInventoryTransaction(const Napi::CallbackInfo& info);
   Napi::Value CompareAndSetInventory(const Napi::CallbackInfo& info);
   Napi::Value GetInventoryReceipt(const Napi::CallbackInfo& info);
   Napi::Value GetSavedInventoryReceipt(const Napi::CallbackInfo& info);
