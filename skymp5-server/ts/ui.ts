@@ -29,7 +29,6 @@ const metricsAuthParse = (settings: Settings): void => {
 
 const createApp = (getOriginPort: () => number) => {
   const app = new Koa();
-  app.use(koaBody.default({ multipart: true }));
 
   app.use(async (ctx: any, next: any) => {
     try {
@@ -49,7 +48,11 @@ const createApp = (getOriginPort: () => number) => {
   router.get(new RegExp("\.es[mpl]"), (ctx: any) => ctx.throw(403));
   router.get(new RegExp("\.bsa"), (ctx: any) => ctx.throw(403));
 
-  router.post("/rpc/:rpcClassName", (ctx: any) => {
+  // The request body is read only here, the one route that uses it, and
+  // never as multipart: koa-body writes every uploaded file to the temp folder
+  // and never removes it, so parsing for the whole app let anybody fill the
+  // disk through any path on this port.
+  router.post("/rpc/:rpcClassName", koaBody.default({ multipart: false }), (ctx: any) => {
     const { rpcClassName } = ctx.params;
     const { payload } = ctx.request.body;
 
