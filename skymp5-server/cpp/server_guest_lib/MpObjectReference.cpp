@@ -831,8 +831,7 @@ void MpObjectReference::SetInventory(const Inventory& inv)
   SendInventoryUpdate();
 }
 
-namespace {
-void ValidateTransactionInventory(const Inventory& inventory)
+void MpObjectReference::ValidateTransactionInventory(const Inventory& inventory)
 {
   uint64_t total = 0;
   for (const auto& entry : inventory.entries) {
@@ -849,7 +848,6 @@ void ValidateTransactionInventory(const Inventory& inventory)
       Inventory::FromJson(json).ToJson() != json) {
     throw std::runtime_error("Transaction inventory cannot round trip safely");
   }
-}
 }
 
 const std::string& MpObjectReference::GetInventoryReceiptDump() const

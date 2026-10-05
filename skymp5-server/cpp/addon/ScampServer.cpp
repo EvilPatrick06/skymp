@@ -89,6 +89,7 @@ Napi::Object ScampServer::Init(Napi::Env env, Napi::Object exports)
     env, "ScampServer",
     { InstanceMethod("_setSelf", &ScampServer::_SetSelf),
       InstanceMethod("attachSaveStorage", &ScampServer::AttachSaveStorage),
+      InstanceMethod("validateInventoryTransaction", &ScampServer::ValidateInventoryTransaction),
       InstanceMethod("writePrivateEconomyLedger", &ScampServer::WritePrivateEconomyLedger),
       InstanceMethod("tick", &ScampServer::Tick),
       InstanceMethod("on", &ScampServer::On),
@@ -656,6 +657,16 @@ Inventory InventorySnapshot(const Napi::Value& value)
   }
   return inventory;
 }
+}
+
+Napi::Value ScampServer::ValidateInventoryTransaction(const Napi::CallbackInfo& info)
+{
+  try {
+    MpObjectReference::ValidateTransactionInventory(InventorySnapshot(info[0]));
+    return Napi::Boolean::New(info.Env(), true);
+  } catch (std::exception& e) {
+    throw Napi::Error::New(info.Env(), e.what());
+  }
 }
 
 Napi::Value ScampServer::CompareAndSetInventory(const Napi::CallbackInfo& info)
