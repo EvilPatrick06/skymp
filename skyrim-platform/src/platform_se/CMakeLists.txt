@@ -144,14 +144,20 @@ if(NOT "${SKIP_SKYRIM_PLATFORM_BUILDING}")
 
     set(DEPENDENCIES_FOR_CUSTOM_TARGETS skyrim_platform SkyrimPlatformCEF skyrim_platform_entry)
 
+    set(tesmodplatform_pex_dir "${CMAKE_CURRENT_SOURCE_DIR}/pex")
     if(BUILD_SCRIPTS)
       add_papyrus_library_ck(
         NAME TESModPlatformPsc
         DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/psc"
-        OUTPUT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/pex"
+        PREBUILT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/pex"
         COMPILER_EXECUTABLE_PATH "${SKYRIM_DIR}/Papyrus compiler/PapyrusCompiler.exe"
+        PEX_DIR_VARIABLE tesmodplatform_pex_dir
       )
     endif()
+    # dev_service copies TESModPlatform.pex into the client from this folder:
+    # the build's own compile, or the committed one without the compiler
+    # (Thornswood #1220).
+    file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/pex_dir.txt "${tesmodplatform_pex_dir}")
     if(TARGET TESModPlatformPsc)
       add_dependencies(TESModPlatformPsc ${DEPENDENCIES_FOR_CUSTOM_TARGETS})
       list(APPEND DEPENDENCIES_FOR_CUSTOM_TARGETS TESModPlatformPsc)

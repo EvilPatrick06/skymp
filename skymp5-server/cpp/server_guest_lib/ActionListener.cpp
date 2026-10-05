@@ -797,8 +797,12 @@ void ActionListener::OnHostAttempt(const RawMessageData& rawMsgData,
   if (hoster == 0 || !lastRemoteUpdate ||
       std::chrono::system_clock::now() - *lastRemoteUpdate >
         hostResetTimeout) {
-    partOne.GetLogger().info("Hoster changed from {0:x} to {0:x}", prevHoster,
-                             me->GetFormId());
+    // Which actor, the hoster it had and the one it has now (Thornswood
+    // #1270). This said "from {0:x} to {0:x}" and printed the old hoster
+    // twice, so every line before the 29 September crashes read "from 0 to
+    // 0" and named nobody.
+    partOne.GetLogger().info("Hoster of {0:x} changed from {1:x} to {2:x}",
+                             remoteId, prevHoster, me->GetFormId());
     hoster = me->GetFormId();
     remote.UpdateHoster(hoster);
 

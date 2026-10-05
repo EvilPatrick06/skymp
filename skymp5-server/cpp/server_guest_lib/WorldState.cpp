@@ -58,6 +58,12 @@ struct WorldState::Impl
   bool saveStorageBusy = false;
   std::shared_ptr<VirtualMachine> vm;
   uint32_t nextId = 0xff000000;
+  // The server's own forms (ff...) whose saved ChangeForm LoadChangeForm could
+  // not read, by form id, with the profile the record belongs to. They are
+  // not loaded, and GenerateFormId never hands out one of their ids, so the
+  // record on disk is kept as it is instead of being overwritten by the next
+  // new character (Thornswood #1269).
+  std::map<uint32_t, int32_t> unreadableChangeForms;
   std::shared_ptr<IPapyrusCompatibilityPolicy> policy;
   std::unordered_map<uint32_t, MpChangeForm> changeFormsForDeferredLoad;
   bool chunkLoadingInProgress = false;
@@ -198,6 +204,7 @@ void WorldState::LoadChangeForm(const MpChangeForm& changeForm,
     if (!rec) {
       spdlog::warn("Skipping ChangeForm {:x}: unable to find base record {:x}",
                    formId, baseId);
+      KeepUnreadableChangeForm(formId, changeForm.profileId);
       return;
     }
     baseType = rec->GetType().ToString();
@@ -210,6 +217,7 @@ void WorldState::LoadChangeForm(const MpChangeForm& changeForm,
       if (res.error()) {
         spdlog::warn(
           "Skipping ChangeForm {:x}: unable to parse appearanceDump", formId);
+        KeepUnreadableChangeForm(formId, changeForm.profileId);
         return;
       }
 
@@ -220,14 +228,17 @@ void WorldState::LoadChangeForm(const MpChangeForm& changeForm,
         spdlog::warn("Skipping ChangeForm {:x}: Appearance::FromJson failed "
                      "on appearanceDump: {}",
                      formId, e.what());
+        KeepUnreadableChangeForm(formId, changeForm.profileId);
         return;
       }
 
       const auto rec = espm->GetBrowser().LookupById(appearance.raceId).rec;
 
       if (!rec || rec->GetType().ToString() != "RACE") {
-        spdlog::warn("Skipping ChangeForm {:x}: bad raceId in appearanceDump",
-                     formId);
+        spdlog::warn("Skipping ChangeForm {:x}: bad raceId {:x} in "
+                     "appearanceDump",
+                     formId, appearance.raceId);
+        KeepUnreadableChangeForm(formId, changeForm.profileId);
         return;
       }
     }
@@ -1332,10 +1343,32 @@ std::string WorldState::MakePrivateIndexedPropertyMapKey(
 
 uint32_t WorldState::GenerateFormId()
 {
-  while (LookupFormById(pImpl->nextId)) {
+  // An id whose saved record could not be read is still that record's: a new
+  // form under it would be saved over the file (Thornswood #1269).
+  while (LookupFormById(pImpl->nextId) ||
+         pImpl->unreadableChangeForms.count(pImpl->nextId)) {
     ++pImpl->nextId;
   }
   return pImpl->nextId++;
+}
+
+void WorldState::KeepUnreadableChangeForm(uint32_t formId, int32_t profileId)
+{
+  // Only the server's own forms are handed out by GenerateFormId. A placed
+  // reference from a plugin keeps its id whatever happens to its save.
+  if (formId < 0xff000000) {
+    return;
+  }
+  pImpl->unreadableChangeForms[formId] = profileId;
+  spdlog::warn("ChangeForm {:x} (profile {}) is kept as it is on disk, and "
+               "its id is not given to any new form",
+               formId, profileId);
+}
+
+const std::map<uint32_t, int32_t>& WorldState::GetUnreadableChangeForms()
+  const
+{
+  return pImpl->unreadableChangeForms;
 }
 
 void WorldState::SetRelootTime(const std::string& recordType,

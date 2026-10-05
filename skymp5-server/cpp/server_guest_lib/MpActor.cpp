@@ -322,6 +322,19 @@ void MpActor::EquipBestWeapon()
   }
 }
 
+void MpActor::ReplaceEquipment(Equipment newEquipment)
+{
+  newEquipment.numChanges = GetEquipment().numChanges + 1;
+  SetEquipment(newEquipment);
+
+  UpdateEquipmentMessage msg;
+  msg.data = newEquipment;
+  msg.idx = GetIdx();
+  for (auto listener : GetActorListeners()) {
+    listener->GetActorToSendTo().SendToUser(msg, true);
+  }
+}
+
 void MpActor::AddSpell(const uint32_t spellId)
 {
   EditChangeForm([&](MpChangeForm& changeForm) {

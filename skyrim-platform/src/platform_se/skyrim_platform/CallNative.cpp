@@ -455,7 +455,10 @@ CallNative::AnySafe CallNative::CallNativeSafe(Arguments& args_)
     auto jsThrQPtr = &jsThrQ;
     auto cb = latentCallback;
     auto onResult = [cb, funcReturnType, jsThrQPtr](const Variable& result) {
-      spdlog::info("onResult called");
+      // Trace, not info (Thornswood #1031): one line for every latent native
+      // call, 1,324 in six minutes of a dev session on 28 September, flushed
+      // on the game's thread, and it names nothing.
+      spdlog::trace("onResult called");
       jsThrQPtr->AddTask([=](Napi::Env env) {
         if (!cb)
           throw NullPointerException("cb");
