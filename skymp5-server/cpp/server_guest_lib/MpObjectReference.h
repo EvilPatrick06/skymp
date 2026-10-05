@@ -156,6 +156,7 @@ public:
   void SetInventory(const Inventory& inv);
   static constexpr const char* kInventoryReceiptProperty = "_inventoryReceipt";
   const std::string& GetInventoryReceiptDump() const;
+  static void ValidateTransactionInventory(const Inventory& inventory);
   bool CompareAndSetInventory(const Inventory& expected,
                                const std::string& expectedReceipt,
                                const Inventory& replacement,
