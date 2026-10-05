@@ -204,7 +204,7 @@ TEST_CASE("AttachSaveStorage forces loading", "[save]")
     SECTION("Testing with " + st->GetName())
     {
       PartOne p;
-      p.worldState.espmFiles = { "AaAaAa.esm" };
+      p.worldState.espmFiles = espm::LoadOrder::FullPlugins({ "AaAaAa.esm" });
       p.worldState.AddForm(
         std::unique_ptr<MpObjectReference>(new MpObjectReference(
           LocationalData(), FormCallbacks::DoNothing(), 0xaaaa, "STAT")),

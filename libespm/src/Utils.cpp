@@ -66,11 +66,17 @@ uint32_t GetCorrectHashcode(const std::string& fileName)
   return iter == kCorrectHashcode.end() ? 0 : iter->second;
 }
 
+// Thornswood #1715. These used to swap the top byte through a 256 entry
+// table, which cannot name a light plugin's form: the game gives those ids
+// under 0xFE with a 12 bit plugin index of their own (LoadOrder.h).
 uint32_t GetMappedId(uint32_t id, const IdMapping& mapping) noexcept
 {
-  const uint32_t shortId = id % 0x01000000;
-  const uint8_t index = id / 0x01000000;
-  return shortId + (mapping[index] * 0x01000000);
+  return mapping.Map(id);
+}
+
+uint32_t GetMappedId(uint32_t id, const RawIdMapping& mapping) noexcept
+{
+  return mapping.Map(id);
 }
 
 std::wstring ReadWstring(const uint8_t* ptr)

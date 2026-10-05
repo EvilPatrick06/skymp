@@ -16,6 +16,8 @@
 #include "libespm/RecordHeader.h"
 #include "libespm/RefrKey.h"
 #include "libespm/WRLD.h"
+#include <algorithm>
+#include <array>
 #include <cstring>
 #include <optional>
 #include <stdexcept>
@@ -51,6 +53,7 @@ struct Browser::Impl
   std::vector<const RecordHeader*> worlds;
   std::vector<const RecordHeader*> cells;
   std::vector<const RecordHeader*> navmeshRecords;
+  std::array<uint32_t, 256> highestLocalId{};
 
   GroupStack grStack;
   std::vector<std::unique_ptr<GroupStack>> grStackCopies;
@@ -192,6 +195,11 @@ const std::vector<const void*>& Browser::GetSubsEnsured(
   return *opt;
 }
 
+uint32_t Browser::GetHighestLocalId(uint8_t topByte) const noexcept
+{
+  return pImpl->highestLocalId[topByte];
+}
+
 bool Browser::ReadAny(const GroupStack* parentGrStack)
 {
   if (pImpl->pos >= pImpl->length) {
@@ -234,6 +242,8 @@ bool Browser::ReadAny(const GroupStack* parentGrStack)
     pImpl->groupStackByRecordPtr.emplace(recHeader, parentGrStack);
 
     pImpl->recById[recHeader->id] = recHeader;
+    auto& highest = pImpl->highestLocalId[recHeader->id >> 24];
+    highest = std::max(highest, recHeader->id & 0x00FFFFFF);
 
     Type t = recHeader->GetType();
     if (utils::Is<espm::REFR>(t) || utils::Is<espm::ACHR>(t)) {

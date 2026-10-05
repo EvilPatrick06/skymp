@@ -71,7 +71,8 @@ struct WorldState::Impl
   std::vector<RelootTimeForTypesEntry> relootTimeForTypes;
   std::set<std::string> forbiddenRelootTypes;
   std::vector<std::unique_ptr<IPapyrusClassBase>> classes;
-  std::array<std::shared_ptr<std::vector<uint32_t>>, 0x100>
+  // By GetAllForms' modIndex
+  std::unordered_map<uint32_t, std::shared_ptr<std::vector<uint32_t>>>
     allFormsByModIndexCache;
   std::vector<uint32_t> attachEspmRecordFailures;
   std::optional<std::vector<uint32_t>> placedActorIds;
@@ -116,7 +117,7 @@ void WorldState::AttachEspm(espm::Loader* espm_,
   espm = espm_;
   formCallbacksFactory = formCallbacksFactory_;
   espmCache.reset(new espm::CompressedFieldsCache);
-  espmFiles = espm->GetFileNames();
+  espmFiles = espm->GetLoadOrder();
   pImpl->placedActorIds.reset();
 }
 
@@ -608,23 +609,21 @@ bool WorldState::AttachEspmRecord(const espm::CombineBrowser& br,
     if (worldRecord) {
       isExterior = true;
     }
-    uint32_t npcFileIdx = GetFileIdx(formId);
-    if (npcFileIdx >= espmFiles.size()) {
-      spdlog::error("NPC's idx is greater than espmFiles.size(). NPC's"
-                    "formId "
-                    "{:#x}, espmFiles size: {}",
+    const auto npcFileIdx = GetFileIdx(formId);
+    if (!npcFileIdx) {
+      spdlog::error("No loaded plugin owns the NPC's formId {:#x}, espmFiles "
+                    "size: {}",
                     formId, espmFiles.size());
       if (optionalOutTrace) {
         *optionalOutTrace
-          << fmt::format("NPC's idx is greater than espmFiles.size(). NPC's"
-                         "formId "
-                         "{:#x}, espmFiles size: {}",
+          << fmt::format("No loaded plugin owns the NPC's formId {:#x}, "
+                         "espmFiles size: {}",
                          formId, espmFiles.size())
           << std::endl;
       }
       return false;
     }
-    auto it = npcSettings.find(espmFiles[npcFileIdx]);
+    auto it = npcSettings.find(espmFiles[*npcFileIdx]);
     if (it != npcSettings.end()) {
       spawnInInterior = it->second.spawnInInterior;
       spawnInExterior = it->second.spawnInExterior;
@@ -1146,10 +1145,26 @@ WorldState::NpcLoadBatch WorldState::LoadNpcBatch(size_t cursor, size_t limit)
 std::shared_ptr<std::vector<uint32_t>> WorldState::GetAllForms(
   uint32_t modIndex)
 {
-  if (modIndex >= std::size(pImpl->allFormsByModIndexCache)) {
+  // modIndex is a form id's top byte: a full plugin's index, 0x00 to 0xFD,
+  // or 0xFF for the forms the server made. Thornswood #1715: a light plugin
+  // has no top byte of its own, every light form has 0xFE there, so a light
+  // plugin is 0x100 + its light index, the index SKSE's Game.GetModName
+  // takes for it (CallNativeApi.cpp, kLightModOffset).
+  constexpr uint32_t kLightModOffset = 0x100;
+  const bool light = modIndex >= kLightModOffset &&
+    modIndex < kLightModOffset + espm::PluginSlot::kMaxLightPlugins;
+  if (!light &&
+      (modIndex > 0xFF || modIndex == espm::PluginSlot::kLightTopByte)) {
     spdlog::error("WorldState::GetAllForms - Invalid mod index {}", modIndex);
     return nullptr;
   }
+  const auto inMod = [&](uint32_t formId) {
+    if (light) {
+      return (formId >> 24) == espm::PluginSlot::kLightTopByte &&
+        ((formId >> 12) & 0xFFF) == modIndex - kLightModOffset;
+    }
+    return (formId >> 24) == modIndex;
+  };
 
   auto& resCache = pImpl->allFormsByModIndexCache[modIndex];
 
@@ -1159,12 +1174,12 @@ std::shared_ptr<std::vector<uint32_t>> WorldState::GetAllForms(
     // so we don't need de-duplicate in runtime
     std::unordered_set<uint32_t> formIds;
     for (const auto& p : forms) {
-      if ((p.first >> 24) == modIndex) {
+      if (inMod(p.first)) {
         formIds.insert(p.first);
       }
     }
     for (const auto& p : pImpl->changeFormsForDeferredLoad) {
-      if ((p.first >> 24) == modIndex) {
+      if (inMod(p.first)) {
         formIds.insert(p.first);
       }
     }
@@ -1433,13 +1448,12 @@ bool WorldState::IsNpcAllowed(uint32_t refrId) const noexcept
   if (npcSettings.empty() && defaultSetting.overriden) {
     return true;
   }
-  uint32_t npcFileIdx = GetFileIdx(refrId);
+  const auto npcFileIdx = GetFileIdx(refrId);
   for (const auto& [fileName, _] : npcSettings) {
-    auto it = std::find(espmFiles.begin(), espmFiles.end(), fileName);
-    if (it == espmFiles.end()) {
+    const auto idx = espmFiles.FindByFileName(fileName);
+    if (!idx) {
       return false;
     }
-    auto idx = std::distance(espmFiles.begin(), it);
     if (npcFileIdx == idx) {
       return true;
     }
@@ -1447,9 +1461,11 @@ bool WorldState::IsNpcAllowed(uint32_t refrId) const noexcept
   return false;
 }
 
-uint32_t WorldState::GetFileIdx(uint32_t formId) const noexcept
+std::optional<size_t> WorldState::GetFileIdx(uint32_t formId) const noexcept
 {
-  return formId >> 24;
+  // Thornswood #1715. Was formId >> 24, which is a place in the load order
+  // only for full plugins; every light plugin's form has 0xFE there.
+  return espmFiles.FindByFormId(formId);
 }
 
 void WorldState::SetNpcSettings(
