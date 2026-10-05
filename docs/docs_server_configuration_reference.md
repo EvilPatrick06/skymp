@@ -56,6 +56,8 @@ HTTP Basic authentication for the `/metrics` endpoint.
 
 If omitted, `/metrics` is not available.
 
+The UI port is plain HTTP, so the user and password cross the network unencrypted on every request. Read `/metrics` from the server's own machine, or through a reverse proxy with TLS. See [Server Ports Usage](docs_server_ports_usage.md).
+
 ```json5
 {
   // ...
