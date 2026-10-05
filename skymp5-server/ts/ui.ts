@@ -27,6 +27,25 @@ const metricsAuthParse = (settings: Settings): void => {
   metricsAuth = { user: authConfig.user, password: authConfig.password };
 }
 
+// An address on this machine: 127.0.0.0/8 or ::1, also as an IPv4 address
+// mapped into IPv6.
+const isLoopback = (address: string | undefined): boolean =>
+  address === "::1" || /^(::ffff:)?127\./.test(address || "");
+
+// The RPC route runs whatever a gamemode installs as onHttpRpcRunAttempt, with
+// a class name and payload the caller picks, and it shares the UI port, which
+// stays open to everybody because clients fetch the manifest from it. So it
+// answers only callers on this machine. This reads the socket's own address,
+// which no header can change, and runs before the body is read or a metric is
+// counted.
+const rpcPath = "/rpc/:rpcClassName";
+const rpcFromThisMachineOnly = (ctx: any, next: any) => {
+  if (!isLoopback(ctx.req.socket.remoteAddress)) {
+    ctx.throw(403);
+  }
+  return next();
+};
+
 const createApp = (getOriginPort: () => number) => {
   const app = new Koa();
 
@@ -52,7 +71,7 @@ const createApp = (getOriginPort: () => number) => {
   // never as multipart: koa-body writes every uploaded file to the temp folder
   // and never removes it, so parsing for the whole app let anybody fill the
   // disk through any path on this port.
-  router.post("/rpc/:rpcClassName", koaBody.default({ multipart: false }), (ctx: any) => {
+  router.post(rpcPath, rpcFromThisMachineOnly, koaBody.default({ multipart: false }), (ctx: any) => {
     const { rpcClassName } = ctx.params;
     const { payload } = ctx.request.body;
 
@@ -119,6 +138,11 @@ export const main = (settings: Settings): void => {
         const { port } = srv.address() as AddressInfo;
         state.port = port;
         const appProxy = new Koa();
+        // Every request reaches the app above from this machine through the
+        // proxy, so the proxy holds the RPC route to the same rule.
+        const rpcGuard = new Router();
+        rpcGuard.post(rpcPath, rpcFromThisMachineOnly);
+        appProxy.use(rpcGuard.routes());
         appProxy.use(
           proxy({
             host: `http://localhost:${devServerPort}`,

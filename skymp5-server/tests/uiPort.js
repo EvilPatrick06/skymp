@@ -18,21 +18,35 @@ function load(file,map){
 }
 const metrics=load(path.join(root,'ts/systems/metricsSystem.ts'),{});
 const servers=[];
-const ui=load(path.join(root,'ts/ui.ts'),{
-  './systems/metricsSystem':metrics,
-  // No UI dev server: main() takes the path every real server takes.
-  axios:{__esModule:true,default:()=>Promise.reject(new Error('no dev server'))},
-  http:{...http,createServer:(...a)=>{const s=http.createServer(...a);servers.push(s);return s;}},
-});
-
 const calls=[];
-ui.setServer({onHttpRpcRunAttempt:(name,payload)=>{calls.push([name,payload]);return {ran:name};}});
 
+// One UI port as main() starts it. devServer true takes the path a server
+// takes when a UI dev server answers on 1234: a proxy on the UI port in front
+// of the app on a port of its own.
 function freePort(){return new Promise(r=>{const s=http.createServer().listen(0,()=>{const p=s.address().port;s.close(()=>r(p));});});}
+async function start(devServer){
+  const mine=[];
+  const ui=load(path.join(root,'ts/ui.ts'),{
+    './systems/metricsSystem':metrics,
+    axios:{__esModule:true,default:()=>devServer?Promise.resolve({}):Promise.reject(new Error('no dev server'))},
+    http:{...http,createServer:(...a)=>{const s=http.createServer(...a);mine.push(s);servers.push(s);return s;}},
+  });
+  ui.setServer({onHttpRpcRunAttempt:(name,payload)=>{calls.push([name,payload]);return {ran:name};}});
+  const port=await freePort();
+  ui.main({port:port-1,allSettings:{}});
+  // main() listens once its dev server probe is answered; wait for those listens.
+  const want=devServer?2:1;
+  await new Promise((r)=>{const t=()=>mine.length===want&&mine.every(s=>s.listening)?r():setImmediate(t);t();});
+  return port;
+}
+
+// The address a caller from another machine has: this machine's own
+// non-loopback address, so the server sees a socket that is not loopback.
+const outside=Object.values(os.networkInterfaces()).flat().find(a=>a&&a.family==='IPv4'&&!a.internal);
 let uiPort;
-function send(method,p,{headers={},body}={}){
+function send(method,p,{headers={},body,from='127.0.0.1',port=uiPort}={}){
   return new Promise((res,rej)=>{
-    const r=http.request({host:'127.0.0.1',port:uiPort,method,path:p,headers},x=>{let d='';x.on('data',c=>d+=c);x.on('end',()=>res({status:x.statusCode,body:d}));});
+    const r=http.request({host:from,port,method,path:p,headers},x=>{let d='';x.on('data',c=>d+=c);x.on('end',()=>res({status:x.statusCode,body:d}));});
     r.on('error',rej);if(body)r.write(body);r.end();
   });
 }
@@ -49,10 +63,7 @@ async function check(name,fn){
 }
 
 (async()=>{
-  uiPort=await freePort();
-  ui.main({port:uiPort-1,allSettings:{}});
-  // main() listens once its dev server probe has failed; wait for that listen.
-  await new Promise((r)=>{const t=()=>servers.length&&servers[0].listening?r():setImmediate(t);t();});
+  uiPort=await start(false);
 
   await check('a multipart upload to a path nobody serves leaves nothing in the temp folder',async()=>{
     const r=await send('POST','/no-such-route',asMultipart);
@@ -72,6 +83,49 @@ async function check(name,fn){
     assert.deepEqual(JSON.parse(r.body),{ran:'Echo'});
     assert.deepEqual(calls,[['Echo',{a:1}]]);
   });
+
+  await check('this machine has an address that is not loopback to call from',async()=>{
+    assert.ok(outside,'no non-internal IPv4 interface, so a caller from another machine cannot be tried');
+  });
+  const series=async(name)=>(await metrics.register.metrics()).split('\n').filter(l=>l.includes('rpcClassName="'+name+'"'));
+  if(outside){
+    const from=outside.address;
+    await check('an RPC from another machine is refused before it runs or counts',async()=>{
+      calls.length=0;
+      const r=await send('POST','/rpc/FromOutside',{...asJson({payload:1}),from});
+      assert.equal(r.status,403);
+      assert.deepEqual(calls,[]);
+      assert.deepEqual(await series('FromOutside'),[]);
+    });
+    await check('the route name in other letter case is refused the same way',async()=>{
+      calls.length=0;
+      const r=await send('POST','/RPC/FromOutside',{...asJson({payload:1}),from});
+      assert.equal(r.status,403);
+      assert.deepEqual(calls,[]);
+    });
+    await check('a multipart upload from another machine to the RPC route is refused unread',async()=>{
+      const r=await send('POST','/rpc/FromOutside',{...asMultipart,from});
+      assert.equal(r.status,403);
+      assert.deepEqual(leftInTmp(),[]);
+    });
+    await check('the rest of the UI port still answers another machine',async()=>{
+      const r=await send('GET','/no-such-file.json',{from});
+      assert.equal(r.status,404);
+    });
+    const proxied=await start(true);
+    await check('behind the UI dev server proxy an RPC from another machine is refused',async()=>{
+      calls.length=0;
+      const r=await send('POST','/rpc/FromOutside',{...asJson({payload:1}),from,port:proxied});
+      assert.equal(r.status,403);
+      assert.deepEqual(calls,[]);
+    });
+    await check('behind the UI dev server proxy an RPC from this machine still runs',async()=>{
+      calls.length=0;
+      const r=await send('POST','/rpc/Echo',{...asJson({payload:2}),port:proxied});
+      assert.equal(r.status,200);
+      assert.deepEqual(calls,[['Echo',2]]);
+    });
+  }
 
   for(const s of servers)s.close();
   fs.rmSync(tmp,{recursive:true,force:true});
