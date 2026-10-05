@@ -94,7 +94,14 @@ void ReplaceFile(const std::filesystem::path& path, const std::string& bytes,
     throw std::runtime_error("Unable to close save file " +
                              temporary.string());
   }
+#ifdef _WIN32
+  if (!MoveFileExW(temporary.c_str(), path.c_str(),
+                   MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+    throw std::runtime_error("Unable to durably replace save file " + path.string());
+  }
+#else
   std::filesystem::rename(temporary, path);
+#endif
   if (syncDirectory) {
     SyncDirectory(path.parent_path());
   }
