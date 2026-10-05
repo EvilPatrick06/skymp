@@ -79,6 +79,13 @@ static const auto jEquipment = nlohmann::json{
       { "inv", { { "entries", nlohmann::json::array() } } } } }
 };
 
+inline void GiveStoredAppearance(MpActor& actor,
+                                 const nlohmann::json& data = jAppearance["data"])
+{
+  const Appearance appearance = Appearance::FromJson(data);
+  actor.SetAppearance(&appearance);
+}
+
 class FakeListener : public PartOne::Listener
 {
 public:

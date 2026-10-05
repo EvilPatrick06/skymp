@@ -786,6 +786,11 @@ void PartOne::Init()
 
     MpActor* emitterAsActor = emitter->AsActor();
 
+    if (!isMe && emitterAsActor &&
+        !emitterAsActor->ShouldPublishToOtherClients()) {
+      return;
+    }
+
     CreateActorMessage message;
 
     std::string jAnimation;
@@ -896,6 +901,13 @@ void PartOne::Init()
                                 MpObjectReference* listener) {
     MpActor* listenerAsActor = listener->AsActor();
     if (!listenerAsActor) {
+      return;
+    }
+
+    const bool isMe = emitter == listener;
+    MpActor* emitterAsActor = emitter->AsActor();
+    if (!isMe && emitterAsActor &&
+        !emitterAsActor->ShouldPublishToOtherClients()) {
       return;
     }
 
