@@ -267,6 +267,7 @@ struct PublishedPair
 {
   MpActor* actor0 = nullptr;
   MpActor* actor1 = nullptr;
+  MpObjectReference* flower = nullptr;
 };
 
 PublishedPair ConnectPublishedPair(PartOne& partOne)
@@ -282,14 +283,24 @@ PublishedPair ConnectPublishedPair(PartOne& partOne)
   PublishedPair pair;
   pair.actor0 = &partOne.worldState.GetFormAt<MpActor>(0xff000ABC);
   pair.actor1 = &partOne.worldState.GetFormAt<MpActor>(0xff000FFF);
+
+  auto flower = std::make_unique<MpObjectReference>(
+    LocationalData{ { 1.f, 2.f, 3.f }, {}, FormDesc::Tamriel() },
+    partOne.CreateFormCallbacks(), 0x7e8c9, "FLOR");
+  partOne.worldState.AddForm(std::move(flower), 0xff000100);
+  pair.flower = &partOne.worldState.GetFormAt<MpObjectReference>(0xff000100);
+  pair.flower->ForceSubscriptionsUpdate();
+
   // Player 1 stays published so player 0 still receives their movement.
   GiveStoredAppearance(*pair.actor1);
   GiveStoredAppearance(*pair.actor0);
+  REQUIRE(pair.actor0->GetListeners().count(pair.flower) == 1);
   return pair;
 }
 
 void ExpectNoNeighborStateThenRepublish(PartOne& partOne, MpActor& actor0,
-                                        MpActor& actor1)
+                                        MpActor& actor1,
+                                        MpObjectReference& flower)
 {
   const int actor0Idx = static_cast<int>(actor0.GetIdx());
   const int actor1Idx = static_cast<int>(actor1.GetIdx());
@@ -298,6 +309,7 @@ void ExpectNoNeighborStateThenRepublish(PartOne& partOne, MpActor& actor0,
   REQUIRE(CountMsg(partOne, 0, MsgType::DestroyActor, actor0Idx) == 0);
   REQUIRE_FALSE(actor0.HasStoredAppearance());
   REQUIRE_FALSE(actor0.ShouldPublishToOtherClients());
+  REQUIRE(actor0.GetListeners().count(&flower) == 1);
 
   auto movement0 = jMovement;
   movement0["idx"] = actor0Idx;
@@ -350,7 +362,8 @@ TEST_CASE("Clearing a stored face unpublishes with one DestroyActor",
   // value is not an object. That is the null appearance property path.
   pair.actor0->SetAppearance(nullptr);
 
-  ExpectNoNeighborStateThenRepublish(partOne, *pair.actor0, *pair.actor1);
+  ExpectNoNeighborStateThenRepublish(partOne, *pair.actor0, *pair.actor1,
+                                     *pair.flower);
 }
 
 TEST_CASE("A live null appearance dump unpublishes with one DestroyActor",
@@ -370,5 +383,43 @@ TEST_CASE("A live null appearance dump unpublishes with one DestroyActor",
   changeForm.appearanceDump.clear();
   pair.actor0->ApplyChangeForm(changeForm);
 
-  ExpectNoNeighborStateThenRepublish(partOne, *pair.actor0, *pair.actor1);
+  ExpectNoNeighborStateThenRepublish(partOne, *pair.actor0, *pair.actor1,
+                                     *pair.flower);
+}
+
+TEST_CASE("ApplyChangeForm with a stored face publishes a hidden player",
+          "[AppearancePublish][PartOne]")
+{
+  PartOne partOne;
+  DoConnect(partOne, 0);
+  partOne.CreateActor(0xff000ABC, { 1.f, 2.f, 3.f }, 180.f, 0x3c);
+  partOne.SetUserActor(0, 0xff000ABC);
+  auto& actor0 = partOne.worldState.GetFormAt<MpActor>(0xff000ABC);
+
+  DoConnect(partOne, 1);
+  partOne.CreateActor(0xff000FFF, { 1.f, 2.f, 3.f }, 180.f, 0x3c);
+  partOne.SetUserActor(1, 0xff000FFF);
+  GiveStoredAppearance(partOne.worldState.GetFormAt<MpActor>(0xff000FFF));
+
+  REQUIRE_FALSE(actor0.HasStoredAppearance());
+  REQUIRE_FALSE(actor0.ShouldPublishToOtherClients());
+
+  partOne.Messages().clear();
+  auto changeForm = actor0.GetChangeForm();
+  changeForm.formDesc = FormDesc::FromFormId(actor0.GetFormId(),
+                                            partOne.worldState.espmFiles);
+  changeForm.appearanceDump =
+    Appearance::FromJson(jAppearance["data"]).ToJson();
+  actor0.ApplyChangeForm(changeForm);
+
+  const int actor0Idx = static_cast<int>(actor0.GetIdx());
+  REQUIRE(actor0.HasStoredAppearance());
+  REQUIRE(actor0.ShouldPublishToOtherClients());
+  REQUIRE(CountMsg(partOne, 1, MsgType::CreateActor, actor0Idx) == 1);
+
+  partOne.Messages().clear();
+  auto movement0 = jMovement;
+  movement0["idx"] = actor0Idx;
+  DoMessage(partOne, 0, movement0);
+  REQUIRE(CountMsg(partOne, 1, MsgType::UpdateMovement, actor0Idx) == 1);
 }
