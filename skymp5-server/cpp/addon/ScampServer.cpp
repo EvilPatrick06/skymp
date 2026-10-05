@@ -32,6 +32,7 @@
 #include <cctype>
 #include <cmath>
 #include <database_drivers/DatabaseFactory.h>
+#include <database_drivers/PrivateEconomyLedger.h>
 #include <limits>
 #include <memory>
 #include <napi.h>
@@ -88,6 +89,7 @@ Napi::Object ScampServer::Init(Napi::Env env, Napi::Object exports)
     env, "ScampServer",
     { InstanceMethod("_setSelf", &ScampServer::_SetSelf),
       InstanceMethod("attachSaveStorage", &ScampServer::AttachSaveStorage),
+      InstanceMethod("writePrivateEconomyLedger", &ScampServer::WritePrivateEconomyLedger),
       InstanceMethod("tick", &ScampServer::Tick),
       InstanceMethod("on", &ScampServer::On),
       InstanceMethod("createActor", &ScampServer::CreateActor),
@@ -575,6 +577,22 @@ Napi::Value ScampServer::AttachSaveStorage(const Napi::CallbackInfo& info)
     throw Napi::Error::New(info.Env(), (std::string)e.what());
   }
   return info.Env().Undefined();
+}
+
+Napi::Value ScampServer::WritePrivateEconomyLedger(const Napi::CallbackInfo& info)
+{
+  try {
+    const auto name = NapiHelper::ExtractString(info[0], "ledger name");
+    const auto bytes = NapiHelper::ExtractString(info[1], "ledger bytes");
+    const auto privateDir = std::filesystem::u8path(serverSettings.value("privDir", "private"));
+    // ui.ts createApp serves the literal data folder; dataDir locates game
+    // resources and is not the HTTP root. Bind privacy to what is served.
+    const auto servedDir = std::filesystem::u8path("data");
+    ::WritePrivateEconomyLedger(privateDir, servedDir, name, bytes);
+    return Napi::Boolean::New(info.Env(), true);
+  } catch (std::exception& e) {
+    throw Napi::Error::New(info.Env(), e.what());
+  }
 }
 
 namespace {
