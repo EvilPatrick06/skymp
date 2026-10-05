@@ -26,6 +26,7 @@
 #include <NiPoint3.h>
 #include <TimeUtils.h>
 #include <algorithm>
+#include <vector>
 #include <atomic>
 #include <chrono>
 #include <functional>
@@ -352,14 +353,40 @@ void MpActor::SetRaceMenuOpen(bool isOpen)
     [&](MpChangeForm& changeForm) { changeForm.isRaceMenuOpen = isOpen; });
 }
 
+namespace {
+void UnsubscribeOtherListeners(MpActor& actor)
+{
+  std::vector<MpObjectReference*> others;
+  others.reserve(actor.GetListeners().size());
+  for (MpObjectReference* listener : actor.GetListeners()) {
+    if (listener != &actor) {
+      others.push_back(listener);
+    }
+  }
+  for (MpObjectReference* listener : others) {
+    MpObjectReference::Unsubscribe(&actor, listener);
+  }
+}
+}
+
 void MpActor::SetAppearance(const Appearance* newAppearance)
 {
+  std::string dump;
+  if (newAppearance) {
+    dump = newAppearance->ToJson();
+  }
+  const bool willHaveAppearance = !dump.empty();
   const bool wasPublished = ShouldPublishToOtherClients();
+  const bool willBePublished = ShouldPublishToOtherClients(willHaveAppearance);
+
+  // Unsubscribe while this actor is still published, so each neighbour gets
+  // one DestroyActor. The onUnsubscribe guard blocks a later second send.
+  if (wasPublished && !willBePublished) {
+    UnsubscribeOtherListeners(*this);
+  }
+
   EditChangeForm([&](MpChangeForm& changeForm) {
-    if (newAppearance)
-      changeForm.appearanceDump = newAppearance->ToJson();
-    else
-      changeForm.appearanceDump.clear();
+    changeForm.appearanceDump = dump;
   });
 
   // While hidden, other actors were never recorded as listeners.
@@ -735,6 +762,15 @@ void MpActor::ApplyChangeForm(const MpChangeForm& newChangeForm)
     throw std::runtime_error(
       "Expected record type to be ACHR, but found REFR");
   }
+
+  // Published-to-hidden only. An NPC stays published with an empty dump, so
+  // an empty dump alone must not remove anyone. Do this before the assign,
+  // while ShouldPublishToOtherClients() is still true.
+  if (newChangeForm.appearanceDump.empty() && ShouldPublishToOtherClients() &&
+      !ShouldPublishToOtherClients(false)) {
+    UnsubscribeOtherListeners(*this);
+  }
+
   MpObjectReference::ApplyChangeForm(newChangeForm);
   EditChangeForm(
     [&](MpChangeForm& changeForm) {
@@ -1074,9 +1110,9 @@ bool MpActor::HasStoredAppearance() const
   return !ChangeForm().appearanceDump.empty();
 }
 
-bool MpActor::ShouldPublishToOtherClients() const
+bool MpActor::ShouldPublishToOtherClients(bool hasAppearance) const
 {
-  if (!IsCreatedAsPlayer() || HasStoredAppearance()) {
+  if (!IsCreatedAsPlayer() || hasAppearance) {
     return true;
   }
 
@@ -1092,6 +1128,11 @@ bool MpActor::ShouldPublishToOtherClients() const
   }
 
   return true;
+}
+
+bool MpActor::ShouldPublishToOtherClients() const
+{
+  return ShouldPublishToOtherClients(HasStoredAppearance());
 }
 
 namespace {
