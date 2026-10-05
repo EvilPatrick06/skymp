@@ -9,6 +9,12 @@ public:
   Reader(std::string path);
   Reader(const uint8_t* data, size_t size);
 
+  // Decodes one LZ4 block (lz4 doc/lz4_Block_format.md), the form a Special
+  // Edition save's body takes when its compression type is 2.
+  static std::vector<uint8_t> Lz4BlockDecompress(const uint8_t* src,
+                                                 size_t srcSize,
+                                                 size_t dstSize);
+
 private:
   std::string path = "";
 
@@ -19,7 +25,9 @@ private:
   std::shared_ptr<SaveFile> structure;
 
   Header FillHeader();
+  void ExpandBody();
   PluginInfo FillPluginInfo();
+  LightPluginInfo FillLightPluginInfo();
   FileLocationTable FillFileLocationTable();
   std::vector<GlobalData> FillGlobalData(uint32_t numObject);
   std::vector<ChangeForm> FillChangeForm(uint32_t numObject);
