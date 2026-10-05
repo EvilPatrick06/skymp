@@ -904,6 +904,13 @@ void PartOne::Init()
       return;
     }
 
+    const bool isMe = emitter == listener;
+    MpActor* emitterAsActor = emitter->AsActor();
+    if (!isMe && emitterAsActor &&
+        !emitterAsActor->ShouldPublishToOtherClients()) {
+      return;
+    }
+
     auto listenerUserId = serverState.UserByActor(listenerAsActor);
     if (listenerUserId != Networking::InvalidUserId &&
         listenerUserId != serverState.disconnectingUserId) {
