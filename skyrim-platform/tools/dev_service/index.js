@@ -176,8 +176,13 @@ const watchCallback = (_eventType, fileName) => {
           binPath("SkyrimPlatformImpl.dll"),
           path.join(distDir, "Data/Platform/Distribution/RuntimeDependencies")
         );
+        // The folder CMake compiled the Papyrus into, or the committed one
+        // when it had no compiler (pex_dir.txt, Thornswood #1220).
+        let pexDir = fs
+          .readFileSync(path.join(bin, `pex_dir.txt`))
+          .toString("utf-8");
         cp(
-          path.join(sourceDir, `src/platform_se/pex/TESModPlatform.pex`),
+          path.join(pexDir, `TESModPlatform.pex`),
           path.join(distDir, "Data/Scripts")
         );
         cp(
