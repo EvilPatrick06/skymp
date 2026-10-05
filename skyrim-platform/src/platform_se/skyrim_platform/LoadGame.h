@@ -9,6 +9,7 @@ struct ChangeForm;
 struct ChangeFormNPC_;
 struct Weather;
 struct GlobalVariables;
+class PluginRemap;
 }
 
 class LoadGame
@@ -39,13 +40,22 @@ public:
   static std::shared_ptr<SaveFile_::SaveFile> PrepareSaveFile(
     const char* pathInAssets);
 
+  // Lists this game's plugins in the save, the given lists or else the
+  // game's compiled ones, and returns how its form ids become the save's.
+  // Every form id put into the save goes through it (Thornswood #1715).
+  static SaveFile_::PluginRemap ListPlugins(
+    SaveFile_::SaveFile& save, const std::vector<std::string>* loadOrder,
+    const std::vector<std::string>* lightLoadOrder);
+
+  // cellOrWorld is this game's id; plugins is what ListPlugins returned for
+  // this save.
   static void Run(std::shared_ptr<SaveFile_::SaveFile> baseSavefile,
                   const std::array<float, 3>& pos,
                   const std::array<float, 3>& angle, uint32_t cellOrWorld,
-                  Time* time = nullptr, SaveFile_::Weather* _weather = nullptr,
-                  SaveFile_::ChangeFormNPC_* changeFormNPC = nullptr,
-                  std::vector<std::string>* loadOrder = nullptr,
-                  const std::vector<InitialInventory::Item>* inventory = nullptr);
+                  Time* time, SaveFile_::Weather* _weather,
+                  SaveFile_::ChangeFormNPC_* changeFormNPC,
+                  const SaveFile_::PluginRemap& plugins,
+                  const std::vector<InitialInventory::Item>* inventory);
 
   static std::wstring GetPathToMyDocuments();
 
@@ -78,13 +88,12 @@ private:
                               const std::vector<uint8_t>& compressed,
                               size_t uncompressedSize);
 
+  // saveCellOrWorld is the cell or worldspace as the save names it
   static void ModifyEssStructure(std::shared_ptr<SaveFile_::SaveFile> save,
                                  std::array<float, 3> pos,
                                  std::array<float, 3> angle,
-                                 uint32_t cellOrWorld,
+                                 uint32_t saveCellOrWorld,
                                  const std::vector<InitialInventory::Item>* inventory);
-
-  static void ModifyPluginInfo(std::shared_ptr<SaveFile_::SaveFile>& save);
 
   static void ModifySaveTime(std::shared_ptr<SaveFile_::SaveFile>& save,
                              Time* time);
@@ -94,9 +103,6 @@ private:
 
   static void ModifyPlayerFormNPC(std::shared_ptr<SaveFile_::SaveFile> save,
                                   SaveFile_::ChangeFormNPC_* changeFormNPC);
-
-  static void ModifyLoadOrder(std::shared_ptr<SaveFile_::SaveFile> save,
-                              std::vector<std::string>* loadOrder);
 
   static void FillChangeForm(
     std::shared_ptr<SaveFile_::SaveFile> save, SaveFile_::ChangeForm* form,

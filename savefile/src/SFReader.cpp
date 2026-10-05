@@ -3,6 +3,9 @@
 #include <cassert>
 #include <fstream>
 #include <iostream>
+#include <stdexcept>
+#include <string>
+#include <zlib.h>
 
 void SaveFile_::Reader::Read()
 {
@@ -53,18 +56,28 @@ void SaveFile_::Reader::CreateScriptStructure(std::vector<uint8_t> arrayBytes)
 
   structure->magic = ReadString(13);
   structure->headerSize = ReadUint32_bit();
+  const int headerStart = currentReadPositionInFile;
   structure->header = FillHeader();
+  if (currentReadPositionInFile - headerStart !=
+      static_cast<int>(structure->headerSize))
+    throw std::runtime_error("Save header size does not match the header");
 
-  const size_t sizeScreenData =
-    structure->header.shotWidth * structure->header.shotHeight * 3;
-  structure->screenshotData.resize(sizeScreenData);
+  structure->screenshotData.resize(structure->ScreenshotSize());
 
   for (auto& byte : structure->screenshotData)
     byte = Read8_bit();
 
+  ExpandBody();
+
   structure->formVersion = Read8_bit();
   structure->pluginInfoSize = ReadUint32_bit();
+  const int pluginInfoStart = currentReadPositionInFile;
   structure->pluginInfo = FillPluginInfo();
+  if (structure->HasLightPluginInfo())
+    structure->lightPluginInfo = FillLightPluginInfo();
+  if (currentReadPositionInFile - pluginInfoStart !=
+      static_cast<int>(structure->pluginInfoSize))
+    throw std::runtime_error("Save plugin info size does not match its lists");
 
   structure->fileLocationTable = FillFileLocationTable();
 
@@ -133,7 +146,98 @@ SaveFile_::Header SaveFile_::Reader::FillHeader()
   header.shotWidth = ReadUint32_bit();
   header.shotHeight = ReadUint32_bit();
 
+  if (header.version >= SaveFile::SPECIAL_EDITION_VERSION)
+    header.compressionType = Read16_bit();
+
   return header;
+}
+
+// A Special Edition save may store everything after the screenshot
+// compressed, behind its uncompressed and compressed lengths. The file
+// location table's offsets count as if that body followed the screenshot
+// uncompressed (ReSaver subtracts the header end from them to index the
+// decompressed body), so the body is put back there in place of the lengths
+// and the compressed bytes.
+void SaveFile_::Reader::ExpandBody()
+{
+  const auto type = structure->header.compressionType;
+  if (!structure->IsSpecialEdition() || type == SaveFile::COMPRESSION_NONE)
+    return;
+  const uint32_t uncompressedLength = ReadUint32_bit();
+  const uint32_t compressedLength = ReadUint32_bit();
+  const size_t at = currentReadPositionInFile;
+  if (compressedLength > arrayBytes.size() - at)
+    throw std::runtime_error("Save body runs past the end of the file");
+  std::vector<uint8_t> body;
+  if (type == SaveFile::COMPRESSION_ZLIB) {
+    body.resize(uncompressedLength);
+    uLongf length = uncompressedLength;
+    if (uncompress(body.data(), &length, arrayBytes.data() + at,
+                   compressedLength) != Z_OK ||
+        length != uncompressedLength)
+      throw std::runtime_error(
+        "zlib save body does not decompress to its stated length");
+  } else if (type == SaveFile::COMPRESSION_LZ4) {
+    body = Lz4BlockDecompress(arrayBytes.data() + at, compressedLength,
+                              uncompressedLength);
+  } else {
+    throw std::runtime_error("Unknown save compression type " +
+                             std::to_string(type));
+  }
+  currentReadPositionInFile -= 8;
+  arrayBytes.resize(currentReadPositionInFile);
+  arrayBytes.insert(arrayBytes.end(), body.begin(), body.end());
+}
+
+std::vector<uint8_t> SaveFile_::Reader::Lz4BlockDecompress(const uint8_t* src,
+                                                           size_t srcSize,
+                                                           size_t dstSize)
+{
+  // A sequence is a token (literal length in the high nibble, match length
+  // minus 4 in the low one, 15 meaning bytes of 255 and a last byte follow),
+  // the literals, a 2-byte little-endian offset back into the output and the
+  // match. The last sequence holds literals only.
+  std::vector<uint8_t> dst;
+  dst.reserve(dstSize);
+  size_t i = 0;
+  auto length = [&](size_t value) {
+    if (value != 15)
+      return value;
+    for (;;) {
+      if (i >= srcSize)
+        throw std::runtime_error("LZ4 length runs past the block");
+      const uint8_t byte = src[i++];
+      value += byte;
+      if (byte != 255)
+        return value;
+    }
+  };
+  while (i < srcSize) {
+    const uint8_t token = src[i++];
+    const size_t literals = length(token >> 4);
+    if (literals > srcSize - i || literals > dstSize - dst.size())
+      throw std::runtime_error("LZ4 literals run past the block");
+    dst.insert(dst.end(), src + i, src + i + literals);
+    i += literals;
+    if (i == srcSize)
+      break;
+    if (srcSize - i < 2)
+      throw std::runtime_error("LZ4 offset runs past the block");
+    const size_t offset = src[i] | (size_t(src[i + 1]) << 8);
+    i += 2;
+    const size_t match = length(token & 15) + 4;
+    if (offset == 0 || offset > dst.size())
+      throw std::runtime_error("LZ4 offset points before the output");
+    if (match > dstSize - dst.size())
+      throw std::runtime_error("LZ4 match runs past the stated length");
+    // Copied a byte at a time: a match may overlap the bytes it produces.
+    const size_t from = dst.size() - offset;
+    for (size_t k = 0; k < match; ++k)
+      dst.push_back(dst[from + k]);
+  }
+  if (dst.size() != dstSize)
+    throw std::runtime_error("LZ4 block does not decode to its stated length");
+  return dst;
 }
 
 SaveFile_::PluginInfo SaveFile_::Reader::FillPluginInfo()
@@ -147,6 +251,19 @@ SaveFile_::PluginInfo SaveFile_::Reader::FillPluginInfo()
     name = ReadString(Read16_bit());
 
   return pluginInfo;
+}
+
+SaveFile_::LightPluginInfo SaveFile_::Reader::FillLightPluginInfo()
+{
+  LightPluginInfo lightPluginInfo;
+
+  lightPluginInfo.numPlugins = Read16_bit();
+  lightPluginInfo.pluginsName.resize(lightPluginInfo.numPlugins);
+
+  for (auto& name : lightPluginInfo.pluginsName)
+    name = ReadString(Read16_bit());
+
+  return lightPluginInfo;
 }
 
 SaveFile_::FileLocationTable SaveFile_::Reader::FillFileLocationTable()
@@ -1168,6 +1285,9 @@ void SaveFile_::Reader::FillMain(GlobalData& globalData)
 
 uint8_t SaveFile_::Reader::Read8_bit()
 {
+  if (currentReadPositionInFile < 0 ||
+      static_cast<size_t>(currentReadPositionInFile) >= arrayBytes.size())
+    throw std::runtime_error("Save read runs past the end of the file");
   return arrayBytes[currentReadPositionInFile++];
 }
 

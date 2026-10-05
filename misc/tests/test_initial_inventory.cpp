@@ -17,6 +17,9 @@ class LoadGame { public:
 #include <iterator>
 void TestInventoryBuilder(std::shared_ptr<SaveFile_::SaveFile> save) {
   using nlohmann::json;
+  // The ids below are this game's; with the template's own list as the
+  // game's, each names the plugin it names in the save.
+  const auto plugins = save->ListPlugins(save->pluginInfo.pluginsName, {});
   RE::TESContainer base;
   for (auto id : {7u, 100u, 101u, 15u, 102u, 200u}) RE::TESForm::forms.emplace(id, RE::TESForm{id});
   RE::TESForm::forms.at(7).container = &base;
@@ -29,7 +32,7 @@ void TestInventoryBuilder(std::shared_ptr<SaveFile_::SaveFile> save) {
   auto desired = json::array({{{"baseId",100},{"count",1},{"worn",true}},
     {{"baseId",101},{"count",2}}, {{"baseId",15},{"count",40}},
     {{"baseId",200},{"count",1},{"worn",true}}, {{"baseId",200},{"count",1},{"wornLeft",true}}});
-  auto result = CreateInitialInventory(save, Napi::Object(json{{"entries",desired}}));
+  auto result = CreateInitialInventory(save, plugins, Napi::Object(json{{"entries",desired}}));
   std::map<uint32_t, InitialInventory::Item> decoded;
   for (auto& item : *result) {
     auto index = (uint32_t(item.ref[0])<<16) | (uint32_t(item.ref[1])<<8) | item.ref[2];
@@ -45,7 +48,7 @@ void TestInventoryBuilder(std::shared_ptr<SaveFile_::SaveFile> save) {
   auto rejects = [&](json entries) {
     const auto refs = save->formIDArray;
     bool rejected=false;
-    try { CreateInitialInventory(save, Napi::Object(json{{"entries",entries}})); }
+    try { CreateInitialInventory(save, plugins, Napi::Object(json{{"entries",entries}})); }
     catch (const std::runtime_error&) { rejected=true; }
     assert(rejected);
     assert(save->formIDArray==refs); // Invalid inventory must not partially append IDs.
@@ -68,7 +71,7 @@ void TestInventoryBuilder(std::shared_ptr<SaveFile_::SaveFile> save) {
   auto excessive = json::array();
   for (unsigned i=0;i<4097;++i) excessive.push_back({{"baseId",100},{"count",1}});
   rejects(excessive);
-  auto decreased = CreateInitialInventory(save, Napi::Object(json{{"entries",json::array({{{"baseId",15},{"count",2}}})}}));
+  auto decreased = CreateInitialInventory(save, plugins, Napi::Object(json{{"entries",json::array({{{"baseId",15},{"count",2}}})}}));
   bool found=false;
   for (auto& item : *decreased) if (item.delta == -21) found=true;
   assert(found);
