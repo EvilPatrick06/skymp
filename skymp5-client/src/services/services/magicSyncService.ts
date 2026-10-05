@@ -38,21 +38,22 @@ export class MagicSyncService extends ClientListener {
 
         this.lastSendUpdateAnimationVariables = Date.now();
 
-        this.controller.once('update', () => {
-            const ac = Game.getPlayer();
+        // THORNSWOOD PATCH (Thornswood #1032). This already runs in update, so
+        // the variables are read and sent here. It used to wrap this in a
+        // once('update'), which subscribed to and unsubscribed from the update
+        // event twice a second for as long as a spell or a staff was in hand.
+        const ac = Game.getPlayer();
 
-            if (!ac) {
-                return;
-            }
+        if (!ac) {
+            return;
+        }
 
-            const animVariables = this.getAnimationVariablesFromActorConverted(ac.getFormID());
+        const animVariables = this.getAnimationVariablesFromActorConverted(ac.getFormID());
 
-            this.controller.emitter.emit("sendMessage", {
-                message: { t: MsgType.UpdateAnimVariables, data: this.getUpdateAnimVariablesEventData(ac, animVariables) },
-                reliability: "reliable"
-            });
+        this.controller.emitter.emit("sendMessage", {
+            message: { t: MsgType.UpdateAnimVariables, data: this.getUpdateAnimVariablesEventData(ac, animVariables) },
+            reliability: "reliable"
         });
-
     }
 
     private onSpellCast(event: SpellCastEvent) {
