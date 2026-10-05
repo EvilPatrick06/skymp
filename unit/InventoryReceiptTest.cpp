@@ -261,3 +261,17 @@ TEST_CASE("Failed saves do not advance receipt acknowledgement",
   server.Tick();
   REQUIRE(server.worldState.GetSavedInventoryReceipt(actor) == receipt);
 }
+TEST_CASE("Transaction preflight uses the exact native serialized byte bound",
+          "[inventory-receipt]")
+{
+  Inventory snapshot;
+  snapshot.AddItem(0x5ace4, 1);
+  snapshot.entries[0].health = 1.0f;
+  snapshot.entries[0].name = "";
+  const auto overhead = snapshot.ToJson().dump().size();
+  snapshot.entries[0].name = std::string(128 * 1024 - overhead, 'x');
+  REQUIRE(snapshot.ToJson().dump().size() == 128 * 1024);
+  REQUIRE_NOTHROW(MpObjectReference::ValidateTransactionInventory(snapshot));
+  snapshot.entries[0].name.value() += "x";
+  REQUIRE_THROWS(MpObjectReference::ValidateTransactionInventory(snapshot));
+}
