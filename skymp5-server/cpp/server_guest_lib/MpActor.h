@@ -58,6 +58,7 @@ public:
   const std::string& GetAppearanceAsJson();
   bool HasStoredAppearance() const;
   bool ShouldPublishToOtherClients() const;
+  bool ShouldPublishToOtherClients(bool hasAppearance) const;
   std::string GetLastAnimEventAsJson() const;
   const Equipment& GetEquipment() const;
   std::array<std::optional<Inventory::Entry>, 2> GetEquippedWeapon() const;

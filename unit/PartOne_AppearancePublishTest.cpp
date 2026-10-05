@@ -251,3 +251,124 @@ TEST_CASE("A faceless player sends no neighbour state until a face is stored",
                             m.userId == 1;
                         }) == 1);
 }
+
+namespace {
+
+size_t CountMsg(PartOne& partOne, Networking::UserId userId, MsgType type,
+                int idx)
+{
+  return static_cast<size_t>(std::count_if(
+    partOne.Messages().begin(), partOne.Messages().end(), [&](const auto& m) {
+      return m.userId == userId && m.j["t"] == type && m.j["idx"] == idx;
+    }));
+}
+
+struct PublishedPair
+{
+  MpActor* actor0 = nullptr;
+  MpActor* actor1 = nullptr;
+};
+
+PublishedPair ConnectPublishedPair(PartOne& partOne)
+{
+  DoConnect(partOne, 0);
+  partOne.CreateActor(0xff000ABC, { 1.f, 2.f, 3.f }, 180.f, 0x3c);
+  partOne.SetUserActor(0, 0xff000ABC);
+
+  DoConnect(partOne, 1);
+  partOne.CreateActor(0xff000FFF, { 1.f, 2.f, 3.f }, 180.f, 0x3c);
+  partOne.SetUserActor(1, 0xff000FFF);
+
+  PublishedPair pair;
+  pair.actor0 = &partOne.worldState.GetFormAt<MpActor>(0xff000ABC);
+  pair.actor1 = &partOne.worldState.GetFormAt<MpActor>(0xff000FFF);
+  // Player 1 stays published so player 0 still receives their movement.
+  GiveStoredAppearance(*pair.actor1);
+  GiveStoredAppearance(*pair.actor0);
+  return pair;
+}
+
+void ExpectNoNeighborStateThenRepublish(PartOne& partOne, MpActor& actor0,
+                                        MpActor& actor1)
+{
+  const int actor0Idx = static_cast<int>(actor0.GetIdx());
+  const int actor1Idx = static_cast<int>(actor1.GetIdx());
+
+  REQUIRE(CountMsg(partOne, 1, MsgType::DestroyActor, actor0Idx) == 1);
+  REQUIRE(CountMsg(partOne, 0, MsgType::DestroyActor, actor0Idx) == 0);
+  REQUIRE_FALSE(actor0.HasStoredAppearance());
+  REQUIRE_FALSE(actor0.ShouldPublishToOtherClients());
+
+  auto movement0 = jMovement;
+  movement0["idx"] = actor0Idx;
+  auto equipment0 = jEquipment;
+  equipment0["idx"] = actor0Idx;
+  const auto animation0 = nlohmann::json{
+    { "t", MsgType::UpdateAnimation },
+    { "idx", actor0Idx },
+    { "data",
+      { { "animEventName", "Idle" }, { "numChanges", 1 } } }
+  };
+
+  partOne.Messages().clear();
+  DoMessage(partOne, 0, movement0);
+  DoMessage(partOne, 0, animation0);
+  DoMessage(partOne, 0, equipment0);
+
+  REQUIRE(CountMsg(partOne, 1, MsgType::UpdateMovement, actor0Idx) == 0);
+  REQUIRE(CountMsg(partOne, 1, MsgType::UpdateAnimation, actor0Idx) == 0);
+  REQUIRE(CountMsg(partOne, 1, MsgType::UpdateEquipment, actor0Idx) == 0);
+  REQUIRE(CountMsg(partOne, 0, MsgType::UpdateMovement, actor0Idx) == 1);
+  REQUIRE(CountMsg(partOne, 0, MsgType::UpdateAnimation, actor0Idx) == 1);
+  REQUIRE(CountMsg(partOne, 0, MsgType::UpdateEquipment, actor0Idx) == 1);
+
+  auto movement1 = jMovement;
+  movement1["idx"] = actor1Idx;
+  partOne.Messages().clear();
+  DoMessage(partOne, 1, movement1);
+  REQUIRE(CountMsg(partOne, 0, MsgType::UpdateMovement, actor1Idx) == 1);
+
+  partOne.Messages().clear();
+  GiveStoredAppearance(actor0);
+  REQUIRE(CountMsg(partOne, 1, MsgType::CreateActor, actor0Idx) == 1);
+
+  partOne.Messages().clear();
+  DoMessage(partOne, 0, movement0);
+  REQUIRE(CountMsg(partOne, 1, MsgType::UpdateMovement, actor0Idx) == 1);
+}
+
+}
+
+TEST_CASE("Clearing a stored face unpublishes with one DestroyActor",
+          "[AppearancePublish][PartOne]")
+{
+  PartOne partOne;
+  const auto pair = ConnectPublishedPair(partOne);
+  partOne.Messages().clear();
+
+  // AppearanceBinding::Set calls SetAppearance(nullptr) when the property
+  // value is not an object. That is the null appearance property path.
+  pair.actor0->SetAppearance(nullptr);
+
+  ExpectNoNeighborStateThenRepublish(partOne, *pair.actor0, *pair.actor1);
+}
+
+TEST_CASE("A live null appearance dump unpublishes with one DestroyActor",
+          "[AppearancePublish][PartOne]")
+{
+  PartOne partOne;
+  const auto pair = ConnectPublishedPair(partOne);
+  partOne.Messages().clear();
+
+  // JsonToChangeForm turns a JSON null appearanceDump into an empty string,
+  // then ApplyChangeForm is what a live actor receives.
+  auto changeForm = pair.actor0->GetChangeForm();
+  // GetChangeForm rewrites an empty-file id. ApplyChangeForm requires the
+  // formDesc already stored on the live actor.
+  changeForm.formDesc = FormDesc::FromFormId(pair.actor0->GetFormId(),
+                                             partOne.worldState.espmFiles);
+  changeForm.appearanceDump.clear();
+  pair.actor0->ApplyChangeForm(changeForm);
+
+  ExpectNoNeighborStateThenRepublish(partOne, *pair.actor0, *pair.actor1);
+}
