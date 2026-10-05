@@ -8,6 +8,7 @@ TEST_CASE("UpdateEquipment", "[PartOne]")
   DoConnect(partOne, 0);
   partOne.CreateActor(0xff000ABC, { 1.f, 2.f, 3.f }, 180.f, 0x3c);
   partOne.SetUserActor(0, 0xff000ABC);
+  GiveStoredAppearance(partOne.worldState.GetFormAt<MpActor>(0xff000ABC));
   DoMessage(partOne, 0, jEquipment);
   partOne.Messages().clear();
 

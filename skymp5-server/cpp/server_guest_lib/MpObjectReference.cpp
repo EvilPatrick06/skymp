@@ -1081,6 +1081,14 @@ void MpObjectReference::Subscribe(MpObjectReference* emitter,
     return;
   }
 
+  // Keep the owner self-subscribe so the race menu can run. Skip pairing a
+  // faceless player with a different actor. Objects such as flowers and
+  // torches are still recorded, so they are not announced again later.
+  if (actorEmitter && actorListener && emitter != listener &&
+      !actorEmitter->ShouldPublishToOtherClients()) {
+    return;
+  }
+
   if (!emitter->pImpl->onInitEventSent &&
       listener->GetChangeForm().profileId != -1) {
     emitter->pImpl->onInitEventSent = true;
@@ -1093,6 +1101,11 @@ void MpObjectReference::Subscribe(MpObjectReference* emitter,
 
   emitter->InitListenersAndEmitters();
   listener->InitListenersAndEmitters();
+
+  // Already paired. Do not send CreateActor again.
+  if (emitter->listeners->find(listener) != emitter->listeners->end()) {
+    return;
+  }
 
   auto [it, inserted] = emitter->listeners->insert(listener);
 
