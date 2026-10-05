@@ -9,7 +9,6 @@ export interface DiscordGuildConfig {
   guildId: string;
   banRoleId?: string;
   eventLogChannelId?: string;
-  hideIpRoleId?: string;
 }
 
 export interface DiscordAuthSettings {
