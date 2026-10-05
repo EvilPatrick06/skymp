@@ -4,5 +4,7 @@ import { Movement } from "../../sync/movement";
 export interface UpdateMovementMessage {
     t: MsgType.UpdateMovement;
     idx: number;
-    data: Movement;
+    // THORNSWOOD. teleportSeq: own character only, see
+    // RemoteServer.getCarriedOutTeleportSeq.
+    data: Movement & { teleportSeq?: number };
 }
