@@ -45,14 +45,19 @@ export class Spawn implements System {
         this.log("Creating character", actorId.toString(16));
         // Let the gamemode persist creation and supply the outfit before the
         // initial character packet and face menu are sent to the owner.
+        // Thornswood #1560: that includes the equipment record, which the
+        // server can only write before the character has an owner.
         const chargen = (globalThis as typeof globalThis & {
           __thornswoodChargen?: { created?: (id: number) => void };
         }).__thornswoodChargen;
         if (typeof chargen?.created === "function") {
           chargen.created(actorId);
         }
-        ctx.svr.setUserActor(userId, actorId);
+        // Before setUserActor, so the first packet the owner gets already
+        // says the race menu is open. That is what tells the client this
+        // spawn is creation, and it no longer has to be told separately.
         ctx.svr.setRaceMenuOpen(actorId, true);
+        ctx.svr.setUserActor(userId, actorId);
       }
 
       const mp = ctx.svr as unknown as Mp;

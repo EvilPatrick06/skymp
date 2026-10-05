@@ -532,9 +532,13 @@ export class RemoteServer extends ClientListener {
     if (msg.props && !msg.props.isHostedByOther) {
     }
 
-    // Inventory is authoritative for the owner. Fresh creation packets may
-    // contain worn clothes here and an empty, independently saved equipment
-    // record. Applying that record would remove the starting clothes.
+    // The pack comes from the inventory and what is worn from the equipment
+    // record. Since Thornswood #1560 the server writes a new character's
+    // record at the moment the character is made, before this packet, so a
+    // creation packet carries the clothes in both and the record decides.
+    // A new character's packet also says the race menu is open, which is
+    // what marks a spawn as creation here.
+    const creation = msg.props?.isRaceMenuOpen === true;
     let ownerArrived = false;
     let ownerArrivalCell = 0;
     let ownerBasePrepared = false;
@@ -562,9 +566,7 @@ export class RemoteServer extends ClientListener {
       const pc = Game.getPlayer();
       let inv = this.ownerInventory;
       if (!pc?.is3DLoaded() || !inv || isBadMenuShown() || Ui.isMenuOpen('RaceSex Menu')) { return false; }
-      const wear = (form as Record<string, unknown>)['thornswoodWear'] as {creation?: boolean} | undefined;
-      const creation = wear?.creation === true || msg.props?.isRaceMenuOpen === true;
-      if (this.ownerInventoryIsSnapshot && !creation && msg.equipment) {
+      if (this.ownerInventoryIsSnapshot && msg.equipment) {
         inv = JSON.parse(JSON.stringify(inv)) as Inventory;
         for (const entry of inv.entries) { delete entry.worn; delete entry.wornLeft; }
         // Incoming equipment echoes update the live model while loading.
@@ -741,7 +743,6 @@ export class RemoteServer extends ClientListener {
           logTrace(this, 'Using moveRefrToPosition to spawn player');
           (async () => {
             try {
-              const creation = ((form as Record<string, unknown>)["thornswoodWear"] as {creation?: boolean} | undefined)?.creation === true || msg.props?.isRaceMenuOpen === true;
               if (creation) {
                 // Prepare while still at the source location. Entering the hall
                 // must not reveal the old empty inventory for several frames.
@@ -884,8 +885,7 @@ export class RemoteServer extends ClientListener {
 
             logTrace(this, `loading game in world/cell`, msg.transform.worldOrCell.toString(16));
             const loadGameService = this.controller.lookupListener(LoadGameService);
-            const initialInventory = ((form as Record<string, unknown>)["thornswoodWear"] as {creation?: boolean} | undefined)?.creation === true || msg.props?.isRaceMenuOpen === true
-              ? this.ownerInventory : undefined;
+            const initialInventory = creation ? this.ownerInventory : undefined;
             loadGameService.loadGame(
               msg.transform.pos,
               msg.transform.rot,
