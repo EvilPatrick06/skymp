@@ -314,8 +314,15 @@ export class FormView {
     this.isOnScreen = false;
     this.spawnMoment = 0;
     const refrId = this.refrId;
-    once("update", () => {
-      if (refrId >= 0xff000000) {
+    // THORNSWOOD PATCH (Thornswood #1032). Only a reference this view spawned
+    // (0xff...) has anything to delete, so only that asks for the next update.
+    // update() calls destroy() on every frame for a form in another worldOrCell
+    // (the view is already empty from the first frame on), and the old once()
+    // here was subscribed and unsubscribed every one of those frames with a
+    // callback that did nothing: 4,553 subscribes in six minutes of a dev
+    // session at 12 frames a second, 28 September.
+    if (refrId >= 0xff000000) {
+      once("update", () => {
         const refr = ObjectReference.from(Game.getFormEx(refrId));
         if (refr) {
           refr.delete();
@@ -325,8 +332,8 @@ export class FormView {
         if (ac) {
           TESModPlatform.setWeaponDrawnMode(ac, -1);
         }
-      }
-    })
+      });
+    }
 
     this.localImmortal = false;
     this.removeNickname();
