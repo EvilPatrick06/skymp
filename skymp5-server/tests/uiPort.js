@@ -24,16 +24,16 @@ const calls=[];
 // takes when a UI dev server answers on 1234: a proxy on the UI port in front
 // of the app on a port of its own.
 function freePort(){return new Promise(r=>{const s=http.createServer().listen(0,()=>{const p=s.address().port;s.close(()=>r(p));});});}
-async function start(devServer){
+async function start(devServer,allSettings={}){
   const mine=[];
   const ui=load(path.join(root,'ts/ui.ts'),{
     './systems/metricsSystem':metrics,
     axios:{__esModule:true,default:()=>devServer?Promise.resolve({}):Promise.reject(new Error('no dev server'))},
     http:{...http,createServer:(...a)=>{const s=http.createServer(...a);mine.push(s);servers.push(s);return s;}},
   });
-  ui.setServer({onHttpRpcRunAttempt:(name,payload)=>{calls.push([name,payload]);return {ran:name};}});
+  ui.setServer({onHttpRpcRunAttempt:(name,payload)=>{calls.push([name,payload]);return {ran:name};},getPrometheusMetrics:()=>''});
   const port=await freePort();
-  ui.main({port:port-1,allSettings:{}});
+  ui.main({port:port-1,allSettings});
   // main() listens once its dev server probe is answered; wait for those listens.
   const want=devServer?2:1;
   await new Promise((r)=>{const t=()=>mine.length===want&&mine.every(s=>s.listening)?r():setImmediate(t);t();});
@@ -126,6 +126,25 @@ async function check(name,fn){
       assert.deepEqual(calls,[['Echo',2]]);
     });
   }
+
+  const basic=(user,pass)=>({headers:{Authorization:'Basic '+Buffer.from(user+':'+pass).toString('base64')}});
+  await check('with no metricsAuth set, /metrics answers nobody',async()=>{
+    assert.equal((await send('GET','/metrics')).status,401);
+  });
+  const withAuth=await start(false,{metricsAuth:{user:'scraper',password:'s3cret-for-this-test'}});
+  await check('with metricsAuth set, /metrics wants its user and password',async()=>{
+    assert.equal((await send('GET','/metrics',{port:withAuth})).status,401);
+    assert.equal((await send('GET','/metrics',{...basic('scraper','wrong'),port:withAuth})).status,401);
+    const r=await send('GET','/metrics',{...basic('scraper','s3cret-for-this-test'),port:withAuth});
+    assert.equal(r.status,200);
+    assert.match(r.body,/skymp_connects_total/);
+  });
+  const oldPhrase="I know what I'm doing, disable metrics auth";
+  const withPhrase=await start(false,{metricsAuth:{user:'scraper',password:oldPhrase}});
+  await check('the old phrase is an ordinary password and no longer turns the check off',async()=>{
+    assert.equal((await send('GET','/metrics',{port:withPhrase})).status,401);
+    assert.equal((await send('GET','/metrics',{...basic('scraper',oldPhrase),port:withPhrase})).status,200);
+  });
 
   for(const s of servers)s.close();
   fs.rmSync(tmp,{recursive:true,force:true});
