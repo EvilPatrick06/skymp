@@ -95,20 +95,28 @@ void LoadGame::Run(std::shared_ptr<SaveFile_::SaveFile> save,
                    const std::array<float, 3>& angle, uint32_t cellOrWorld,
                    Time* time, SaveFile_::Weather* _weather,
                    SaveFile_::ChangeFormNPC_* changeFormNPC,
-                   std::vector<std::string>* loadOrder,
+                   const SaveFile_::PluginRemap& plugins,
                    const std::vector<InitialInventory::Item>* inventory)
 {
   if (!save) {
     throw std::runtime_error("Bad SaveFile");
   }
 
-  ModifyPluginInfo(save);
-
   ModifySaveTime(save, time);
   ModifySaveWeather(save, _weather);
   ModifyPlayerFormNPC(save, changeFormNPC);
-  ModifyLoadOrder(save, loadOrder);
-  ModifyEssStructure(save, pos, angle, cellOrWorld, inventory);
+  ModifyEssStructure(save, pos, angle, plugins.ToSaveFormId(cellOrWorld),
+                     inventory);
+
+  // savefile compresses with zlib or not at all. The game reads zlib bodies
+  // too: ReSaver tells people to set [SaveGame] uiCompression=1 to get them.
+  if (save->IsSpecialEdition() &&
+      save->header.compressionType == SaveFile_::SaveFile::COMPRESSION_LZ4) {
+    save->header.compressionType = SaveFile_::SaveFile::COMPRESSION_ZLIB;
+  }
+  // A form id array entry naming a plugin the save does not list names
+  // nothing, and the game has crashed on such a face (5 Oct 2026).
+  save->CheckFormIdArrayPlugins();
 
   auto name = g_saveFilePrefix + GenerateGuid();
   if (!SaveFile_::Writer(save).CreateSaveFile(GetSaveFullPath(name))) {
@@ -145,20 +153,37 @@ std::wstring LoadGame::GetPathToMyDocuments()
   return myPath;
 }
 
-void LoadGame::ModifyPluginInfo(std::shared_ptr<SaveFile_::SaveFile>& save)
+// The race, face, inventory and cell forms written into the save are this
+// game's runtime ids, which count regular plugins by their place among the
+// game's compiled files and light plugins (0xFE) by their place among its
+// compiled light files. The client passes both lists (Game.getModName,
+// Game.getLightModName); without them the game's own lists are read here.
+SaveFile_::PluginRemap LoadGame::ListPlugins(
+  SaveFile_::SaveFile& save, const std::vector<std::string>* loadOrder,
+  const std::vector<std::string>* lightLoadOrder)
 {
-  std::vector<std::string> newPlugins;
-  auto dataHandler = RE::TESDataHandler::GetSingleton();
-
-  if (!dataHandler) {
-    throw NullPointerException("dataHandler");
+  std::vector<std::string> plugins, lightPlugins;
+  if (!loadOrder || !lightLoadOrder) {
+    auto dataHandler = RE::TESDataHandler::GetSingleton();
+    if (!dataHandler) {
+      throw NullPointerException("dataHandler");
+    }
+#ifndef ENABLE_SKYRIM_VR
+    const auto& files = dataHandler->compiledFileCollection.files;
+    const auto& smallFiles = dataHandler->compiledFileCollection.smallFiles;
+#else
+    const auto& files = dataHandler->VRcompiledFileCollection->files;
+    const auto& smallFiles = dataHandler->VRcompiledFileCollection->smallFiles;
+#endif
+    for (auto file : files) {
+      plugins.push_back(std::string(file->fileName));
+    }
+    for (auto file : smallFiles) {
+      lightPlugins.push_back(std::string(file->fileName));
+    }
   }
-
-  for (auto& file : dataHandler->files) {
-    newPlugins.push_back(std::string(file->fileName));
-  }
-
-  save->OverwritePluginInfo(newPlugins);
+  return save.ListPlugins(loadOrder ? *loadOrder : plugins,
+                          lightLoadOrder ? *lightLoadOrder : lightPlugins);
 }
 
 void LoadGame::ModifySaveTime(std::shared_ptr<SaveFile_::SaveFile>& save,
@@ -232,14 +257,6 @@ void LoadGame::ModifyPlayerFormNPC(std::shared_ptr<SaveFile_::SaveFile> save,
   }
 }
 
-void LoadGame::ModifyLoadOrder(std::shared_ptr<SaveFile_::SaveFile> save,
-                               std::vector<std::string>* loadOrder)
-{
-  if (loadOrder) {
-    save->OverwritePluginInfo(*loadOrder);
-  }
-}
-
 void LoadGame::FillChangeForm(
   std::shared_ptr<SaveFile_::SaveFile> save, SaveFile_::ChangeForm* form,
   std::pair<uint32_t, std::vector<uint8_t>>& newValues)
@@ -252,7 +269,7 @@ void LoadGame::FillChangeForm(
 void LoadGame::ModifyEssStructure(std::shared_ptr<SaveFile_::SaveFile> save,
                                   std::array<float, 3> pos,
                                   std::array<float, 3> angle,
-                                  uint32_t cellOrWorld,
+                                  uint32_t saveCellOrWorld,
                                   const std::vector<InitialInventory::Item>* inventory)
 {
   auto playerLoc = FindSectionWithPlayerLocation(save);
@@ -260,7 +277,7 @@ void LoadGame::ModifyEssStructure(std::shared_ptr<SaveFile_::SaveFile> save,
     throw std::runtime_error("Couldn't find PlayerLocation in the save file");
   }
 
-  auto worldRefId = SaveFile_::RefID::CreateRefId(*save, cellOrWorld);
+  auto worldRefId = SaveFile_::RefID::CreateRefId(*save, saveCellOrWorld);
   *playerLoc = CreatePlayerLocation(pos, worldRefId);
 
   auto player = std::find_if(

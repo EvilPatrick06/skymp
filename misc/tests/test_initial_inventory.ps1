@@ -1,6 +1,7 @@
+# -Build is a configured engine build folder (its vcpkg zlib and headers are used).
+param([string]$Build='C:\ThornswoodTemps&Worktrees\worktrees\engine-one-skymp\build')
 $ErrorActionPreference='Stop'
 $taskRepo=Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSCommandPath))
-$taskCache='C:\ThornswoodTemps&Worktrees\worktrees\engine-one-skymp'
 $taskScratch=Join-Path ([IO.Path]::GetTempPath()) ('thornswood-initial-save-'+[guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $taskScratch | Out-Null
 $taskSource=[IO.File]::ReadAllText((Join-Path $taskRepo 'skyrim-platform\src\platform_se\skyrim_platform\LoadGame.cpp'))
@@ -19,7 +20,7 @@ foreach($name in 'Decompress','Compress','WriteChangeForm','FillChangeForm'){
 [IO.File]::WriteAllText((Join-Path $taskScratch 'InitialSaveFunctionsUnderTest.inc'),($taskParts -join "`n"))
 $taskApiSource=[IO.File]::ReadAllText((Join-Path $taskRepo 'skyrim-platform\src\platform_se\skyrim_platform\LoadGameApi.cpp'))
 $taskApiParts=@()
-foreach($signature in 'double InitialInventoryInteger(', 'std::unique_ptr<std::vector<InitialInventory::Item>> CreateInitialInventory('){
+foreach($signature in 'SaveFile_::RefID FormIdToRefId(', 'double InitialInventoryInteger(', 'std::unique_ptr<std::vector<InitialInventory::Item>> CreateInitialInventory('){
  $start=$taskApiSource.IndexOf($signature)
  if($start -lt 0){throw ('Missing inventory API function: '+$signature)}
  $brace=$taskApiSource.IndexOf('{',$start);$depth=1;$end=$brace+1
@@ -38,12 +39,14 @@ $taskVs='C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools'
 $taskEnv=cmd /c "`"$taskVs\VC\Auxiliary\Build\vcvars64.bat`" >nul && set"
 foreach($value in $taskEnv){if($value -match '^([^=]+)=(.*)$'){[Environment]::SetEnvironmentVariable($matches[1],$matches[2],'Process')}}
 $taskCl=Join-Path $taskVs 'VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64\cl.exe'
-$taskInclude=Join-Path $taskCache 'build\vcpkg_installed\x64-windows-sp\include'
-$taskZlib=Join-Path $taskCache 'build\vcpkg_installed\x64-windows-sp\lib\zlib.lib'
-$taskLib=Join-Path $taskCache 'build\savefile\Release\savefile.lib'
+$taskInclude=Join-Path $Build 'vcpkg_installed\x64-windows-sp\include'
+$taskZlib=Join-Path $Build 'vcpkg_installed\x64-windows-sp\lib\zlib.lib'
+# savefile from this checkout rather than a prebuilt savefile.lib, so the
+# Reader and Writer under test are the ones the headers describe.
+$taskSavefile=@('SFReader','SFWriter','SFStructure','SFSeekerOfDifferences','SFChangeFormNPC','SFChangeFormACHR')|ForEach-Object{Join-Path $taskRepo ('savefile\src\'+$_+'.cpp')}
 Push-Location $taskScratch
 try{
- & $taskCl /nologo /EHsc /std:c++17 /MT ('/I'+$taskScratch) ('/I'+$taskInclude) ('/I'+(Join-Path $taskRepo 'savefile\include')) ('/I'+(Join-Path $taskRepo 'skyrim-platform\src\platform_se\skyrim_platform')) (Join-Path $taskRepo 'misc\tests\test_initial_inventory.cpp') (Join-Path $taskRepo 'savefile\src\SFStructure.cpp') (Join-Path $taskRepo 'savefile\src\SFSeekerOfDifferences.cpp') $taskLib $taskZlib /Fe:initial-save.exe
+ & $taskCl /nologo /EHsc /std:c++17 /MT ('/I'+$taskScratch) ('/I'+$taskInclude) ('/I'+(Join-Path $taskRepo 'savefile\include')) ('/I'+(Join-Path $taskRepo 'skyrim-platform\src\platform_se\skyrim_platform')) (Join-Path $taskRepo 'misc\tests\test_initial_inventory.cpp') @taskSavefile $taskZlib /Fe:initial-save.exe
  if($LASTEXITCODE){throw 'Initial save test compilation failed'}
  & .\initial-save.exe (Join-Path $taskRepo 'skyrim-platform\src\platform_se\skyrim_platform\assets\template.ess') (Join-Path $taskScratch 'roundtrip.ess')
  if($LASTEXITCODE){throw 'Initial save binary regression failed'}
