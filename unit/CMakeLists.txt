@@ -59,6 +59,13 @@ if(BUILD_UNIT_TESTS AND NOT EMSCRIPTEN)
     target_link_libraries(unit PUBLIC Dbghelp.lib)
   endif()
 
+  # The private ledger writer has no game-data dependency. Exercise the
+  # actual platform file/rename barriers rather than a mocked acknowledgement.
+  add_executable(private-ledger-test "${CMAKE_SOURCE_DIR}/misc/tests/private_ledger_test.cpp")
+  target_include_directories(private-ledger-test PRIVATE "${CMAKE_SOURCE_DIR}/skymp5-server/cpp/server_guest_lib")
+  apply_default_settings(TARGETS private-ledger-test)
+  add_test(NAME private_ledger COMMAND private-ledger-test "${CMAKE_BINARY_DIR}/private-ledger-tests")
+
   #
   # ctest tests
   #
