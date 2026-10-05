@@ -271,11 +271,11 @@ void PartOne::SetRaceMenuOpen(uint32_t actorFormId, bool open)
 
   actor.SetRaceMenuOpen(open);
 
+  // THORNSWOOD #1560. With no owner yet, the flag is all there is to set: a
+  // new character's is set before it is handed over, and the first packet its
+  // owner gets carries it. Not a fault, so not a warning.
   auto userId = serverState.UserByActor(&actor);
   if (userId == Networking::InvalidUserId) {
-    spdlog::warn(
-      "PartOne::SetRaceMenuOpen {:x} - actor is not attached to any of users",
-      actorFormId);
     return;
   }
 
