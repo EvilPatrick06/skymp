@@ -14,10 +14,13 @@ Used to perform synchronization and other basic networking.
 
 Used by the embedded browser to access HTML/CSS/JS and other assets.
 
-- Protocol is HTTPS
+- Protocol is HTTP. The server has no TLS on this port, so everything sent on it, both ways, can be read and changed on the network.
 - Default value is 3000
 - Non-configurable
 - Equals `(Main Port + 1)` if its value is non-default
+- Binds to `uiListenHost`, `0.0.0.0` if unspecified (see [configuration file](docs_server_configuration_reference.md))
+- `/rpc/...` answers only requests from the server's own machine
+- `/metrics` asks for the `metricsAuth` user and password, which travel in the clear like everything else here. Read it from the server's own machine, or put a reverse proxy with TLS in front of the port and read it through that.
 
 ## WebPack DevServer Port
 
