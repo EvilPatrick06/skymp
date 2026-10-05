@@ -6,13 +6,14 @@ if(BUILD_SCRIPTS)
     add_papyrus_library_ck(
         NAME skymp5-scripts
         DIRECTORY ${CMAKE_CURRENT_LIST_DIR}/psc
-        OUTPUT_DIR ${CMAKE_CURRENT_LIST_DIR}/pex
+        PREBUILT_DIR ${CMAKE_CURRENT_LIST_DIR}/pex
         COMPILER_EXECUTABLE_PATH "${SKYRIM_DIR}/Papyrus compiler/PapyrusCompiler.exe"
+        PEX_DIR_VARIABLE skymp5_scripts_pex_dir
     )
 
     add_custom_command(
         TARGET skymp5-scripts POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_LIST_DIR}/pex ${CMAKE_BINARY_DIR}/dist/server/data/scripts
+        COMMAND ${CMAKE_COMMAND} -E copy_directory ${skymp5_scripts_pex_dir} ${CMAKE_BINARY_DIR}/dist/server/data/scripts
     )
 else()
     add_custom_target(skymp5-scripts ALL
