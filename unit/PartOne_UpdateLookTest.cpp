@@ -1,4 +1,5 @@
 #include "TestUtils.hpp"
+#include <algorithm>
 
 #include "MsgType.h"
 
@@ -101,18 +102,26 @@ TEST_CASE("UpdateAppearance1", "[PartOne]")
   auto doAppearance = [&] { DoMessage(partOne, 0, jAppearance); };
   doAppearance();
 
-  REQUIRE(std::find_if(partOne.Messages().begin(), partOne.Messages().end(),
-                       [&](auto m) {
-                         return m.j["t"] == MsgType::CreateActor &&
-                           m.j["idx"] == 0 && m.reliable && m.userId == 1 &&
-                           m.j["appearance"] == jAppearance["data"];
-                       }) != partOne.Messages().end());
-  REQUIRE(std::find_if(partOne.Messages().begin(), partOne.Messages().end(),
-                       [&](auto m) {
-                         return m.j["t"] == MsgType::UpdateAppearance &&
-                           m.j["idx"] == 0 && m.reliable && m.userId == 1 &&
-                           m.j["data"] == jAppearance["data"];
-                       }) != partOne.Messages().end());
+  // Player 0 is hidden until a face is stored, so the CreateActor is expected.
+  REQUIRE(partOne.Messages().size() == 3);
+  REQUIRE(std::count_if(partOne.Messages().begin(), partOne.Messages().end(),
+                        [&](auto m) {
+                          return m.j["t"] == MsgType::CreateActor &&
+                            m.j["idx"] == 0 && m.reliable && m.userId == 1 &&
+                            m.j["appearance"] == jAppearance["data"];
+                        }) == 1);
+  REQUIRE(std::count_if(partOne.Messages().begin(), partOne.Messages().end(),
+                        [&](auto m) {
+                          return m.j["t"] == MsgType::UpdateAppearance &&
+                            m.j["idx"] == 0 && m.reliable && m.userId == 1 &&
+                            m.j["data"] == jAppearance["data"];
+                        }) == 1);
+  REQUIRE(std::count_if(partOne.Messages().begin(), partOne.Messages().end(),
+                        [&](auto m) {
+                          return m.j["t"] == MsgType::UpdateAppearance &&
+                            m.j["idx"] == 0 && m.reliable && m.userId == 0 &&
+                            m.j["data"] == jAppearance["data"];
+                        }) == 1);
 
   auto& ac = partOne.worldState.GetFormAt<MpActor>(0xff000ABC);
   REQUIRE(ac.GetAppearance() != nullptr);
@@ -139,18 +148,26 @@ TEST_CASE("UpdateAppearance2", "[PartOne]")
   auto doAppearance = [&] { DoMessage(partOne, 0, jAppearance); };
   doAppearance();
 
-  REQUIRE(std::find_if(partOne.Messages().begin(), partOne.Messages().end(),
-                       [&](auto m) {
-                         return m.j["t"] == MsgType::CreateActor &&
-                           m.j["idx"] == 0 && m.reliable && m.userId == 1 &&
-                           m.j["appearance"] == jAppearance["data"];
-                       }) != partOne.Messages().end());
-  REQUIRE(std::find_if(partOne.Messages().begin(), partOne.Messages().end(),
-                       [&](auto m) {
-                         return m.j["t"] == MsgType::UpdateAppearance &&
-                           m.j["idx"] == 0 && m.reliable && m.userId == 1 &&
-                           m.j["data"] == jAppearance["data"];
-                       }) != partOne.Messages().end());
+  // Player 0 is hidden until a face is stored, so the CreateActor is expected.
+  REQUIRE(partOne.Messages().size() == 3);
+  REQUIRE(std::count_if(partOne.Messages().begin(), partOne.Messages().end(),
+                        [&](auto m) {
+                          return m.j["t"] == MsgType::CreateActor &&
+                            m.j["idx"] == 0 && m.reliable && m.userId == 1 &&
+                            m.j["appearance"] == jAppearance["data"];
+                        }) == 1);
+  REQUIRE(std::count_if(partOne.Messages().begin(), partOne.Messages().end(),
+                        [&](auto m) {
+                          return m.j["t"] == MsgType::UpdateAppearance &&
+                            m.j["idx"] == 0 && m.reliable && m.userId == 1 &&
+                            m.j["data"] == jAppearance["data"];
+                        }) == 1);
+  REQUIRE(std::count_if(partOne.Messages().begin(), partOne.Messages().end(),
+                        [&](auto m) {
+                          return m.j["t"] == MsgType::UpdateAppearance &&
+                            m.j["idx"] == 0 && m.reliable && m.userId == 0 &&
+                            m.j["data"] == jAppearance["data"];
+                        }) == 1);
 
   REQUIRE(partOne.worldState.GetFormAt<MpActor>(0xff000ABC).GetAppearance() !=
           nullptr);

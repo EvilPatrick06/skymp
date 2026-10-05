@@ -1081,10 +1081,10 @@ void MpObjectReference::Subscribe(MpObjectReference* emitter,
     return;
   }
 
-  // Keep the owner self-subscribe so the race menu can run. Do not add
-  // neighbors until a face is stored, or they would receive a bodyless actor
-  // and ForceSubscriptionsUpdate would never retry the create packet.
-  if (emitter != listener && actorEmitter &&
+  // Keep the owner self-subscribe so the race menu can run. Skip pairing a
+  // faceless player with a different actor. Objects such as flowers and
+  // torches are still recorded, so they are not announced again later.
+  if (actorEmitter && actorListener && emitter != listener &&
       !actorEmitter->ShouldPublishToOtherClients()) {
     return;
   }
@@ -1101,6 +1101,11 @@ void MpObjectReference::Subscribe(MpObjectReference* emitter,
 
   emitter->InitListenersAndEmitters();
   listener->InitListenersAndEmitters();
+
+  // Already paired. Do not send CreateActor again.
+  if (emitter->listeners->find(listener) != emitter->listeners->end()) {
+    return;
+  }
 
   auto [it, inserted] = emitter->listeners->insert(listener);
 
