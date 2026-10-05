@@ -1,3 +1,4 @@
+#include <map>
 #include "TestUtils.hpp"
 #include "script_storages/DirectoryScriptStorage.h"
 
@@ -646,4 +647,52 @@ TEST_CASE("Regress: LvlGiant mustn't have Fox race health", "[PartOne][espm]")
                                             raceId, actor.GetTemplateChain());
 
   REQUIRE(baseActorValues.health == 250.f);
+}
+
+TEST_CASE("Faceless player gets one CreateActor per object after activate and "
+          "move",
+          "[PartOne][espm]")
+{
+  auto& partOne = GetPartOne();
+  partOne.Messages().clear();
+
+  DoConnect(partOne, 0);
+  partOne.CreateActor(0xff000000, { 22572, -8634, -3597 }, 0, 0x1a26f);
+  partOne.SetUserActor(0, 0xff000000);
+  auto& ac = partOne.worldState.GetFormAt<MpActor>(0xff000000);
+  REQUIRE_FALSE(ac.HasStoredAppearance());
+
+  const auto refrId = 0x0100122a;
+  auto& ref = partOne.worldState.GetFormAt<MpObjectReference>(refrId);
+  ac.RemoveAllItems();
+
+  DoMessage(partOne, 0,
+            nlohmann::json{ { "t", MsgType::Activate },
+                            { "data",
+                              { { "caster", 0x14 },
+                                { "target", refrId },
+                                { "isSecondActivation", false } } } });
+
+  // Cross a grid boundary so subscriptions refresh, but stay next to the
+  // flower. Grid cells are 4096 units.
+  ac.SetPos({ 24600.f, -8634.f, -3597.f });
+
+  std::map<int, int> createsByIdx;
+  for (const auto& message : partOne.Messages()) {
+    if (message.userId == 0 && message.j["t"] == MsgType::CreateActor) {
+      createsByIdx[message.j["idx"].get<int>()] += 1;
+    }
+  }
+
+  const int flowerIdx = static_cast<int>(ref.GetIdx());
+  REQUIRE(createsByIdx[flowerIdx] == 1);
+  for (const auto& entry : createsByIdx) {
+    REQUIRE(entry.second == 1);
+  }
+
+  if (ref.IsHarvested()) {
+    ref.SetHarvested(false);
+  }
+  DoDisconnect(partOne, 0);
+  partOne.DestroyActor(0xff000000);
 }

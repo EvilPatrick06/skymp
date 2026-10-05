@@ -354,7 +354,7 @@ void MpActor::SetRaceMenuOpen(bool isOpen)
 
 void MpActor::SetAppearance(const Appearance* newAppearance)
 {
-  const bool hadAppearance = HasStoredAppearance();
+  const bool wasPublished = ShouldPublishToOtherClients();
   EditChangeForm([&](MpChangeForm& changeForm) {
     if (newAppearance)
       changeForm.appearanceDump = newAppearance->ToJson();
@@ -362,9 +362,9 @@ void MpActor::SetAppearance(const Appearance* newAppearance)
       changeForm.appearanceDump.clear();
   });
 
-  // The race menu is only a request. Neighbors are subscribed the moment a
-  // face is actually stored, not when the menu opens or the actor logs in.
-  if (!hadAppearance && HasStoredAppearance()) {
+  // While hidden, other actors were never recorded as listeners.
+  // ForceSubscriptionsUpdate adds those pairs and sends CreateActor once.
+  if (!wasPublished && ShouldPublishToOtherClients()) {
     ForceSubscriptionsUpdate();
   }
 }
