@@ -28,6 +28,8 @@ private:
   void ExpandBody();
   PluginInfo FillPluginInfo();
   LightPluginInfo FillLightPluginInfo();
+  void FillQuestRunDataItem(
+    QuestStaticData::QuestRunData_3::QuestRunData_3_item& item);
   FileLocationTable FillFileLocationTable();
   std::vector<GlobalData> FillGlobalData(uint32_t numObject);
   std::vector<ChangeForm> FillChangeForm(uint32_t numObject);
