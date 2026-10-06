@@ -141,6 +141,16 @@ struct PluginInfo
   std::vector<std::string> pluginsName; // plugins[pluginCount]
 };
 
+// Special Edition saves from form version 78 list the light plugins after
+// the regular ones, inside pluginInfoSize (Wrye Bash save_headers.py
+// _AEslSaveHeader, FallrimTools ReSaver PluginInfo). A light plugin's form is
+// 0xFE000000 | index << 12 | local id, the index naming an entry here.
+struct LightPluginInfo
+{
+  uint16_t numPlugins = 0;
+  std::vector<std::string> pluginsName; // plugins[numPlugins]
+};
+
 struct Header
 {
   uint32_t version;
@@ -156,6 +166,9 @@ struct Header
   uint8_t filetime[8];
   uint32_t shotWidth;  // screenshot width in pixels
   uint32_t shotHeight; // screenshot height in pixels
+  // Save version 12 (Special Edition) only, counted in headerSize: how the
+  // body after the screenshot is stored. 0 none, 1 zlib, 2 LZ4 block.
+  uint16_t compressionType = 0;
 };
 
 struct GlobalVariables
@@ -170,6 +183,29 @@ struct GlobalVariables
   std::vector<GlobalVariable> globals;
 };
 
+// From the form ids of the running game to the ids a save names the same
+// forms by. A save names a plugin by its place in its own plugin lists, and
+// the game finds each plugin again by its file name when it loads the save,
+// so the save's lists need not be in the game's order. Made by
+// SaveFile::ListPlugins.
+class PluginRemap
+{
+public:
+  // Throws when the save cannot name the form: its plugin is not one the
+  // game listed, or it is a light plugin's and the save has no light plugin
+  // list (a Legendary Edition save, or one below form version 78).
+  uint32_t ToSaveFormId(uint32_t gameFormId) const;
+
+private:
+  friend struct SaveFile;
+  std::vector<uint8_t> fullToSave;
+  std::vector<uint16_t> lightToSave;
+  std::vector<std::string> lightPlugins; // the game's, to name in errors
+  bool saveListsLightPlugins = false;
+  uint32_t saveVersion = 0;
+  uint32_t saveFormVersion = 0;
+};
+
 struct SaveFile
 {
   enum
@@ -178,14 +214,36 @@ struct SaveFile
     WEATHER_INDEX = 6,
   };
 
+  enum : uint32_t
+  {
+    SPECIAL_EDITION_VERSION = 12
+  };
+
+  enum : uint8_t
+  {
+    LIGHT_PLUGIN_FORM_VERSION = 78
+  };
+
+  enum : uint16_t
+  {
+    COMPRESSION_NONE = 0,
+    COMPRESSION_ZLIB = 1,
+    COMPRESSION_LZ4 = 2
+  };
+
   std::string magic; // Constant: "TESV_SAVEGAME"
   uint32_t headerSize;
   Header header;
-  std::vector<uint8_t> screenshotData; //[3*header.shotWidth*header.showHeight]
-                                       //-> pixel data in RGB
-  uint8_t formVersion;                 // current as of Skyrim 1.9 is 74
+  // RGB, or RGBA from save version 12: ScreenshotSize() bytes.
+  std::vector<uint8_t> screenshotData;
+  // When header.compressionType is not none, the file holds the uncompressed
+  // and compressed lengths and then everything from formVersion on,
+  // compressed. The file location table's offsets still count as if that
+  // body followed the screenshot uncompressed.
+  uint8_t formVersion; // Legendary Edition 1.9: 74, Special Edition: 78
   uint32_t pluginInfoSize;
   PluginInfo pluginInfo;
+  LightPluginInfo lightPluginInfo; // only when HasLightPluginInfo()
   FileLocationTable fileLocationTable;
   std::vector<GlobalData> globalDataTable1; // Types 0 to 8
   std::vector<GlobalData> globalDataTable2; // Types 100 to 114
@@ -201,10 +259,36 @@ struct SaveFile
   uint32_t unknown3TableSize;
   Unknown3Table unknown3Table;
 
+  bool IsSpecialEdition() const
+  {
+    return header.version >= SPECIAL_EDITION_VERSION;
+  }
+
+  // Both published readers read the light plugin list only from Special
+  // Edition saves at form version 78 or later.
+  bool HasLightPluginInfo() const
+  {
+    return IsSpecialEdition() && formVersion >= LIGHT_PLUGIN_FORM_VERSION;
+  }
+
+  size_t ScreenshotSize() const;
+  uint32_t CalculatePluginInfoSize() const;
+
   ChangeForm* GetChangeFormByRefID(RefID refID, const uint8_t& type);
   GlobalVariables::GlobalVariable* GetGlobalvariableByRefID(RefID& refID);
   int64_t FindIndexInFormIdArray(uint32_t refID);
-  void OverwritePluginInfo(std::vector<std::string>& newPlaginNames);
+
+  // Lists the running game's regular and light plugins in the save and
+  // returns how the game's form ids become the save's. A plugin the save
+  // already lists keeps its place there, so everything the save already
+  // names keeps naming the same plugin; one it does not list is added after
+  // its last. Light plugins are listed only in a save that has a light
+  // plugin list (HasLightPluginInfo).
+  PluginRemap ListPlugins(const std::vector<std::string>& gamePlugins,
+                          const std::vector<std::string>& gameLightPlugins);
+
+  // Throws unless every form id array entry names a plugin the save lists.
+  void CheckFormIdArrayPlugins() const;
 };
 
 struct MiscStats
