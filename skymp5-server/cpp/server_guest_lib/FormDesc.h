@@ -1,4 +1,5 @@
 #pragma once
+#include "libespm/LoadOrder.h"
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -18,9 +19,13 @@ public:
   std::string ToString(char delimiter = ':') const;
   static FormDesc FromString(const std::string& str, char delimiter = ':');
 
-  uint32_t ToFormId(const std::vector<std::string>& files) const;
+  // "id:file" to the id the game gives that form, and back. A light
+  // plugin's forms come out under 0xFE (espm::PluginSlot); the id part of
+  // their descriptor is the 12 bit id inside the plugin, as in
+  // "827:KhisartinBeards.esp" for 0xFE029827.
+  uint32_t ToFormId(const espm::LoadOrder& loadOrder) const;
   static FormDesc FromFormId(uint32_t formId,
-                             const std::vector<std::string>& files);
+                             const espm::LoadOrder& loadOrder);
 
   friend bool operator==(const FormDesc& left, const FormDesc& right)
   {

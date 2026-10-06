@@ -1,7 +1,7 @@
 import { HttpClient, HttpHeaders, HttpResponse, printConsole, Utility } from "skyrimPlatform";
 import { AuthService } from "./authService";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
-import { Mod, ServerManifest } from "../messages_http/serverManifest";
+import { ServerManifest, ServerMods } from "../messages_http/serverManifest";
 import { TimersService } from "./timersService";
 import { logTrace } from "../../logging";
 
@@ -138,7 +138,7 @@ export class SettingsService extends ClientListener {
     states.start();
   }
 
-  public async getServerMods(): Promise<Mod[] | null> {
+  public async getServerMods(): Promise<ServerMods | null> {
     const masterApiClient = this.makeMasterApiClient();
 
     const masterKey = this.getServerMasterKey();
@@ -154,17 +154,18 @@ export class SettingsService extends ClientListener {
         const manifest = JSON.parse(res.body) as ServerManifest;
         if (manifest.versionMajor !== 1) {
           printConsole(`server manifest version is ${manifest.versionMajor}, we expect 1`);
-          return [];
+          return { mods: [] };
         }
-        return manifest.mods;
+        return { mods: manifest.mods, light: manifest.light };
       } catch (e) {
         printConsole(`Request/parse error: ${e}`);
         await Utility.wait(0.1 + Math.random());
       }
     }
 
-    // Unreachable after retries: null, never an empty list. An empty list means
-    // the server answered with no mods (or an unsupported manifest version).
+    // Unreachable after retries: null, never empty lists. An empty mods list
+    // means the server answered with no mods (or an unsupported manifest
+    // version).
     return null;
   };
 

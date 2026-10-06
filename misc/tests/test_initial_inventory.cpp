@@ -17,6 +17,9 @@ class LoadGame { public:
 #include <iterator>
 void TestInventoryBuilder(std::shared_ptr<SaveFile_::SaveFile> save) {
   using nlohmann::json;
+  // The ids below are this game's; with the template's own list as the
+  // game's, each names the plugin it names in the save.
+  const auto plugins = save->ListPlugins(save->pluginInfo.pluginsName, {});
   RE::TESContainer base;
   for (auto id : {7u, 100u, 101u, 15u, 102u, 200u}) RE::TESForm::forms.emplace(id, RE::TESForm{id});
   RE::TESForm::forms.at(7).container = &base;
@@ -29,7 +32,7 @@ void TestInventoryBuilder(std::shared_ptr<SaveFile_::SaveFile> save) {
   auto desired = json::array({{{"baseId",100},{"count",1},{"worn",true}},
     {{"baseId",101},{"count",2}}, {{"baseId",15},{"count",40}},
     {{"baseId",200},{"count",1},{"worn",true}}, {{"baseId",200},{"count",1},{"wornLeft",true}}});
-  auto result = CreateInitialInventory(save, Napi::Object(json{{"entries",desired}}));
+  auto result = CreateInitialInventory(save, plugins, Napi::Object(json{{"entries",desired}}));
   std::map<uint32_t, InitialInventory::Item> decoded;
   for (auto& item : *result) {
     auto index = (uint32_t(item.ref[0])<<16) | (uint32_t(item.ref[1])<<8) | item.ref[2];
@@ -45,7 +48,7 @@ void TestInventoryBuilder(std::shared_ptr<SaveFile_::SaveFile> save) {
   auto rejects = [&](json entries) {
     const auto refs = save->formIDArray;
     bool rejected=false;
-    try { CreateInitialInventory(save, Napi::Object(json{{"entries",entries}})); }
+    try { CreateInitialInventory(save, plugins, Napi::Object(json{{"entries",entries}})); }
     catch (const std::runtime_error&) { rejected=true; }
     assert(rejected);
     assert(save->formIDArray==refs); // Invalid inventory must not partially append IDs.
@@ -68,7 +71,7 @@ void TestInventoryBuilder(std::shared_ptr<SaveFile_::SaveFile> save) {
   auto excessive = json::array();
   for (unsigned i=0;i<4097;++i) excessive.push_back({{"baseId",100},{"count",1}});
   rejects(excessive);
-  auto decreased = CreateInitialInventory(save, Napi::Object(json{{"entries",json::array({{{"baseId",15},{"count",2}}})}}));
+  auto decreased = CreateInitialInventory(save, plugins, Napi::Object(json{{"entries",json::array({{{"baseId",15},{"count",2}}})}}));
   bool found=false;
   for (auto& item : *decreased) if (item.delta == -21) found=true;
   assert(found);
@@ -77,9 +80,16 @@ void TestInventoryBuilder(std::shared_ptr<SaveFile_::SaveFile> save) {
 int main(int argc, char** argv) {
   assert(argc == 3);
   auto save = SaveFile_::Reader(std::string(argv[1])).GetStructure();
+  // savefile writes no LZ4 body; LoadGame::Run writes such a template's body
+  // with zlib, and so does this.
+  if (save->header.compressionType == SaveFile_::SaveFile::COMPRESSION_LZ4)
+    save->header.compressionType = SaveFile_::SaveFile::COMPRESSION_ZLIB;
   auto player = save->GetChangeFormByRefID(SaveFile_::RefID(SaveFile_::RefID::Player),1);
   assert(player);
-  auto bytes = LoadGame::Decompress(*player);
+  // The template stores the player form compressed (Legendary Edition) or
+  // plain (a new game SkyrimSE 1.6.1170 saves): length2 is 0 when plain.
+  auto bytes = player->length2 ? LoadGame::Decompress(*player) : player->data;
+  const uint32_t flags = player->changeFlags;
   assert(!bytes.empty());
   TestInventoryBuilder(save);
   std::vector<InitialInventory::Item> entries = {
@@ -87,7 +97,7 @@ int main(int argc, char** argv) {
     {{0x40, 0, 0x0f}, 40}, {{0x41, 0x39, 0x7d}, -1},
     {{0, 0, 1}, 1, false, true}, {{0, 0, 2}, 2, true, true}
   };
-  auto output = InitialInventory::Replace(bytes, 0xb8000022, entries);
+  auto output = InitialInventory::Replace(bytes, flags, entries);
   InitialInventory::Cursor before(bytes), after(output);
   before.Skip(35); before.Extras(); const auto begin = before.at;
   after.Skip(35); after.Extras(); assert(after.at == begin);
@@ -151,5 +161,14 @@ int main(int argc, char** argv) {
     assert(reread->formIDArray==save->formIDArray);
   }
   bool rejected=false; try { InitialInventory::Replace({1,2,3},0xb8000022,entries); } catch (...) {rejected=true;} assert(rejected);
+  // The Legendary Edition template's player form has the encounter zone
+  // extra flag (0xB8000022) and a new game SkyrimSE 1.6.1170 saves does not
+  // (0x98000022, 5 Oct 2026): the same inventory splice either way. Any other
+  // set of flags is refused.
+  assert(flags == 0xb8000022 || flags == 0x98000022);
+  assert(InitialInventory::Replace(bytes, flags ^ 0x20000000u, entries) == output);
+  for (uint32_t other : {flags & ~0x20u, flags | 0x10u, flags & ~0x20u & ~0x20000000u, flags | 0x40u, flags & ~0x80000000u}) {
+    bool refused=false; try { InitialInventory::Replace(bytes, other, entries); } catch (const std::runtime_error&) {refused=true;} assert(refused);
+  }
   rejected=false;uint8_t tiny[1];try{SaveFile_::SeekerOfDifferences::ZlibCompress(large.data(),large.size(),tiny,1);}catch(...){rejected=true;}assert(rejected);
 }

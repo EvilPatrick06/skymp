@@ -1,5 +1,10 @@
 #include "savefile/SFWriter.h"
 
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <zlib.h>
+
 SaveFile_::Writer::Writer(std::shared_ptr<SaveFile> saveStructure)
 {
   this->saveStructure = saveStructure;
@@ -7,8 +12,9 @@ SaveFile_::Writer::Writer(std::shared_ptr<SaveFile> saveStructure)
 
 bool SaveFile_::Writer::CreateSaveFile(const std::filesystem::path& p)
 {
-
-  writer.open(p, std::ios::binary);
+  std::ofstream file(p, std::ios::binary);
+  writer = &file;
+  currentWritePositionInFile = 0;
 
   WriteString(13, saveStructure->magic);
   Write(saveStructure->headerSize);
@@ -28,11 +34,30 @@ bool SaveFile_::Writer::CreateSaveFile(const std::filesystem::path& p)
   Write(saveStructure->header.filetime);
   Write(saveStructure->header.shotWidth);
   Write(saveStructure->header.shotHeight);
+  if (saveStructure->IsSpecialEdition())
+    Write(saveStructure->header.compressionType);
 
   assert(this->currentWritePositionInFile ==
          saveStructure->headerSize + stepBeforeHeader);
 
+  if (saveStructure->screenshotData.size() != saveStructure->ScreenshotSize())
+    throw std::runtime_error("Screenshot size does not match the header");
   Write(saveStructure->screenshotData);
+
+  // A compressed body is built in memory, then written after its two
+  // lengths. Positions keep counting as if it followed the screenshot
+  // uncompressed, which is how the file location table counts them.
+  const uint16_t compression = saveStructure->IsSpecialEdition()
+    ? saveStructure->header.compressionType
+    : uint16_t(SaveFile::COMPRESSION_NONE);
+  if (compression != SaveFile::COMPRESSION_NONE &&
+      compression != SaveFile::COMPRESSION_ZLIB)
+    throw std::runtime_error("savefile writes no body compression type " +
+                             std::to_string(compression));
+  std::ostringstream body;
+  if (compression != SaveFile::COMPRESSION_NONE)
+    writer = &body;
+
   Write(saveStructure->formVersion);
   Write(saveStructure->pluginInfoSize);
 
@@ -40,6 +65,10 @@ bool SaveFile_::Writer::CreateSaveFile(const std::filesystem::path& p)
 
   Write(saveStructure->pluginInfo.numPlugins);
   Write(saveStructure->pluginInfo.pluginsName);
+  if (saveStructure->HasLightPluginInfo()) {
+    Write(saveStructure->lightPluginInfo.numPlugins);
+    Write(saveStructure->lightPluginInfo.pluginsName);
+  }
 
   assert(this->currentWritePositionInFile ==
          saveStructure->pluginInfoSize + stepBeforePluginInfo);
@@ -118,9 +147,26 @@ bool SaveFile_::Writer::CreateSaveFile(const std::filesystem::path& p)
   assert(this->currentWritePositionInFile ==
          saveStructure->unknown3TableSize + stepBeforeUnknownTable);
 
-  writer.close();
+  if (compression != SaveFile::COMPRESSION_NONE) {
+    const std::string raw = body.str();
+    uLongf length = compressBound(static_cast<uLong>(raw.size()));
+    std::vector<uint8_t> packed(length);
+    // Level 1, as the game writes its zlib saves (Wrye Bash
+    // save_headers.py, _SaveCompressionType.compress_save).
+    if (compress2(packed.data(), &length,
+                  reinterpret_cast<const Bytef*>(raw.data()),
+                  static_cast<uLong>(raw.size()), 1) != Z_OK)
+      throw std::runtime_error("zlib could not compress the save body");
+    writer = &file;
+    Write(static_cast<uint32_t>(raw.size()));
+    Write(static_cast<uint32_t>(length));
+    file.write(reinterpret_cast<const char*>(packed.data()), length);
+  }
 
-  return !writer.fail();
+  writer = nullptr;
+  file.close();
+
+  return !file.fail();
 }
 
 void SaveFile_::Writer::WriteGlobalDataTable(GlobalData& globalData)
@@ -782,8 +828,9 @@ void SaveFile_::Writer::WriteQuestRunData_3(
   for (auto& item : questRunData_3.questRunData_items) {
     Write(item.type);
 
-    switch (item.type) { /// Unknown variable depends on type (1,2,4 = RefID)
-                         /// (3 = Uint32_t)
+    // The types Reader::FillQuestRunDataItem reads, and only those.
+    switch (item.type) {
+      case 0:
       case 1:
       case 2:
       case 4:
@@ -793,7 +840,8 @@ void SaveFile_::Writer::WriteQuestRunData_3(
         Write(*(static_cast<uint32_t*>(item.unknown.get())));
         break;
       default:
-        assert(0);
+        throw std::runtime_error("Quest run data item of unknown type " +
+                                 std::to_string(item.type));
     }
   }
 }
@@ -888,14 +936,14 @@ void SaveFile_::Writer::WriteString(const std::string& str)
   Write(length);
 
   for (int i = 0; i < length; ++i)
-    this->writer.put(str.at(i));
+    this->writer->put(str.at(i));
   currentWritePositionInFile = currentWritePositionInFile + length;
 }
 
 void SaveFile_::Writer::WriteString(int length, std::string& str)
 {
   for (int i = 0; i < length; ++i)
-    this->writer.put(str.at(i));
+    this->writer->put(str.at(i));
   currentWritePositionInFile = currentWritePositionInFile + length;
 }
 
