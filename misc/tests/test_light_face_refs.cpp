@@ -76,6 +76,17 @@ static bool Listed(const Names& list, std::string name)
   return false;
 }
 
+// savefile writes no LZ4 body, so LoadGame::Run writes an LZ4 template's
+// body with zlib (compression type 2 to 1). Savefile before #1715 had no
+// compression type at all.
+template <class S>
+auto ZlibForLz4(S& save, int) -> decltype(save.header.compressionType, void())
+{
+  if (save.header.compressionType == 2) save.header.compressionType = 1;
+}
+template <class S>
+void ZlibForLz4(S&, long) {}
+
 static std::string Hex(uint32_t v)
 {
   char t[11];
@@ -91,7 +102,7 @@ static uint32_t Entry(const std::vector<uint32_t>& ids, const SaveFile_::RefID& 
   return index == 0 || index > ids.size() ? 0xFFFFFFFF : ids[index - 1];
 }
 
-int main(int argc, char** argv)
+static int Run(int argc, char** argv)
 {
   if (argc != 3) { std::printf("usage: template.ess workdir\n"); return 2; }
   using nlohmann::json;
@@ -158,6 +169,7 @@ int main(int argc, char** argv)
   auto record = npc->ToBinary();
   LoadGame::FillChangeForm(save, playerBase, record);
   const std::string outPath = work + "/aemon-stark.ess";
+  ZlibForLz4(*save, 0);
   CHECK(SaveFile_::Writer(save).CreateSaveFile(outPath));
 
   // What the written file names, read without savefile.
@@ -202,4 +214,15 @@ int main(int argc, char** argv)
   if (failures) { std::printf("%d check(s) failed\n", failures); return 1; }
   std::printf("PASS the menu save names Aemon Stark's beard through its light plugin list\n");
   return 0;
+}
+
+// An exception is a failure that says what it was, not a crash.
+int main(int argc, char** argv)
+{
+  try {
+    return Run(argc, argv);
+  } catch (std::exception& e) {
+    std::printf("FAIL threw: %s\n", e.what());
+    return 1;
+  }
 }

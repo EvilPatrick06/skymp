@@ -48,6 +48,17 @@ std::function<uint32_t(uint32_t)> List(S& save, const Names& full, const Names&,
   return [](uint32_t id) { return id; };
 }
 
+// savefile writes no LZ4 body, so LoadGame::Run writes an LZ4 template's
+// body with zlib (compression type 2 to 1). Savefile before #1715 had no
+// compression type at all.
+template <class S>
+auto ZlibForLz4(S& save, int) -> decltype(save.header.compressionType, void())
+{
+  if (save.header.compressionType == 2) save.header.compressionType = 1;
+}
+template <class S>
+void ZlibForLz4(S&, long) {}
+
 static std::string Hex(uint32_t v)
 {
   char t[11];
@@ -55,7 +66,7 @@ static std::string Hex(uint32_t v)
   return t;
 }
 
-int main(int argc, char** argv)
+static int Run(int argc, char** argv)
 {
   if (argc != 3) { std::printf("usage: template.ess workdir\n"); return 2; }
   namespace F = SaveContainerFixture;
@@ -88,6 +99,7 @@ int main(int argc, char** argv)
   const auto unboundRef = SaveFile_::RefID::CreateRefId(*save, toSave(unboundForm));
 
   const std::string outPath = std::string(argv[2]) + "/listed.ess";
+  ZlibForLz4(*save, 0);
   CHECK(SaveFile_::Writer(save).CreateSaveFile(outPath));
   const auto out = F::Parse(F::ReadFile(outPath));
   CHECK(F::CheckOffsets(out).empty());
@@ -128,4 +140,15 @@ int main(int argc, char** argv)
   if (failures) { std::printf("%d check(s) failed\n", failures); return 1; }
   std::printf("PASS the menu save keeps every form naming its plugin\n");
   return 0;
+}
+
+// An exception is a failure that says what it was, not a crash.
+int main(int argc, char** argv)
+{
+  try {
+    return Run(argc, argv);
+  } catch (std::exception& e) {
+    std::printf("FAIL threw: %s\n", e.what());
+    return 1;
+  }
 }
