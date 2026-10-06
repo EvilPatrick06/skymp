@@ -1,5 +1,6 @@
 # -Build is a configured engine build folder (its vcpkg zlib and headers are used).
-param([string]$Build='C:\ThornswoodTemps&Worktrees\worktrees\engine-one-skymp\build')
+# -Template is the save to test on, the shipped assets\template.ess by default.
+param([string]$Build='C:\ThornswoodTemps&Worktrees\worktrees\engine-one-skymp\build',[string]$Template='')
 $ErrorActionPreference='Stop'
 $taskRepo=Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSCommandPath))
 $taskScratch=Join-Path ([IO.Path]::GetTempPath()) ('thornswood-initial-save-'+[guid]::NewGuid().ToString('N'))
@@ -48,7 +49,8 @@ Push-Location $taskScratch
 try{
  & $taskCl /nologo /EHsc /std:c++17 /MT ('/I'+$taskScratch) ('/I'+$taskInclude) ('/I'+(Join-Path $taskRepo 'savefile\include')) ('/I'+(Join-Path $taskRepo 'skyrim-platform\src\platform_se\skyrim_platform')) (Join-Path $taskRepo 'misc\tests\test_initial_inventory.cpp') @taskSavefile $taskZlib /Fe:initial-save.exe
  if($LASTEXITCODE){throw 'Initial save test compilation failed'}
- & .\initial-save.exe (Join-Path $taskRepo 'skyrim-platform\src\platform_se\skyrim_platform\assets\template.ess') (Join-Path $taskScratch 'roundtrip.ess')
+ if(-not $Template){$Template=Join-Path $taskRepo 'skyrim-platform\src\platform_se\skyrim_platform\assets\template.ess'}
+ & .\initial-save.exe $Template (Join-Path $taskScratch 'roundtrip.ess')
  if($LASTEXITCODE){throw 'Initial save binary regression failed'}
  & $taskCl /nologo /EHsc /std:c++17 /MT ('/I'+(Join-Path $taskRepo 'savefile\include')) (Join-Path $taskRepo 'misc\tests\test_initial_save_refs.cpp') (Join-Path $taskRepo 'savefile\src\SFStructure.cpp') /Fe:initial-refs.exe
  if($LASTEXITCODE){throw 'Initial reference test compilation failed'}

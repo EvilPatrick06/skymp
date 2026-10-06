@@ -1058,6 +1058,37 @@ void SaveFile_::Reader::FillLocationMetaData(GlobalData& globalData)
   globalData.data = std::make_shared<LocationMetaData>(locationMetaData);
 }
 
+// One item of a quest run's event data: a uint32 type, then a RefID for
+// types 0, 1, 2 and 4 and a uint32 for type 3. Wrye Bash has no reader for
+// it, and ReSaver (ChangeFormQust.java, QuestRunDataItem3Data) and UESP
+// (Save File Format/QUST Changeform) name types 1 to 4 only. Type 0 was
+// measured on 5 Oct 2026 in a new game SkyrimSE 1.6.1170 saved after
+// player.additem: a quest run whose event is SCPT (a script's
+// Keyword.SendStoryEvent) holds the types 4, 2, 0, 0, 3, 3, and only a RefID
+// after each type 0 reads the 1377 bytes of its Quest Static Data block to
+// their end, with the last byte the 1 UESP says it always is. An unknown type
+// stops the read: its length is unknown, so everything after it would be
+// read wrong.
+void SaveFile_::Reader::FillQuestRunDataItem(
+  QuestStaticData::QuestRunData_3::QuestRunData_3_item& item)
+{
+  item.type = ReadUint32_bit();
+  switch (item.type) {
+    case 0:
+    case 1:
+    case 2:
+    case 4:
+      item.unknown = std::make_shared<RefID>(FillRefID());
+      break;
+    case 3:
+      item.unknown = std::make_shared<uint32_t>(ReadUint32_bit());
+      break;
+    default:
+      throw std::runtime_error("Quest run data item of unknown type " +
+                               std::to_string(item.type));
+  }
+}
+
 void SaveFile_::Reader::FillQuestStaticData(GlobalData& globalData)
 {
   QuestStaticData questStaticData;
@@ -1074,21 +1105,7 @@ void SaveFile_::Reader::FillQuestStaticData(GlobalData& globalData)
 
     for (auto& qrdItem : unk0.questRunData_items) {
 
-      qrdItem.type = ReadUint32_bit(); /// Unknown variable depends on type
-                                       /// (1,2,4 = RefID) (3 = Uint32_t)
-
-      switch (qrdItem.type) {
-        case 1:
-        case 2:
-        case 4:
-          qrdItem.unknown = std::make_shared<RefID>(FillRefID());
-          break;
-        case 3:
-          qrdItem.unknown = std::make_shared<uint32_t>(ReadUint32_bit());
-          break;
-        default:
-          assert(0);
-      }
+      FillQuestRunDataItem(qrdItem);
     }
   }
   questStaticData.numUnknown1 = ReadUint32_bit();
@@ -1103,21 +1120,7 @@ void SaveFile_::Reader::FillQuestStaticData(GlobalData& globalData)
 
     for (auto& qrdItem : unk1.questRunData_items) {
 
-      qrdItem.type = ReadUint32_bit(); /// Unknown variable depends on type
-                                       /// (1,2,4 = RefID) (3 = Uint32_t)
-
-      switch (qrdItem.type) {
-        case 1:
-        case 2:
-        case 4:
-          qrdItem.unknown = std::make_shared<RefID>(FillRefID());
-          break;
-        case 3:
-          qrdItem.unknown = std::make_shared<uint32_t>(ReadUint32_bit());
-          break;
-        default:
-          assert(0);
-      }
+      FillQuestRunDataItem(qrdItem);
     }
   }
 

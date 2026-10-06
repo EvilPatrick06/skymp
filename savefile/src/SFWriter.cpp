@@ -828,8 +828,9 @@ void SaveFile_::Writer::WriteQuestRunData_3(
   for (auto& item : questRunData_3.questRunData_items) {
     Write(item.type);
 
-    switch (item.type) { /// Unknown variable depends on type (1,2,4 = RefID)
-                         /// (3 = Uint32_t)
+    // The types Reader::FillQuestRunDataItem reads, and only those.
+    switch (item.type) {
+      case 0:
       case 1:
       case 2:
       case 4:
@@ -839,7 +840,8 @@ void SaveFile_::Writer::WriteQuestRunData_3(
         Write(*(static_cast<uint32_t*>(item.unknown.get())));
         break;
       default:
-        assert(0);
+        throw std::runtime_error("Quest run data item of unknown type " +
+                                 std::to_string(item.type));
     }
   }
 }
