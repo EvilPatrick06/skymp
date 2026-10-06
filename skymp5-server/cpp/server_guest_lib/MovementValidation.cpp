@@ -28,6 +28,10 @@ bool Validate(PartOne& partOne, const NiPoint3& currentPos,
       msg.pos = { currentPos[0], currentPos[1], currentPos[2] };
       msg.rot = { currentRot[0], currentRot[1], currentRot[2] };
       msg.worldOrCell = currentCellOrWorld.ToFormId(espmFiles);
+      // THORNSWOOD. Numbered, so that packets the client sends before it
+      // carries this out are recognised and not answered again (see
+      // ActionListener::OnUpdateMovement).
+      msg.teleportSeq = actor->NumberTeleportForOwnClient();
       sendTarget.Send(userId, msg, true);
     }
     return false;

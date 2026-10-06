@@ -208,6 +208,11 @@ void PartOne::SetUserActor(Networking::UserId userId, uint32_t actorFormId)
 
     serverState.actorsMap.Set(userId, &actor);
 
+    // THORNSWOOD. The client starts echoing 0 on every new connection
+    // (RemoteServer.handleConnectionAccepted), so no number given to an
+    // earlier client of this actor may count as outstanding.
+    actor.ForgetTeleportsForOwnClient();
+
     actor.ForceSubscriptionsUpdate();
 
     // We do the same in MpActor::ApplyChangeForm for non-player characters
