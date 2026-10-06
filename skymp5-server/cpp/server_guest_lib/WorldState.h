@@ -276,6 +276,9 @@ public:
   std::vector<std::optional<std::chrono::system_clock::time_point>>
     lastMovUpdateByIdx;
 
+  // THORNSWOOD. The last number given by MpActor::NumberTeleportForOwnClient.
+  uint32_t lastTeleportSeq = 0;
+
   bool isPapyrusHotReloadEnabled = false;
 
   bool npcEnabled = false;
