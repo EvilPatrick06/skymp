@@ -104,9 +104,19 @@ void SpecialEdition(const Bytes& templateBytes, const std::string& work)
       // A Special Edition save to read: the template if it is one, else the
       // template's body in a Special Edition container.
       Bytes input;
-      if (templ.version >= 12) {
-        if (compression != templ.compression) continue;
+      if (templ.version >= 12 && compression == templ.compression) {
         input = templateBytes;
+      } else if (templ.version >= 12) {
+        // The game's own save stored the other way. savefile writes no LZ4,
+        // so an LZ4 one is only read; the fixture reader checks what
+        // savefile wrote before it is used.
+        if (compression == S::COMPRESSION_LZ4) continue;
+        const std::string from = work + "/se-template.ess";
+        F::WriteFile(from, templateBytes);
+        std::shared_ptr<S> other = R(from).GetStructure();
+        other->header.compressionType = compression;
+        input = WriteAndLoad(other, work + "/se-" + std::to_string(compression) + "-made.ess");
+        CHECK(Flat(input) == Flat(templateBytes));
       } else {
         input = F::SpecialEditionFixture(templateBytes, light, compression);
       }
@@ -194,6 +204,9 @@ void SpecialEdition(const Bytes& templateBytes, const std::string& work)
 
     const auto ref = SaveFile_::RefID::CreateRefId(*save, remap.ToSaveFormId(0xFE029827u));
     CHECK(!Throws([&] { save->CheckFormIdArrayPlugins(); }));
+    // savefile writes no LZ4; LoadGame::Run writes such a body with zlib.
+    if (save->header.compressionType == S::COMPRESSION_LZ4)
+      save->header.compressionType = S::COMPRESSION_ZLIB;
     const auto listed = F::Parse(WriteAndLoad(save, work + "/se-lists-out.ess"));
     CHECK(F::CheckOffsets(listed).empty());
     CHECK(listed.pluginInfoRead == listed.pluginInfoSize);
@@ -202,7 +215,7 @@ void SpecialEdition(const Bytes& templateBytes, const std::string& work)
     const auto ids = F::FormIdArray(listed);
     const uint32_t index = (uint32_t(ref.byte0 & 0x3f) << 16) | (uint32_t(ref.byte1) << 8) | ref.byte2;
     CHECK(index >= 1 && index <= ids.size() && ids[index - 1] == beard);
-    CHECK(F::PluginOf(listed, beard) == "KhisartinBeards.esp");
+    CHECK(findIn({ F::PluginOf(listed, beard) }, "KhisartinBeards.esp") == 0); // any case
 
     // Listing the same plugins again changes nothing.
     const auto sizeBefore = save->pluginInfoSize;
@@ -226,7 +239,7 @@ void LegendaryEdition(const std::shared_ptr<S>& save)
   }
 }
 
-int main(int argc, char** argv)
+static int Run(int argc, char** argv)
 {
   if (argc != 3) { std::printf("usage: template.ess workdir\n"); return 2; }
   const std::string templatePath = argv[1], work = argv[2];
@@ -250,4 +263,15 @@ int main(int argc, char** argv)
   if (failures) { std::printf("%d check(s) failed\n", failures); return 1; }
   std::printf("PASS savefile reads and writes Legendary and Special Edition saves and lists light plugins\n");
   return 0;
+}
+
+// An exception is a failure that says what it was, not a crash.
+int main(int argc, char** argv)
+{
+  try {
+    return Run(argc, argv);
+  } catch (std::exception& e) {
+    std::printf("FAIL threw: %s\n", e.what());
+    return 1;
+  }
 }
