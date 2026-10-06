@@ -32,6 +32,10 @@ public:
   const std::vector<const void*>& GetSubsEnsured(
     const GroupHeader* group) const;
 
+  // The highest id below the top byte among this file's records whose id
+  // has this top byte, or 0 when it has none.
+  uint32_t GetHighestLocalId(uint8_t topByte) const noexcept;
+
 private:
   bool ReadAny(const GroupStack* parentGrStack);
   Browser(const Browser&) = delete;

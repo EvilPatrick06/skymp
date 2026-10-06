@@ -33,7 +33,8 @@ struct UpdateMovementMessage : public MessageBase<UpdateMovementMessage>
         .Serialize("isBlocking", isBlocking)
         .Serialize("isWeapDrawn", isWeapDrawn)
         .Serialize("isDead", isDead)
-        .Serialize("lookAt", lookAt);
+        .Serialize("lookAt", lookAt)
+        .Serialize("teleportSeq", teleportSeq);
     }
 
     uint32_t worldOrCell = 0;
@@ -51,6 +52,12 @@ struct UpdateMovementMessage : public MessageBase<UpdateMovementMessage>
     bool isWeapDrawn = false;
     bool isDead = false;
     std::optional<std::array<float, 3>> lookAt = std::nullopt;
+
+    // THORNSWOOD. Sent by a client for its own character only: the
+    // teleportSeq of the newest TeleportMessage/TeleportMessage2 it has
+    // carried out, 0 before the first. The server uses it to tell a packet
+    // sent before the client moved from one sent after.
+    std::optional<uint32_t> teleportSeq = std::nullopt;
   };
 
   template <class Archive>

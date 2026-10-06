@@ -63,6 +63,8 @@ TEST_CASE("DeathState packed is correct if actor is respawning", "[Respawn]")
   REQUIRE(updateProperyMsg["idx"] == ac.GetIdx());
 
   REQUIRE(teleportMsg["t"] == MsgType::Teleport);
+  // THORNSWOOD. Numbered like every teleport of a connected character.
+  REQUIRE(teleportMsg["teleportSeq"] == 1);
   REQUIRE(changeValuesMsg["t"] == MsgType::ChangeValues);
 
   REQUIRE(ac.IsDead() == false);

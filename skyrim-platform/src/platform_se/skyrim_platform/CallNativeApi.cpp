@@ -70,6 +70,39 @@ Napi::Value CallNativeImpl(
         std::string s = files[index]->fileName;
         return Napi::String::New(info.Env(), s);
       }
+
+    } else if (!stricmp("GetLightModCount", functionName.data())) {
+      // Answered here like GetModCount, as SKSE does
+      // (skse64/PapyrusGame.cpp GetLightModCount), so that it works without
+      // a Papyrus VM: the main menu spawn asks from a tick handler.
+      auto dataHandler = RE::TESDataHandler::GetSingleton();
+      if (!dataHandler) {
+        throw NullPointerException("dataHandler");
+      }
+#ifndef ENABLE_SKYRIM_VR
+      auto numFiles = dataHandler->compiledFileCollection.smallFiles.size();
+#else
+      auto numFiles = dataHandler->VRcompiledFileCollection->smallFiles.size();
+#endif
+      return Napi::Number::New(info.Env(), numFiles);
+
+    } else if (!stricmp("GetLightModName", functionName.data())) {
+      int index = NapiHelper::ExtractInt32(info[nativeArgsStart], "index");
+
+      auto dataHandler = RE::TESDataHandler::GetSingleton();
+      if (!dataHandler) {
+        throw NullPointerException("dataHandler");
+      }
+#ifndef ENABLE_SKYRIM_VR
+      auto smallFiles = dataHandler->compiledFileCollection.smallFiles;
+#else
+      auto smallFiles = dataHandler->VRcompiledFileCollection->smallFiles;
+#endif
+      if (index < 0 || static_cast<uint32_t>(index) >= smallFiles.size()) {
+        return Napi::String::New(info.Env(), "");
+      }
+      std::string s = smallFiles[index]->fileName;
+      return Napi::String::New(info.Env(), s);
     }
   }
 

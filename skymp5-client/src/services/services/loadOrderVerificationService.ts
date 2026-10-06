@@ -5,6 +5,7 @@ import { Mod } from "../messages_http/serverManifest";
 import { logTrace } from "../../logging";
 import { SettingsService } from "./settingsService";
 import {
+  ClientMods,
   evaluateLoadOrder,
   screenNoticeForEval,
 } from "./loadOrderCheck";
@@ -30,23 +31,27 @@ export class LoadOrderVerificationService extends ClientListener {
 
     this.resetText();
     const clientMods = this.getClientMods();
-    this.printModOrder('Client load order:', clientMods);
+    this.printModOrder('Client load order:', clientMods.mods);
+    this.printModOrder('Client light plugins:', clientMods.light);
     return settingsService.getServerMods()
       .then((serverMods) => {
         const result = evaluateLoadOrder(clientMods, serverMods);
 
-        if (result.kind === 'unreachable') {
+        if (result.kind === 'unreachable' || serverMods === null) {
           printConsole('Server mod list could not be fetched after retries.');
-          const notice = screenNoticeForEval(result, false)!;
+          const notice = screenNoticeForEval({ kind: 'unreachable' }, false)!;
           this.updateText(notice.text, notice.color, notice.clearDelay);
           return;
         }
 
-        this.printModOrder('Server load order:', serverMods as Mod[]);
+        this.printModOrder('Server load order:', serverMods.mods);
+        if (serverMods.light !== undefined) {
+          this.printModOrder('Server light plugins:', serverMods.light);
+        }
 
         if (result.kind === 'tooFewClientMods') {
           throw new Error(
-            `Missing some server mods. Server has ${result.serverCount}, we have ${result.clientCount}`,
+            `Missing some server mods. Server has ${result.serverCount} ${result.list} plugins, we have ${result.clientCount}`,
           );
         }
         if (result.kind === 'tooManyClientMods') {
@@ -55,18 +60,20 @@ export class LoadOrderVerificationService extends ClientListener {
           return;
         }
         if (result.kind === 'mismatch') {
+          const server = result.list === 'light' ? serverMods.light! : serverMods.mods;
+          const client = result.list === 'light' ? clientMods.light : clientMods.mods;
           for (const i of result.indices) {
-            printConsole(`${i}-th mod (numbered from 0) does not match.`);
-            printConsole(`Server has ${JSON.stringify((serverMods as Mod[])[i])}`);
-            printConsole(`We have ${JSON.stringify(clientMods[i])}`);
+            printConsole(`${i}-th ${result.list} plugin (numbered from 0) does not match.`);
+            printConsole(`Server has ${JSON.stringify(server[i])}`);
+            printConsole(`We have ${JSON.stringify(client[i])}`);
           }
-          throw new Error('Load order check failed! Indices: ' + JSON.stringify(result.indices));
+          throw new Error(`Load order check failed! ${result.list} plugin indices: ` + JSON.stringify(result.indices));
         }
       })
       .catch((err) => {
         printConsole(err);
         const ignore = !!this.sp.settings['skymp5-client']['ignoreLoadOrderMismatch'];
-        const notice = screenNoticeForEval({ kind: 'mismatch', indices: [] }, ignore)!;
+        const notice = screenNoticeForEval({ kind: 'mismatch', list: 'full', indices: [] }, ignore)!;
         this.updateText(notice.text, notice.color, notice.clearDelay);
       });
   };
@@ -115,8 +122,13 @@ export class LoadOrderVerificationService extends ClientListener {
     return result;
   }
 
-  private getClientMods() {
-    return this.enumerateClientMods(Game.getModCount, Game.getModName);
+  // Both of the game's plugin lists: full plugins, then light plugins in
+  // light index order.
+  private getClientMods(): ClientMods {
+    return {
+      mods: this.enumerateClientMods(Game.getModCount, Game.getModName),
+      light: this.enumerateClientMods(Game.getLightModCount, Game.getLightModName),
+    };
   };
 
   private printModOrder(header: string, order: Mod[]) {

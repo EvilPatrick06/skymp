@@ -26,13 +26,18 @@ uint32_t RgbToAbgr(int32_t rgb)
   return resultColor;
 }
 
-SaveFile_::RefID FormIdToRefId(SaveFile_::SaveFile& save, uint32_t formId)
+// formId is this game's id; the save names its plugin by its own lists
+// (LoadGame::ListPlugins).
+SaveFile_::RefID FormIdToRefId(SaveFile_::SaveFile& save,
+                               const SaveFile_::PluginRemap& plugins,
+                               uint32_t formId)
 {
-  return SaveFile_::RefID::CreateRefId(save, formId);
+  return SaveFile_::RefID::CreateRefId(save, plugins.ToSaveFormId(formId));
 }
 
 std::unique_ptr<SaveFile_::ChangeFormNPC_> CreateChangeFormNpc(
-  std::shared_ptr<SaveFile_::SaveFile> save, Napi::Object npcData)
+  std::shared_ptr<SaveFile_::SaveFile> save,
+  const SaveFile_::PluginRemap& plugins, Napi::Object npcData)
 {
   auto changeFormNpc = std::make_unique<SaveFile_::ChangeFormNPC_>();
 
@@ -45,8 +50,8 @@ std::unique_ptr<SaveFile_::ChangeFormNPC_> CreateChangeFormNpc(
       !raceId.IsUndefined() && !raceId.IsNull()) {
     auto raceIdExtracted = NapiHelper::ExtractUInt32(raceId, "npcData.raceId");
     changeFormNpc->race = SaveFile_::ChangeFormNPC_::RaceChange();
-    changeFormNpc->race->defaultRace = FormIdToRefId(*save, raceIdExtracted);
-    changeFormNpc->race->myRaceNow = FormIdToRefId(*save, raceIdExtracted);
+    changeFormNpc->race->defaultRace = FormIdToRefId(*save, plugins, raceIdExtracted);
+    changeFormNpc->race->myRaceNow = FormIdToRefId(*save, plugins, raceIdExtracted);
   }
 
   // TODO: why mismatch with skyrimPlatform.ts: instead of 'npcData' this is in
@@ -82,7 +87,7 @@ std::unique_ptr<SaveFile_::ChangeFormNPC_> CreateChangeFormNpc(
         auto jHpId = headPartIdsExtracted.Get(i);
         std::string comment = fmt::format("npcData.headPartIds[{}]", i);
         auto hpId = NapiHelper::ExtractUInt32(jHpId, comment.data());
-        changeFormNpc->face->headParts.push_back(FormIdToRefId(*save, hpId));
+        changeFormNpc->face->headParts.push_back(FormIdToRefId(*save, plugins, hpId));
       }
     }
 
@@ -103,7 +108,7 @@ std::unique_ptr<SaveFile_::ChangeFormNPC_> CreateChangeFormNpc(
         !headTextureSetId.IsUndefined() && !headTextureSetId.IsNull()) {
       auto id = NapiHelper::ExtractUInt32(headTextureSetId,
                                           "npcData.headTextureSetId");
-      changeFormNpc->face->headTextureSet = FormIdToRefId(*save, id);
+      changeFormNpc->face->headTextureSet = FormIdToRefId(*save, plugins, id);
     }
   }
 
@@ -151,7 +156,8 @@ double InitialInventoryInteger(Napi::Value value, double minimum, double maximum
 // Initial creation accepts its complete basic starter inventory. Complex saved
 // item metadata remains on the established returning-character path.
 std::unique_ptr<std::vector<InitialInventory::Item>> CreateInitialInventory(
-  std::shared_ptr<SaveFile_::SaveFile> save, Napi::Object data)
+  std::shared_ptr<SaveFile_::SaveFile> save,
+  const SaveFile_::PluginRemap& plugins, Napi::Object data)
 {
   struct Totals { int64_t delta = 0; bool worn = false; bool left = false; };
   std::map<uint32_t, Totals> totals;
@@ -196,7 +202,7 @@ std::unique_ptr<std::vector<InitialInventory::Item>> CreateInitialInventory(
   for (auto& [id, total] : totals) {
     if (total.delta < INT32_MIN || total.delta > INT32_MAX) throw std::runtime_error("Initial inventory count overflow");
     if (!total.delta && !total.worn && !total.left) continue;
-    const auto ref = SaveFile_::RefID::CreateRefId(*save, id);
+    const auto ref = FormIdToRefId(*save, plugins, id);
     result->push_back({{ref.byte0, ref.byte1, ref.byte2},
                        static_cast<int32_t>(total.delta), total.worn, total.left});
   }
@@ -222,34 +228,41 @@ Napi::Value LoadGameApi::LoadGame(const Napi::CallbackInfo& info)
     throw NullPointerException("save");
   }
 
-  std::unique_ptr<SaveFile_::ChangeFormNPC_> changeFormNpc =
-    (info[3].IsUndefined() || info[3].IsNull())
-    ? nullptr
-    : CreateChangeFormNpc(save, NapiHelper::ExtractObject(info[3], "npcData"));
-
   std::unique_ptr<std::vector<std::string>> saveLoadOrder =
     (info[4].IsUndefined() || info[4].IsNull())
     ? nullptr
     : CreateLoadOrder(save, NapiHelper::ExtractArray(info[4], "loadOrder"));
+
+  std::unique_ptr<std::vector<std::string>> saveLightLoadOrder =
+    (info[7].IsUndefined() || info[7].IsNull())
+    ? nullptr
+    : CreateLoadOrder(save,
+                      NapiHelper::ExtractArray(info[7], "lightLoadOrder"));
+
+  // Thornswood #1715. The plugins go into the save before any form does:
+  // every id below is this game's, and the save names it through its own
+  // plugin lists.
+  const auto plugins = LoadGame::ListPlugins(*save, saveLoadOrder.get(),
+                                             saveLightLoadOrder.get());
+
+  std::unique_ptr<SaveFile_::ChangeFormNPC_> changeFormNpc =
+    (info[3].IsUndefined() || info[3].IsNull())
+    ? nullptr
+    : CreateChangeFormNpc(save, plugins,
+                          NapiHelper::ExtractObject(info[3], "npcData"));
 
   std::unique_ptr<LoadGame::Time> saveFileTime =
     (info[5].IsUndefined() || info[5].IsNull())
     ? nullptr
     : CreateTime(save, NapiHelper::ExtractObject(info[5], "time"));
 
-  auto inventory = (info[6].IsUndefined() || info[6].IsNull()) ? nullptr
-    : CreateInitialInventory(save, NapiHelper::ExtractObject(info[6], "initialInventory"));
+  auto inventory = (info[6].IsUndefined() || info[6].IsNull())
+    ? nullptr
+    : CreateInitialInventory(
+        save, plugins, NapiHelper::ExtractObject(info[6], "initialInventory"));
 
-  const auto& _baseSavefile = save;
-  const auto& _pos = pos;
-  const auto& _angle = angle;
-  const auto& _cellOrWorld = cellOrWorld;
-  const auto& _time = saveFileTime.get();
-  SaveFile_::Weather* _weather = nullptr;
-  SaveFile_::ChangeFormNPC_* _changeFormNPC = changeFormNpc.get();
-  std::vector<std::string>* _loadOrder = saveLoadOrder.get();
-  LoadGame::Run(_baseSavefile, _pos, _angle, _cellOrWorld, _time, _weather,
-                _changeFormNPC, _loadOrder, inventory.get());
+  LoadGame::Run(save, pos, angle, cellOrWorld, saveFileTime.get(), nullptr,
+                changeFormNpc.get(), plugins, inventory.get());
 
   return info.Env().Undefined();
 }
