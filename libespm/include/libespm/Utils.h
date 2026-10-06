@@ -22,6 +22,7 @@ bool IsItem(Type type) noexcept;
 uint32_t CalculateHashcode(const void* readBuffer, size_t length);
 uint32_t GetCorrectHashcode(const std::string& fileName);
 uint32_t GetMappedId(uint32_t id, const IdMapping& mapping) noexcept;
+uint32_t GetMappedId(uint32_t id, const RawIdMapping& mapping) noexcept;
 std::wstring ReadWstring(const uint8_t* ptr);
 Property::Type GetElementType(Property::Type arrayType);
 const uint8_t* ReadPropertyValue(const uint8_t* p, Property* prop,

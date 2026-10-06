@@ -1,4 +1,4 @@
-import { Mod } from "../messages_http/serverManifest";
+import { Mod, ServerMods } from "../messages_http/serverManifest";
 
 export type ScreenNotice = {
   text: string;
@@ -43,29 +43,45 @@ export function noticeLoadOrderMismatch(ignoreMismatch: boolean): ScreenNotice {
   };
 }
 
+// Which of the game's two plugin lists a result is about. The game numbers
+// full plugins (Game.getModName) and light plugins (Game.getLightModName)
+// apart, and a form names its plugin by its place in one of them, so each
+// list is compared with the server's position by position on its own
+// (Thornswood #1715).
+export type PluginList = "full" | "light";
+
 export type LoadOrderEval =
   | { kind: "unreachable" }
   | { kind: "ok" }
-  | { kind: "tooManyClientMods" }
-  | { kind: "tooFewClientMods"; serverCount: number; clientCount: number }
-  | { kind: "mismatch"; indices: number[] };
+  | { kind: "tooManyClientMods"; list: PluginList }
+  | {
+      kind: "tooFewClientMods";
+      list: PluginList;
+      serverCount: number;
+      clientCount: number;
+    }
+  | { kind: "mismatch"; list: PluginList; indices: number[] };
 
-export function evaluateLoadOrder(
+export interface ClientMods {
+  mods: Mod[];
+  light: Mod[];
+}
+
+function evaluateList(
+  list: PluginList,
   clientMods: Mod[],
-  serverMods: Mod[] | null,
+  serverMods: Mod[],
 ): LoadOrderEval {
-  if (serverMods === null) {
-    return { kind: "unreachable" };
-  }
   if (clientMods.length < serverMods.length) {
     return {
       kind: "tooFewClientMods",
+      list,
       serverCount: serverMods.length,
       clientCount: clientMods.length,
     };
   }
   if (clientMods.length > serverMods.length) {
-    return { kind: "tooManyClientMods" };
+    return { kind: "tooManyClientMods", list };
   }
   const indices: number[] = [];
   for (let i = 0; i < serverMods.length; ++i) {
@@ -79,9 +95,26 @@ export function evaluateLoadOrder(
     }
   }
   if (indices.length !== 0) {
-    return { kind: "mismatch", indices };
+    return { kind: "mismatch", list, indices };
   }
   return { kind: "ok" };
+}
+
+// The full lists first, then the light ones. A server whose manifest has no
+// light list was built before the server loaded light plugins and has none
+// to compare with.
+export function evaluateLoadOrder(
+  clientMods: ClientMods,
+  serverMods: ServerMods | null,
+): LoadOrderEval {
+  if (serverMods === null) {
+    return { kind: "unreachable" };
+  }
+  const full = evaluateList("full", clientMods.mods, serverMods.mods);
+  if (full.kind !== "ok" || serverMods.light === undefined) {
+    return full;
+  }
+  return evaluateList("light", clientMods.light, serverMods.light);
 }
 
 // Screen text for a completed evaluation. Null when nothing should be shown.

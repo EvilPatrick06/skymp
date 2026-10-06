@@ -22,7 +22,8 @@ TEST_CASE("Returns true and sends nothing for normal movement",
   partOne.Messages().clear();
   bool res = MovementValidation::Validate(
     partOne, { 0, 0, 0 }, { 0, 0, 0 }, FormDesc::Tamriel(), { 1, 1, 1 },
-    FormDesc::Tamriel(), 0, &actor, { "Skyrim.esm" });
+    FormDesc::Tamriel(), 0, &actor,
+    espm::LoadOrder::FullPlugins({ "Skyrim.esm" }));
   REQUIRE(res);
   REQUIRE(partOne.Messages().empty());
 }
@@ -43,7 +44,8 @@ TEST_CASE("Returns false and sends teleport packet when moving too fast",
   bool res = MovementValidation::Validate(
     partOne, { 1, -1, 1 }, { 123, 111, 123 }, FormDesc::Tamriel(),
     NiPoint3{ 1, -1, 1 } + NiPoint3{ maxLegalMove + 1.f, 0, 0 },
-    FormDesc::Tamriel(), 0, &actor, { "Skyrim.esm" });
+    FormDesc::Tamriel(), 0, &actor,
+    espm::LoadOrder::FullPlugins({ "Skyrim.esm" }));
   REQUIRE(!res);
   REQUIRE(partOne.Messages().size() == 1);
   REQUIRE(partOne.Messages()[0].j ==
@@ -70,7 +72,7 @@ TEST_CASE(
   bool res = MovementValidation::Validate(
     partOne, { 1, -1, 1 }, { 123, 111, 123 }, FormDesc::Tamriel(),
     { 1, -1, 1 }, FormDesc::FromString("ffffff:Skyrim.esm"), 0, &actor,
-    { "Skyrim.esm" });
+    espm::LoadOrder::FullPlugins({ "Skyrim.esm" }));
   REQUIRE(!res);
   REQUIRE(partOne.Messages().size() == 1);
   REQUIRE(partOne.Messages()[0].j ==
