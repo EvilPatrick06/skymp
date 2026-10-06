@@ -1,9 +1,9 @@
 'use strict';
 const assert = require('node:assert/strict'), fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
-const ts = require('../../skymp5-client/node_modules/typescript');
-const source = fs.readFileSync(path.join(__dirname, '../../skymp5-client/src/services/services/sendInputsService.ts'), 'utf8');
+const ts = require('../../../skymp5-client/node_modules/typescript');
+const source = fs.readFileSync(path.join(__dirname, '../../../skymp5-client/src/services/services/sendInputsService.ts'), 'utf8');
 const platform = {};
-vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../skyrim-platform/src/platform_se/skyrim_platform/assets/storageProxy.js'), 'utf8'))(platform);
+vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../../skyrim-platform/src/platform_se/skyrim_platform/assets/storageProxy.js'), 'utf8'))(platform);
 const reports = [], callbacks = {}, storage = platform.storage;
 storage.ownerInventorySettling = true;
 let reads = 0;

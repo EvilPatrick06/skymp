@@ -10,8 +10,11 @@
 #include <new>
 #include <string>
 #include <vector>
-#include "../../viet/include/TaskQueue.h"
-#include "../../skyrim-platform/src/platform_se/skyrim_platform/InventoryQueueFence.h"
+#include "../../../viet/include/TaskQueue.h"
+#include "../../../skyrim-platform/src/platform_se/skyrim_platform/InventoryQueueFence.h"
+// AddItemEx captures the inventory load epoch and its queued work checks it
+// (Thornswood #1971): the real header, so the block compiles as it is.
+#include "../../../skyrim-platform/src/platform_se/skyrim_platform/InventoryLoadEpoch.h"
 using IVM = void;
 using StackID = int;
 struct FixedString { const char* value; const char* data() const { return value; } };
@@ -153,5 +156,14 @@ int main() {
   try {queue.flush(); assert(false);} catch (const std::runtime_error&) {}
   assert(!older() && !newer()); queue.flush();
   assert(sawGap && older() && newer()); // A later fence never acknowledges the older gap.
-  std::cout << "PASS native worn clothing, exact extras, queue order, hands, ammunition and paused-call isolation\n";
+  // A load advances the epoch (LoadGame.cpp): an add and its equip queued
+  // before it must not reach the character that reuses the player's id.
+  RE::TESObjectARMO hood(9);
+  add(actor, hood, true);
+  InventoryLoadEpoch::Advance();
+  queue.flush();
+  assert(!actor.bag.count(9) && !actor.worn.count(9));
+  add(actor, hood, true); queue.flush();
+  assert(actor.bag[9] == 1 && actor.worn.count(9)); // Adds after the load land.
+  std::cout << "PASS native worn clothing, exact extras, queue order, hands, ammunition, paused-call isolation and load epoch\n";
 }
