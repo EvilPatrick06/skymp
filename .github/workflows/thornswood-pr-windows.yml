@@ -1,0 +1,63 @@
+# Thornswood's pull request build (Thornswood #1774).
+#
+# Every pull request into thornswood/engine-changes builds the engine the way
+# upstream's "PR Windows Flatrim (AE/SE)" builds a pull request into main: the
+# same pr_base action with the same inputs, on GitHub's windows-2022 image,
+# and the unit tests after it, except that it does not repeat the unit tests
+# under OpenCppCoverage. Nothing else in this fork runs on its own.
+#
+# Why no coverage: the first build of this workflow took 96 minutes on 5 Oct,
+# of which test_unit_coverage was 43 and vcpkg building every library for the
+# first time was 30. vcpkg now restores those from GitHub Packages, and the
+# coverage run checked nothing test_unit does not, so a build is the
+# configure, the compile (14 minutes) and the tests (about 3).
+# Upstream's workflows that would start here (the four that dispatch upstream's
+# installer, the Linux builds, the formatting, Prettier and dependent issue
+# checks) carry `if: github.repository == 'skyrim-multiplayer/skymp'`, so they
+# keep working upstream and are skipped here.
+#
+# Why GitHub's runner and not the VPS: this repository is public, so its
+# minutes on GitHub's standard runners cost nothing, and a self-hosted runner
+# on a public repository runs whatever any pull request puts in its workflow
+# files, on the box that hosts the live server.
+
+name: Thornswood PR Windows
+
+on:
+  pull_request:
+    branches: [ thornswood/engine-changes ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUILD_TYPE: Release
+  VCPKG_BINARY_SOURCES: 'clear;nuget,GitHub,readwrite'
+  VCPKG_FEATURE_FLAGS: 'manifests'
+
+jobs:
+  build:
+    runs-on: windows-2022
+    # packages: write lets vcpkg keep the libraries it built in GitHub
+    # Packages, so the next pull request does not build them all again. The
+    # fork's default token is read only.
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: 'true'
+      - uses: ./.github/actions/pr_base
+        with:
+          DESCRIPTION: 'Flatrim'
+          SKYRIM_VR_FLAG: OFF
+          SP_NEXUS_ARTIFACT_NAME: Skyrim Platform %SP_VERSION%
+          DEPLOY_BRANCH: ""
+          DIST_ARTIFACT_NAME: dist
+          SERVER_DIST_ARTIFACT_NAME: server-dist
+          SKYMP5_PATCHES_PAT: ""
+          NUGET_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COVERAGE: "false"
