@@ -44,6 +44,28 @@ PartOne& GetPartOne()
 
 constexpr auto barrelInWhiterun = 0x4cc2d;
 
+// A clock for a world's timers that moves only when the test moves it, so a
+// reloot is due when the test says and not when the machine gets round to the
+// next line (Thornswood #2000).
+class TestClock
+{
+public:
+  explicit TestClock(WorldState& worldState)
+  {
+    worldState.SetTimerClock([now = now] { return *now; });
+  }
+
+  void Advance(std::chrono::system_clock::duration duration)
+  {
+    *now += duration;
+  }
+
+private:
+  std::shared_ptr<std::chrono::system_clock::time_point> now =
+    std::make_shared<std::chrono::system_clock::time_point>(
+      std::chrono::system_clock::now());
+};
+
 TEST_CASE("Activate without espm attached", "[PartOne][espm]")
 {
   PartOne partOne;
@@ -314,6 +336,7 @@ TEST_CASE("Activate PurpleMountainFlower in Whiterun", "[PartOne][espm]")
 
   auto& ref = partOne.worldState.GetFormAt<MpObjectReference>(refrId);
   ref.SetRelootTime(std::chrono::milliseconds(25));
+  TestClock clock(partOne.worldState);
 
   REQUIRE(!ref.IsHarvested());
 
@@ -350,9 +373,15 @@ TEST_CASE("Activate PurpleMountainFlower in Whiterun", "[PartOne][espm]")
   partOne.Tick();
   REQUIRE(ref.IsHarvested());
 
+  // The reloot is due 25 ms after the activation: not a moment before, and
+  // at it.
   partOne.Messages().clear();
-  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  clock.Advance(std::chrono::milliseconds(24));
+  partOne.Tick();
+  REQUIRE(ref.IsHarvested());
+  REQUIRE(partOne.Messages().empty());
 
+  clock.Advance(std::chrono::milliseconds(1));
   partOne.Tick();
   REQUIRE(!ref.IsHarvested());
   REQUIRE(partOne.Messages().size() == 1);
@@ -561,6 +590,7 @@ TEST_CASE("Activate torch", "[espm][PartOne]")
 
   auto& ref = partOne.worldState.GetFormAt<MpObjectReference>(refrId);
   ref.SetRelootTime(std::chrono::milliseconds(25));
+  TestClock clock(partOne.worldState);
 
   REQUIRE(!ref.IsHarvested());
 
@@ -595,9 +625,15 @@ TEST_CASE("Activate torch", "[espm][PartOne]")
   partOne.Tick();
   REQUIRE(ref.IsHarvested());
 
+  // The reloot is due 25 ms after the activation: not a moment before, and
+  // at it.
   partOne.Messages().clear();
-  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  clock.Advance(std::chrono::milliseconds(24));
+  partOne.Tick();
+  REQUIRE(ref.IsHarvested());
+  REQUIRE(partOne.Messages().empty());
 
+  clock.Advance(std::chrono::milliseconds(1));
   partOne.Tick();
   REQUIRE(!ref.IsHarvested());
   REQUIRE(partOne.Messages().size() == 1);

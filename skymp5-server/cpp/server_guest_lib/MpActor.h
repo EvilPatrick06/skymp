@@ -170,6 +170,30 @@ public:
   void Respawn(bool shouldTeleport = true);
   void RespawnWithDelay(bool shouldTeleport = true);
   void Teleport(const LocationalData& position);
+
+  // THORNSWOOD #1932. Each teleport the server tells this actor's own client
+  // to carry out gets a number, and the client echoes the newest number it
+  // has carried out in every movement packet
+  // (UpdateMovementMessage::Data::teleportSeq). Without it the server cannot
+  // tell a packet sent before the client moved from one sent after. Measured
+  // on dev on 5 Oct 2026: the server stalled for 48 s, a held door activation
+  // then moved the server's copy outside the Bannered Mare, and each of the
+  // 232 movement packets the client had sent from inside during the stall
+  // was answered with its own TeleportMessage2. Returns std::nullopt when no
+  // user is attached, because the message then goes to a hoster, which does
+  // not echo it.
+  std::optional<uint32_t> NumberTeleportForOwnClient();
+
+  // True for a movement packet the client sent before carrying out the
+  // newest numbered teleport. It describes the place the client was told to
+  // leave, so it is neither applied, passed on, nor answered with another
+  // teleport. A packet without the echo is never judged here.
+  bool IsSentBeforeNewestTeleport(std::optional<uint32_t> carriedOut) const;
+
+  // A newly attached client has carried out none of the numbers given so
+  // far, so nothing is outstanding for it.
+  void ForgetTeleportsForOwnClient();
+
   void SetSpawnPoint(const LocationalData& position);
   LocationalData GetSpawnPoint() const;
   LocationalData GetEditorLocationalData() const;

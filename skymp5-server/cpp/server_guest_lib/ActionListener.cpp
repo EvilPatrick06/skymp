@@ -121,6 +121,22 @@ void ActionListener::OnCustomPacket(const RawMessageData& rawMsgData,
 void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
                                       const UpdateMovementMessage& msg)
 {
+  // THORNSWOOD #1932. A packet the client sent for its own character before
+  // carrying out the newest teleport the server gave it reports the place it
+  // was told to leave. Validating it can only produce another teleport to the
+  // same spot, and passing it on shows the neighbours that place: on dev on
+  // 5 Oct 2026 a 48 s stall left 232 such packets queued behind a door
+  // activation, the server answered every one with a TeleportMessage2, and
+  // the client logged 233 teleports to the door's destination in 0.54 s. The
+  // first packet sent after the client carries the teleport out echoes its
+  // number and is handled as before, so a move that did not happen still
+  // gets exactly one new correction.
+  MpActor* myActor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (myActor && myActor->GetIdx() == msg.idx &&
+      myActor->IsSentBeforeNewestTeleport(msg.data.teleportSeq)) {
+    return;
+  }
+
   auto actor = SendToNeighbours(msg.idx, rawMsgData);
   if (actor) {
     bool teleportFlag = actor->GetTeleportFlag();
@@ -1243,7 +1259,7 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
   const FormDesc& targetCellOrWorld = targetRef->GetCellOrWorld();
 
   if (aggressorCellOrWorld != targetCellOrWorld) {
-    const std::vector<std::string>& files = partOne.worldState.espmFiles;
+    const auto& files = partOne.worldState.espmFiles;
     spdlog::error(
       "ActionListener::OnHit - aggressor and targetRef are in different cells "
       "or world. Aggressor: {:x}, targetRef: {:x}, cellOrWorld of aggressor: "

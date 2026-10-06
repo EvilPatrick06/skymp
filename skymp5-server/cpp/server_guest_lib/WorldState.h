@@ -256,13 +256,20 @@ public:
   // Only for tests
   auto& GetGrids() { return grids; }
 
+  // The clock every timer of this world runs on, reloot timers included
+  // (Viet::Timer::SetClock). The system clock unless a test sets one it moves
+  // itself; an empty clock puts the system clock back (Thornswood #2000).
+  void SetTimerClock(Viet::Timer::Clock clock);
+
   void SetNpcSettings(
     std::unordered_map<std::string, NpcSettingsEntry>&& settings);
   void SetForbiddenRelootTypes(const std::set<std::string>& types);
   void SetEnableConsoleCommandsForAllSetting(bool enable);
 
 public:
-  std::vector<std::string> espmFiles;
+  // The loaded plugins in load order, full and light, each with the slot the
+  // game gives it. Converts ids and descriptors (FormDesc).
+  espm::LoadOrder espmFiles;
   std::unordered_map<int32_t, std::set<uint32_t>> actorIdByProfileId;
   std::unordered_map<std::string, std::set<uint32_t>>
     actorIdByPrivateIndexedProperty;
@@ -273,6 +280,9 @@ public:
     activationChildsByActivationParent;
   std::vector<std::optional<std::chrono::system_clock::time_point>>
     lastMovUpdateByIdx;
+
+  // THORNSWOOD. The last number given by MpActor::NumberTeleportForOwnClient.
+  uint32_t lastTeleportSeq = 0;
 
   bool isPapyrusHotReloadEnabled = false;
 
@@ -356,7 +366,10 @@ private:
   void TickTimers(const std::chrono::system_clock::time_point& now);
   [[nodiscard]] bool NpcSourceFilesOverriden() const noexcept;
   [[nodiscard]] bool IsNpcAllowed(uint32_t refrId) const noexcept;
-  [[nodiscard]] uint32_t GetFileIdx(uint32_t formId) const noexcept;
+  // Place in espmFiles of the plugin that owns formId, or nothing when no
+  // loaded plugin does.
+  [[nodiscard]] std::optional<size_t> GetFileIdx(
+    uint32_t formId) const noexcept;
   [[nodiscard]] bool IsRelootForbidden(std::string type) const noexcept;
 
 private:

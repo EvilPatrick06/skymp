@@ -22,6 +22,7 @@ struct TimerEntry
 struct Timer::Impl
 {
   std::deque<TimerEntry> timers;
+  Clock clock;
   const std::unique_ptr<MakeID> idGenerator =
     std::make_unique<MakeID>(std::numeric_limits<uint32_t>::max());
 
@@ -38,9 +39,19 @@ Timer::Timer()
   pImpl = std::make_shared<Impl>();
 }
 
+void Timer::SetClock(Clock clock)
+{
+  pImpl->clock = std::move(clock);
+}
+
+std::chrono::system_clock::time_point Timer::Now() const
+{
+  return pImpl->clock ? pImpl->clock() : std::chrono::system_clock::now();
+}
+
 void Timer::TickTimers()
 {
-  auto now = std::chrono::system_clock::now();
+  auto now = Now();
 
   auto& timers = pImpl->timers;
   while (!timers.empty() && now >= timers.front().finish) {

@@ -11,9 +11,31 @@ interface ManifestModEntry {
 
 interface Manifest {
   versionMajor: number;
+  // Full plugins in load order, each followed by its archive when dataDir has
+  // one. The client compares this with Game.getModName.
   mods: Array<ManifestModEntry>;
+  // Light plugins in light index order, compared with Game.getLightModName,
+  // plugins only. The game numbers light plugins apart from full ones
+  // (Thornswood #1715), so they are a list of their own: in mods every light
+  // plugin would shift the full plugins after it.
+  light: Array<ManifestModEntry>;
   loadOrder: Array<string>;
 }
+
+// The game's rule for what is light, the same one the server applies when it
+// loads the plugins (espm::IsLightPlugin in libespm/LoadOrder.h): the ESL
+// flag, 0x200, in the TES4 record header, or an .esl extension. The header's
+// flags are the four bytes after the record type and size.
+export const isLightPlugin = (fileName: string, content: Uint8Array): boolean => {
+  if (/\.esl$/i.test(fileName)) {
+    return true;
+  }
+  if (content.length < 12 || String.fromCharCode(...content.subarray(0, 4)) !== "TES4") {
+    return false;
+  }
+  const flags = content[8] | (content[9] << 8) | (content[10] << 16) | (content[11] << 24);
+  return (flags & 0x200) !== 0;
+};
 
 // An .esl is a plugin like any other and can ship its own .bsa. Returning null
 // for anything else keeps a stray filename from taking the whole server down
@@ -28,6 +50,7 @@ const getBsaNameByEspmName = (espmName: string): string | null => {
 export const generateManifest = (settings: Settings): void => {
   const manifest: Manifest = {
     mods: [],
+    light: [],
     versionMajor: 1,
     loadOrder: settings.loadOrder.map(x => path.basename(x)),
   };
@@ -47,11 +70,19 @@ export const generateManifest = (settings: Settings): void => {
     }
 
     const buf: Uint8Array = fs.readFileSync(espmPath);
-    manifest.mods.push({
+    const entry = {
       crc32: crc32.buf(buf),
       filename: espmName,
       size: buf.length,
-    });
+    };
+    if (isLightPlugin(espmName, buf)) {
+      // The client compares this list position by position with
+      // Game.getLightModName, which names plugins only, so a light plugin's
+      // archive is not listed after it the way a full plugin's is in mods.
+      manifest.light.push(entry);
+      return;
+    }
+    manifest.mods.push(entry);
 
     const bsaName = getBsaNameByEspmName(espmName);
     if (!bsaName) {
