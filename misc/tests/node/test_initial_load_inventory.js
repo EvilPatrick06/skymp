@@ -1,7 +1,7 @@
 "use strict";
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
-const ts=require('../../skymp5-client/node_modules/typescript');
-const source=fs.readFileSync(path.join(__dirname,'../../skymp5-client/src/services/services/loadGameService.ts'),'utf8');
+const ts=require('../../../skymp5-client/node_modules/typescript');
+const source=fs.readFileSync(path.join(__dirname,'../../../skymp5-client/src/services/services/loadGameService.ts'),'utf8');
 const inv={entries:[{baseId:114202,count:1,worn:true},{baseId:114203,count:1,worn:true},{baseId:15,count:40}]};
 for(const fallback of [false,true]) {
  const calls=[], sp={loadGame(...args){calls.push(args);if(fallback && calls.length===1) throw Error('headpart failed');}}, controller={on(){}};
