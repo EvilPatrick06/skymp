@@ -60,7 +60,7 @@ export interface InitialInventory {
 
 export declare function getExteriorCellCoordinates(cellId: number): number[] | undefined;
 
-export declare function loadGame(pos: number[], angle: number[], worldOrCell: number, changeFormNpc?: ChangeFormNpc, loadOrder?: string[], time?: { seconds: number, minutes: number, hours: number }, inventory?: InitialInventory): void
+export declare function loadGame(pos: number[], angle: number[], worldOrCell: number, changeFormNpc?: ChangeFormNpc, loadOrder?: string[], time?: { seconds: number, minutes: number, hours: number }, inventory?: InitialInventory, lightLoadOrder?: string[]): void
 
 export declare function worldPointToScreenPoint(...args: number[][]): number[][]
 
