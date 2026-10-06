@@ -35,7 +35,8 @@ TEST_CASE("DestroyForm failures", "[WorldState]")
 TEST_CASE("Load ChangeForm of created Actor", "[WorldState]")
 {
   WorldState worldState;
-  worldState.espmFiles = { "Morrowind.esm", "Tribunal.esm" };
+  worldState.espmFiles =
+    espm::LoadOrder::FullPlugins({ "Morrowind.esm", "Tribunal.esm" });
 
   MpChangeForm changeForm;
   changeForm.recType = MpChangeForm::ACHR;
@@ -57,7 +58,8 @@ TEST_CASE("Load ChangeForm of created Actor with isDisabled=true",
           "[WorldState]")
 {
   WorldState worldState;
-  worldState.espmFiles = { "Morrowind.esm", "Tribunal.esm" };
+  worldState.espmFiles =
+    espm::LoadOrder::FullPlugins({ "Morrowind.esm", "Tribunal.esm" });
 
   MpChangeForm changeForm;
   changeForm.recType = MpChangeForm::ACHR;
@@ -77,7 +79,8 @@ TEST_CASE("Load ChangeForm of created Actor with isDisabled=true",
 TEST_CASE("Load ChangeForm of created Actor with profileId", "[WorldState]")
 {
   WorldState worldState;
-  worldState.espmFiles = { "Morrowind.esm", "Tribunal.esm" };
+  worldState.espmFiles =
+    espm::LoadOrder::FullPlugins({ "Morrowind.esm", "Tribunal.esm" });
 
   MpChangeForm changeForm;
   changeForm.recType = MpChangeForm::ACHR;
@@ -97,7 +100,7 @@ TEST_CASE("Load ChangeForm of created Actor with profileId", "[WorldState]")
 TEST_CASE("Load ChangeForm of modified object", "[WorldState]")
 {
   WorldState worldState;
-  worldState.espmFiles = { "Skyrim.esm" };
+  worldState.espmFiles = espm::LoadOrder::FullPlugins({ "Skyrim.esm" });
 
   MpChangeForm changeForm;
   changeForm.formDesc = { 0xeeee, "Skyrim.esm" };
@@ -124,7 +127,7 @@ TEST_CASE("Load ChangeForm of modified object with changed baseType",
           "[WorldState]")
 {
   WorldState worldState;
-  worldState.espmFiles = { "Skyrim.esm" };
+  worldState.espmFiles = espm::LoadOrder::FullPlugins({ "Skyrim.esm" });
   auto newRefr = new MpObjectReference(
     LocationalData(), FormCallbacks::DoNothing(), 0x0000ded0, "STAT");
   worldState.AddForm(std::unique_ptr<MpObjectReference>(newRefr), 0xeeee);
@@ -155,7 +158,7 @@ TEST_CASE("Loads VirtualMachine with all scripts", "[WorldState]")
 TEST_CASE("HasEspmFile is working correctly", "[WorldState]")
 {
   WorldState worldState;
-  worldState.espmFiles = { "file1", "file2" };
+  worldState.espmFiles = espm::LoadOrder::FullPlugins({ "file1", "file2" });
   REQUIRE(worldState.HasEspmFile("file1"));
   REQUIRE(worldState.HasEspmFile("file2"));
   REQUIRE_FALSE(worldState.HasEspmFile("BlowSkyrimModIndustry.exe"));

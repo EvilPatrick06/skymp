@@ -1,5 +1,6 @@
 #include "FormDesc.h"
 #include <cstdio>
+#include <stdexcept>
 
 std::string FormDesc::ToString(char delimiter) const
 {
@@ -43,7 +44,16 @@ FormDesc FormDesc::FromString(const std::string& str, char delimiter)
   return res;
 }
 
-uint32_t FormDesc::ToFormId(const std::vector<std::string>& files) const
+namespace {
+std::string Hex(uint32_t value)
+{
+  char buffer[16];
+  std::snprintf(buffer, sizeof(buffer), "%x", value);
+  return buffer;
+}
+}
+
+uint32_t FormDesc::ToFormId(const espm::LoadOrder& loadOrder) const
 {
   // Workaround legacy tests throwing exceptions (drop support for PartOne
   // instances without espm to remove this)
@@ -52,29 +62,32 @@ uint32_t FormDesc::ToFormId(const std::vector<std::string>& files) const
     return 0x3c;
   }
 
-  uint32_t realFormId;
   if (file.empty()) {
-    realFormId = 0xff000000 + shortFormId;
-  } else {
-    int fileIdx = -1;
-    int numFiles = static_cast<int>(files.size());
-    for (int i = 0; i < numFiles; ++i) {
-      if (files[i] == file) {
-        fileIdx = i;
-        break;
-      }
-    }
-    if (fileIdx == -1) {
-      throw std::runtime_error(file + " not found in loaded files");
-    }
-
-    realFormId = fileIdx * 0x01000000 + shortFormId;
+    return 0xff000000 + shortFormId;
   }
-  return realFormId;
+
+  const auto fileIdx = loadOrder.FindByFileName(file);
+  if (!fileIdx) {
+    throw std::runtime_error(file + " not found in loaded files");
+  }
+
+  // Thornswood #1715. A light plugin's form is not fileIdx << 24: the game
+  // gives it 0xFE000000 | (lightIndex << 12) | id, and the id has 12 bits.
+  // An id wider than its plugin allows names no form of that plugin (it used
+  // to run on into the next plugin's ids), so it is refused rather than cut
+  // down into some other form.
+  const auto slot = loadOrder.GetSlot(*fileIdx);
+  if ((shortFormId & ~slot.LocalIdMask()) != 0) {
+    throw std::runtime_error(
+      ToString() + " names no form: " + file + " is a " +
+      (slot.light ? "light" : "full") + " plugin, whose form ids go up to " +
+      Hex(slot.LocalIdMask()));
+  }
+  return slot.ToId(shortFormId);
 }
 
 FormDesc FormDesc::FromFormId(uint32_t formId,
-                              const std::vector<std::string>& files)
+                              const espm::LoadOrder& loadOrder)
 {
   // Workaround legacy tests throwing exceptions (drop support for PartOne
   // instances without espm to remove this)
@@ -83,17 +96,26 @@ FormDesc FormDesc::FromFormId(uint32_t formId,
   }
 
   FormDesc res;
-  if (formId < 0xff000000) {
-    int fileIdx = formId / 0x01000000;
-    if (fileIdx >= static_cast<int>(files.size())) {
-      throw std::runtime_error("FromFormId failed due to invalid file index " +
-                               std::to_string(fileIdx));
-    }
-    res.file = files[fileIdx];
-    res.shortFormId = formId % 0x01000000;
-  } else {
+  if (formId >= 0xff000000) {
     res.shortFormId = formId - 0xff000000;
+    return res;
   }
+
+  // Thornswood #1715. formId >> 24 is a plugin's place in the load order only
+  // while every plugin is full. Every light plugin's form has 0xFE there, so
+  // every one of them came back as "invalid file index 254", among them the
+  // two beard head parts WWG Ghost's character wore on 5 Oct, 0xFE029827 and
+  // 0xFE029838 from KhisartinBeards.esp.
+  const auto fileIdx = loadOrder.FindByFormId(formId);
+  if (!fileIdx) {
+    const auto slot = espm::PluginSlot::Of(formId);
+    throw std::runtime_error("FromFormId failed due to invalid file index " +
+                             std::string(slot->light ? "light " : "") +
+                             std::to_string(slot->index) + " (" +
+                             Hex(formId) + ")");
+  }
+  res.file = loadOrder[*fileIdx];
+  res.shortFormId = formId & loadOrder.GetSlot(*fileIdx).LocalIdMask();
   return res;
 }
 
