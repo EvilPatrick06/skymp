@@ -126,6 +126,11 @@ export class SendInputsService extends ClientListener {
                 data: getMovement(owner, form),
                 _refrId
             };
+            if (_refrId === undefined) {
+                // THORNSWOOD. Tells the server which of its teleports this
+                // packet was sent after (ActionListener::OnUpdateMovement).
+                message.data.teleportSeq = this.controller.lookupListener(RemoteServer).getCarriedOutTeleportSeq();
+            }
             this.controller.emitter.emit("sendMessageWithRefrId", {
                 message,
                 reliability: "unreliable"
