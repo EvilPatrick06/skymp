@@ -1607,6 +1607,7 @@ void MpObjectReference::ProcessActivateNormal(
       msg.worldOrCell = teleportWorldOrCell;
 
       if (actorActivator) {
+        msg.teleportSeq = actorActivator->NumberTeleportForOwnClient();
         actorActivator->GetActorToSendTo().SendToUser(msg, true);
       }
 

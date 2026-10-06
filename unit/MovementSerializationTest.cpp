@@ -28,10 +28,12 @@ UpdateMovementMessage MakeTestMovementMessage(std::string runMode,
   result.data.isWeapDrawn = true;
   result.data.isDead = false;
   result.data.lookAt = { { 1, 2, 3 } };
+  result.data.teleportSeq = 233;
 
   result.data.runMode = runMode;
   if (!hasLookAt) {
     result.data.lookAt = std::nullopt;
+    result.data.teleportSeq = std::nullopt;
   }
   return result;
 }

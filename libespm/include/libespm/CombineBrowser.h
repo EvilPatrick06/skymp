@@ -2,6 +2,7 @@
 #include "CellOrGridPos.h"
 #include "GroupStack.h"
 #include "IdMapping.h"
+#include "LoadOrder.h"
 #include "LookupResult.h"
 
 namespace espm {
@@ -34,7 +35,10 @@ public:
 
   // Returns nullptr on failure
   const IdMapping* GetCombMapping(size_t fileIndex) const noexcept;
-  const IdMapping* GetRawMapping(size_t fileIndex) const noexcept;
+  const RawIdMapping* GetRawMapping(size_t fileIndex) const noexcept;
+
+  // Every source in the order it was added, with the slot the game gives it
+  const LoadOrder& GetLoadOrder() const noexcept;
 
   // CompressedFieldsCache is not logically related to Combiner, this method is
   // added for usability
@@ -49,15 +53,18 @@ private:
   {
     Browser* br = nullptr;
     std::string fileName;
-    std::unique_ptr<espm::IdMapping> toComb, toRaw;
+    std::unique_ptr<espm::IdMapping> toComb;
+    std::unique_ptr<espm::RawIdMapping> toRaw;
   };
 
   struct Impl
   {
     CompressedFieldsCache cache;
 
-    std::array<Source, 256> sources;
-    size_t numSources = 0;
+    // Up to 254 full and 4096 light plugins, the game's own limits, which
+    // Combiner::Combine enforces. A fixed 256 used to cap the two together.
+    std::vector<Source> sources;
+    LoadOrder loadOrder;
     int32_t GetFileIndex(const char* fileName) const noexcept;
   };
   std::shared_ptr<Impl> pImpl;

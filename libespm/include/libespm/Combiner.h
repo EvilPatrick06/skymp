@@ -31,7 +31,7 @@ public:
       : logic_error(str) {};
   };
 
-  void AddSource(Browser* src, const char* fileName) noexcept;
+  void AddSource(Browser* src, const char* fileName);
 
   // Throws CombineError
   std::unique_ptr<CombineBrowser> Combine();

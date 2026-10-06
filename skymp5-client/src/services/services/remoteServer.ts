@@ -66,6 +66,8 @@ import { SpellCastMessage } from '../messages/spellCastMessage';
 import { UpdateAnimVariablesMessage } from '../messages/updateAnimVariablesMessage';
 import { MsgType } from '../../messages';
 
+const carriedOutTeleportSeqKey = 'thornswoodCarriedOutTeleportSeq';
+
 export const getPcInventory = (): Inventory | undefined => {
   const res = storage['pcInv'];
   if (typeof res === 'object' && (res as any)['entries']) {
@@ -336,18 +338,46 @@ export class RemoteServer extends ClientListener {
 
       const refrId = refr?.getFormID();
 
+      // THORNSWOOD #1932. One move per reference at a time, to the newest
+      // destination. Each message used to start its own ragdoll removal (a
+      // latent Papyrus call, six game setting writes before it and six
+      // after) and, when that returned, its own MoveTo of the reference. On
+      // dev on 5 Oct 2026 skyrim-platform.log has 233 teleports of the own
+      // character to one spot from 11:51:20.001 to 20.535, so 233 removals
+      // and 233 moves were queued, and the game stopped responding at
+      // 20.890. A move to an older destination is overwritten by the next
+      // one, so a message that arrives while a move of the same reference is
+      // on its way only replaces where that move goes.
+      const key = refrId || 0;
+      const onItsWay = this.teleportsOnTheirWay.has(key);
+      this.teleportsOnTheirWay.set(key, { msg, isMyCharacter: id === this.getMyActorIndex() });
+      if (onItsWay) {
+        return;
+      }
+
       const removeRagdollCallback = () => {
+        const newest = this.teleportsOnTheirWay.get(key);
+        this.teleportsOnTheirWay.delete(key);
+        if (!newest) {
+          return; // the connection changed meanwhile, see handleConnectionAccepted
+        }
+        const m = newest.msg;
         TESModPlatform.moveRefrToPosition(
           ObjectReference.from(Game.getFormEx(refrId || 0)),
-          Cell.from(Game.getFormEx(msg.worldOrCell)),
-          WorldSpace.from(Game.getFormEx(msg.worldOrCell)),
-          msg.pos[0],
-          msg.pos[1],
-          msg.pos[2],
-          msg.rot[0],
-          msg.rot[1],
-          msg.rot[2],
+          Cell.from(Game.getFormEx(m.worldOrCell)),
+          WorldSpace.from(Game.getFormEx(m.worldOrCell)),
+          m.pos[0],
+          m.pos[1],
+          m.pos[2],
+          m.rot[0],
+          m.rot[1],
+          m.rot[2],
         );
+        // The server ignores movement until it sees this number echoed
+        // (SendInputsService.sendMovement, ActionListener::OnUpdateMovement).
+        if (newest.isMyCharacter && typeof m.teleportSeq === "number") {
+          storage[carriedOutTeleportSeqKey] = m.teleportSeq;
+        }
       };
       const actor = Actor.from(refr);
       if (actor /*&& actor.getFormID() === 0x14*/) {
@@ -882,6 +912,14 @@ export class RemoteServer extends ClientListener {
             for (let i = 0; i < this.sp.Game.getModCount(); ++i) {
               loadOrder.push(this.sp.Game.getModName(i));
             }
+            // THORNSWOOD PATCH. Light plugins (ESL, ESL-flagged ESP) are not in
+            // getModName's list. A face part from one, like a KhisartinBeards
+            // beard (0xFE029827), names its plugin by light index, so the save
+            // lists them too, in the game's light order.
+            let lightLoadOrder = new Array<string>();
+            for (let i = 0; i < this.sp.Game.getLightModCount(); ++i) {
+              lightLoadOrder.push(this.sp.Game.getLightModName(i));
+            }
 
             logTrace(this, `loading game in world/cell`, msg.transform.worldOrCell.toString(16));
             const loadGameService = this.controller.lookupListener(LoadGameService);
@@ -910,7 +948,8 @@ export class RemoteServer extends ClientListener {
                 : undefined,
               loadOrder,
               { minutes: 0, seconds: 0, hours: this.controller.lookupListener(TimeService).getTime().newGameHourValue },
-              initialInventory
+              initialInventory,
+              lightLoadOrder
             );
             initialInventoryLoaded = !!initialInventory;
             once('update', () => { void settleOwner(); });
@@ -1115,6 +1154,10 @@ export class RemoteServer extends ClientListener {
 
   private handleConnectionAccepted(): void {
     this.cancelOwnerSpawn();
+    // THORNSWOOD. A new connection starts at 0, as the server does when it
+    // attaches the character (PartOne::SetUserActor).
+    storage[carriedOutTeleportSeqKey] = 0;
+    this.teleportsOnTheirWay.clear();
     this.worldModel.forms = [];
     this.worldModel.playerCharacterFormIdx = -1;
     this.worldModel.playerCharacterRefrId = 0;
@@ -1238,6 +1281,14 @@ export class RemoteServer extends ClientListener {
     return this.worldModel.playerCharacterFormIdx;
   }
 
+  // THORNSWOOD #1932. The teleportSeq of the newest teleport of the own
+  // character this client has carried out on this connection, 0 before the
+  // first. Kept in storage like worldModel so a script reload keeps it.
+  getCarriedOutTeleportSeq(): number {
+    const value = storage[carriedOutTeleportSeqKey];
+    return typeof value === "number" ? value : 0;
+  }
+
   getMyRemoteRefrId(): number {
     return this.worldModel.playerCharacterRefrId;
   }
@@ -1359,6 +1410,7 @@ export class RemoteServer extends ClientListener {
   }
 
   private numSetInventory = 0;
+  private teleportsOnTheirWay = new Map<number, { msg: TeleportMessage | TeleportMessage2, isMyCharacter: boolean }>();
   private ownerSpawnEpoch = 0;
   private ownerSpawnReady?: Promise<boolean>;
   private finishOwnerSpawn?: (ready: boolean) => void;

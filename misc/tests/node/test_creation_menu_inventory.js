@@ -4,10 +4,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
-const ts = require('../../skymp5-client/node_modules/typescript');
-const source = fs.readFileSync(path.join(__dirname, '../../skymp5-client/src/services/services/remoteServer.ts'), 'utf8');
+const ts = require('../../../skymp5-client/node_modules/typescript');
+const source = fs.readFileSync(path.join(__dirname, '../../../skymp5-client/src/services/services/remoteServer.ts'), 'utf8');
 const js = ts.transpileModule(source, {compilerOptions: {module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2018}}).outputText;
-const invSource = fs.readFileSync(path.join(__dirname, '../../skymp5-client/src/sync/inventory.ts'), 'utf8');
+const invSource = fs.readFileSync(path.join(__dirname, '../../../skymp5-client/src/sync/inventory.ts'), 'utf8');
 const invSandbox = {exports: {}, require: () => ({Game: {getFormEx: id => ({getName: () => 'base' + id})}})};
 vm.runInNewContext(ts.transpileModule(invSource, {compilerOptions: {module: ts.ModuleKind.CommonJS}}).outputText, invSandbox);
 const diff = invSandbox.exports.getDiff;
@@ -68,14 +68,14 @@ function fixture(save = false, options = {}) {
     },
     storage: {worldModel: world}, Actor: {from: x => x}, Armor: {from: x => x}, Ammo: {from: () => null},
     Cell: {from: x => x}, WorldSpace: {from: () => null}, Weapon: {from: f => f?.id === 200 ? f : null},
-    Game: {getPlayer: () => actor, getFormEx: forms, getModCount: () => 0, showRaceMenu: () => {paused = true; opens++;}},
+    Game: {getPlayer: () => actor, getFormEx: forms, getModCount: () => 0, getLightModCount: () => 0, showRaceMenu: () => {paused = true; opens++;}},
     Ui: {isMenuOpen: name => name === 'RaceSex Menu' && paused},
     TESModPlatform: {moveRefrToPosition() {if (!firstMoveInventory) firstMoveInventory = inventory(); if (options.moveCell) { if (options.transitionDelay) { if (++moveCalls === 1) jobs.push({at: frame + options.transitionDelay, run: () => {cellId = options.moveCell;}}); } else if (options.moveDelay && ++moveCalls === 1) loadedAt = frame + options.moveDelay; else cellId = options.moveCell; }}},
     Utility: {wait: seconds => new Promise(resolve => jobs.push({at: frame + Math.max(1, Math.ceil(seconds * 10)), run: resolve}))},
     once: (event, fn) => onceHandlers[event].push(fn), on: (event, fn) => { (onHandlers[event] ||= []).push(fn); },
     printConsole() {}
   };
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../skyrim-platform/src/platform_se/skyrim_platform/assets/storageProxy.js'), 'utf8'))(sp);
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../../skyrim-platform/src/platform_se/skyrim_platform/assets/storageProxy.js'), 'utf8'))(sp);
   sp.storage.worldModel = world;
   const listeners = new Map();
   const controller = {emitter: {on: (name, fn) => listeners.set(name, fn), emit() {}}, lookupListener: () => ({

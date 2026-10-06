@@ -85,6 +85,9 @@ struct MpActor::Impl
 
   // this is a hot fix attempt to make permanent restoration potions work
   std::chrono::system_clock::time_point nextRestorationTime{};
+
+  // THORNSWOOD. See NumberTeleportForOwnClient. 0: nothing outstanding.
+  uint32_t newestTeleportSeq = 0;
 };
 
 namespace {
@@ -1278,6 +1281,9 @@ void MpActor::SendAndSetDeathState(bool isDead, bool shouldTeleport)
   if (IsServerControlled()) {
     SendServerStateToObservers(respawnMsg, true);
   } else {
+    if (respawnMsg.tTeleport) {
+      respawnMsg.tTeleport->teleportSeq = NumberTeleportForOwnClient();
+    }
     GetActorToSendTo().SendToUser(respawnMsg, true);
   }
 
@@ -1743,11 +1749,35 @@ void MpActor::Teleport(const LocationalData& position)
   std::copy(&position.pos[0], &position.pos[0] + 3, std::begin(msg.pos));
   std::copy(&position.rot[0], &position.rot[0] + 3, std::begin(msg.rot));
   msg.worldOrCell = position.cellOrWorldDesc.ToFormId(GetParent()->espmFiles);
+  msg.teleportSeq = NumberTeleportForOwnClient();
   GetActorToSendTo().SendToUser(msg, true);
 
   SetCellOrWorldObsolete(position.cellOrWorldDesc);
   SetPos(position.pos);
   SetAngle(position.rot);
+}
+
+std::optional<uint32_t> MpActor::NumberTeleportForOwnClient()
+{
+  auto worldState = GetParent();
+  if (!worldState || GetUserId() == Networking::InvalidUserId) {
+    return std::nullopt;
+  }
+  // Numbers come from the WorldState so they never repeat in one server run,
+  // even when a connection is moved from one actor to another.
+  pImpl->newestTeleportSeq = ++worldState->lastTeleportSeq;
+  return pImpl->newestTeleportSeq;
+}
+
+bool MpActor::IsSentBeforeNewestTeleport(
+  std::optional<uint32_t> carriedOut) const
+{
+  return carriedOut.has_value() && *carriedOut < pImpl->newestTeleportSeq;
+}
+
+void MpActor::ForgetTeleportsForOwnClient()
+{
+  pImpl->newestTeleportSeq = 0;
 }
 
 void MpActor::SetSpawnPoint(const LocationalData& position)
@@ -2301,7 +2331,7 @@ void MpActor::ReapplyMagicEffects()
   if (activeEffects.empty()) {
     return;
   }
-  const std::vector<std::string>& modFiles = GetParent()->espmFiles;
+  const auto& modFiles = GetParent()->espmFiles;
   const bool hasSweetpie = std::any_of(
     modFiles.begin(), modFiles.end(),
     [](std::string_view fileName) { return fileName == "SweetPie.esp"; });

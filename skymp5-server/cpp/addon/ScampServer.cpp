@@ -454,6 +454,14 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
     logger->info("Read {} plugins ({} MB) into memory in {:.1f} s",
                  pluginPaths.size(), pluginBytes / (1024 * 1024),
                  pluginSeconds);
+    // Thornswood #1715. Which of them are light is read from each file's
+    // TES4 header (ESL flag 0x200) or an .esl extension, the game's rule, so
+    // nothing in the settings says it. This line is how to see what the
+    // server made of the list.
+    logger->info(
+      "Load order: {} full plugins and {} light plugins",
+      espm->GetLoadOrder().GetNumFullPlugins(),
+      espm->GetLoadOrder().GetNumLightPlugins());
     std::string password = serverSettings.contains("password")
       ? std::string(kNetworkingPasswordPrefix) +
         static_cast<std::string>(serverSettings["password"])
@@ -1848,8 +1856,8 @@ Napi::Value ScampServer::GetDescFromId(const Napi::CallbackInfo& info)
 {
   try {
     auto formId = NapiHelper::ExtractUInt32(info[0], "formId");
-    auto espmFileNames = partOne->GetEspm().GetFileNames();
-    auto formDesc = FormDesc::FromFormId(formId, espmFileNames);
+    auto formDesc =
+      FormDesc::FromFormId(formId, partOne->GetEspm().GetLoadOrder());
 
     return Napi::String::New(info.Env(), formDesc.ToString());
   } catch (std::exception& e) {
@@ -1862,9 +1870,9 @@ Napi::Value ScampServer::GetIdFromDesc(const Napi::CallbackInfo& info)
   try {
     auto formDescStr = NapiHelper::ExtractString(info[0], "formDesc");
     auto formDesc = FormDesc::FromString(formDescStr);
-    auto espmFileNames = partOne->GetEspm().GetFileNames();
 
-    return Napi::Number::New(info.Env(), formDesc.ToFormId(espmFileNames));
+    return Napi::Number::New(
+      info.Env(), formDesc.ToFormId(partOne->GetEspm().GetLoadOrder()));
   } catch (std::exception& e) {
     throw Napi::Error::New(info.Env(), std::string(e.what()));
   }

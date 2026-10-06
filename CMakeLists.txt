@@ -291,3 +291,20 @@ foreach(TEST_SCRIPT ${INTEGRATION_TESTS})
     FIXTURES_REQUIRED unit_passed
   )
 endforeach()
+
+# Node tests from misc/tests/node (Thornswood #1970). Each is a script node runs
+# on its own: it loads the client's TypeScript, or builds engine code with a C++
+# fixture (misc/tests/node/cxx.js finds the compiler). They are not gamemodes,
+# so they live outside the folder the integration glob above takes. The client
+# ones need skymp5-client's node_modules, which configure installs when
+# BUILD_CLIENT is ON.
+file(GLOB NODE_TESTS "${CMAKE_SOURCE_DIR}/misc/tests/node/test_*.js")
+foreach(TEST_SCRIPT ${NODE_TESTS})
+  get_filename_component(TEST_NAME "${TEST_SCRIPT}" NAME_WE)
+  add_test(
+    NAME node_${TEST_NAME}
+    COMMAND node ${TEST_SCRIPT}
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  )
+  set_tests_properties(node_${TEST_NAME} PROPERTIES TIMEOUT 120)
+endforeach()

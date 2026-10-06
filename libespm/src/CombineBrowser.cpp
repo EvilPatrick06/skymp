@@ -55,8 +55,8 @@ LookupResult CombineBrowser::LookupById(uint32_t combFormId) const noexcept
   }
 
   const RecordHeader* resRec = nullptr;
-  uint8_t resFileIdx = 0;
-  for (size_t i = 0; i < pImpl->numSources; ++i) {
+  uint16_t resFileIdx = 0;
+  for (size_t i = 0; i < pImpl->sources.size(); ++i) {
     auto& src = pImpl->sources[i];
     const uint32_t rawFormId = utils::GetMappedId(combFormId, *src.toRaw);
     if (rawFormId >= 0xff000000)
@@ -64,7 +64,7 @@ LookupResult CombineBrowser::LookupById(uint32_t combFormId) const noexcept
     auto rec = src.br->LookupById(rawFormId);
     if (rec) {
       resRec = rec;
-      resFileIdx = (uint8_t)i;
+      resFileIdx = static_cast<uint16_t>(i);
     }
   }
   return resRec ? LookupResult(this, resRec, resFileIdx) : LookupResult();
@@ -74,14 +74,14 @@ std::vector<LookupResult> CombineBrowser::LookupByIdAll(
   uint32_t combFormId) const noexcept
 {
   std::vector<LookupResult> res;
-  for (size_t i = 0; i < pImpl->numSources; ++i) {
+  for (size_t i = 0; i < pImpl->sources.size(); ++i) {
     auto& src = pImpl->sources[i];
     const uint32_t rawFormId = utils::GetMappedId(combFormId, *src.toRaw);
     if (rawFormId >= 0xff000000)
       continue;
     const RecordHeader* rec = src.br->LookupById(rawFormId);
     if (rec) {
-      res.push_back({ this, rec, static_cast<uint8_t>(i) });
+      res.push_back({ this, rec, static_cast<uint16_t>(i) });
     }
   }
   return res;
@@ -90,7 +90,7 @@ std::vector<LookupResult> CombineBrowser::LookupByIdAll(
 std::pair<const RecordHeader**, size_t> CombineBrowser::FindNavMeshes(
   uint32_t worldSpaceId, CellOrGridPos cellOrGridPos) const noexcept
 {
-  for (size_t i = 0; i < pImpl->numSources; ++i) {
+  for (size_t i = 0; i < pImpl->sources.size(); ++i) {
     auto& src = pImpl->sources[i];
     const uint32_t rawFormId = utils::GetMappedId(worldSpaceId, *src.toRaw);
     if (rawFormId >= 0xff000000)
@@ -109,7 +109,7 @@ std::vector<const std::vector<const RecordHeader*>*>
 CombineBrowser::GetRecordsByType(const char* type) const
 {
   std::vector<const std::vector<const RecordHeader*>*> res;
-  for (size_t i = 0; i < pImpl->numSources; ++i) {
+  for (size_t i = 0; i < pImpl->sources.size(); ++i) {
     res.push_back(&pImpl->sources[i].br->GetRecordsByType(type));
   }
   return res;
@@ -118,13 +118,14 @@ CombineBrowser::GetRecordsByType(const char* type) const
 std::vector<LookupResult> CombineBrowser::GetDistinctRecordsByType(
   const char* type) const
 {
-  if (pImpl->numSources == 0) {
+  if (pImpl->sources.empty()) {
     return {};
   }
 
   std::unordered_set<formId> formSet;
   std::vector<LookupResult> result;
-  for (size_t i = pImpl->numSources - 1; i != static_cast<size_t>(-1); --i) {
+  for (size_t i = pImpl->sources.size() - 1; i != static_cast<size_t>(-1);
+       --i) {
     const auto& records = pImpl->sources[i].br->GetRecordsByType(type);
     formSet.reserve(records.size());
     result.reserve(records.size());
@@ -133,7 +134,8 @@ std::vector<LookupResult> CombineBrowser::GetDistinctRecordsByType(
       auto mappedId =
         utils::GetMappedId(record->GetId(), *pImpl->sources[i].toComb);
       if (formSet.insert(mappedId).second) {
-        result.push_back(LookupResult(this, record, static_cast<uint8_t>(i)));
+        result.push_back(
+          LookupResult(this, record, static_cast<uint16_t>(i)));
       }
     }
   }
@@ -146,7 +148,7 @@ CombineBrowser::GetRecordsAtPos(uint32_t cellOrWorld, int16_t cellX,
                                 int16_t cellY) const
 {
   std::vector<const std::vector<const RecordHeader*>*> res;
-  for (size_t i = 0; i < pImpl->numSources; ++i) {
+  for (size_t i = 0; i < pImpl->sources.size(); ++i) {
     res.push_back(
       &pImpl->sources[i].br->GetRecordsAtPos(cellOrWorld, cellX, cellY));
   }
@@ -156,18 +158,24 @@ CombineBrowser::GetRecordsAtPos(uint32_t cellOrWorld, int16_t cellX,
 const IdMapping* CombineBrowser::GetCombMapping(
   size_t fileIndex) const noexcept
 {
-  if (fileIndex >= pImpl->numSources) {
+  if (fileIndex >= pImpl->sources.size()) {
     return nullptr;
   }
   return pImpl->sources[fileIndex].toComb.get();
 }
 
-const IdMapping* CombineBrowser::GetRawMapping(size_t fileIndex) const noexcept
+const RawIdMapping* CombineBrowser::GetRawMapping(
+  size_t fileIndex) const noexcept
 {
-  if (fileIndex >= pImpl->numSources) {
+  if (fileIndex >= pImpl->sources.size()) {
     return nullptr;
   }
   return pImpl->sources[fileIndex].toRaw.get();
+}
+
+const LoadOrder& CombineBrowser::GetLoadOrder() const noexcept
+{
+  return pImpl->loadOrder;
 }
 
 CompressedFieldsCache& CombineBrowser::GetCache() const noexcept
@@ -178,7 +186,7 @@ CompressedFieldsCache& CombineBrowser::GetCache() const noexcept
 const GroupStack& CombineBrowser::GetParentGroupsEnsured(
   const RecordHeader* rec) const
 {
-  for (size_t i = 0; i < pImpl->numSources; ++i) {
+  for (size_t i = 0; i < pImpl->sources.size(); ++i) {
     const auto result = pImpl->sources[i].br->GetParentGroupsOptional(rec);
     if (result) {
       return *result;
@@ -191,7 +199,7 @@ const GroupStack& CombineBrowser::GetParentGroupsEnsured(
 const std::vector<const void*>& CombineBrowser::GetSubsEnsured(
   const GroupHeader* group) const
 {
-  for (size_t i = 0; i < pImpl->numSources; ++i) {
+  for (size_t i = 0; i < pImpl->sources.size(); ++i) {
     const auto result = pImpl->sources[i].br->GetSubsOptional(group);
     if (result) {
       return *result;
