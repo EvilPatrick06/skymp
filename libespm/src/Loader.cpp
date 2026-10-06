@@ -53,6 +53,11 @@ const CombineBrowser& Loader::GetBrowser() const noexcept
   return *combineBrowser;
 }
 
+const LoadOrder& Loader::GetLoadOrder() const noexcept
+{
+  return combineBrowser->GetLoadOrder();
+}
+
 std::vector<std::string> Loader::GetFileNames() const noexcept
 {
   std::vector<std::string> res;
