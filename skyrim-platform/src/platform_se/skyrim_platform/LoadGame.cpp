@@ -286,18 +286,43 @@ void LoadGame::ModifyEssStructure(std::shared_ptr<SaveFile_::SaveFile> save,
   if (player == save->changeForms.end()) {
     throw std::runtime_error("Unable to find Player's change form");
   }
-  bool isCompressed = player->length2 > 0;
-  if (!isCompressed) {
-    throw std::runtime_error("Player's ChangeForm must be compressed");
-  }
-
-  auto uncompressed = Decompress(*player);
+  auto data = ReadChangeFormData(*player);
   if (inventory) {
-    uncompressed = InitialInventory::Replace(uncompressed, player->changeFlags, *inventory);
+    data = InitialInventory::Replace(data, player->changeFlags, *inventory);
   }
-  EditChangeForm(uncompressed, pos, angle, worldRefId);
-  auto compressed = Compress(uncompressed);
-  WriteChangeForm(save, *player, compressed, uncompressed.size());
+  EditChangeForm(data, pos, angle, worldRefId);
+  RewriteChangeFormData(save, *player, data);
+}
+
+// A change form's data is zlib-compressed when length2, its uncompressed
+// length, is above 0, and stored as it is when length2 is 0 (FallrimTools
+// ReSaver, ChangeForm.java: ISCOMPRESSED = length2 > 0). The game writes the
+// player's change form both ways: the Legendary Edition template holds it
+// compressed, and a new game SkyrimSE 1.6.1170 saved on 5 Oct 2026 holds it
+// plain. LoadGame used to refuse a plain one, so no save the game writes
+// today could become the template (Thornswood #1715).
+std::vector<uint8_t> LoadGame::ReadChangeFormData(
+  const SaveFile_::ChangeForm& changeForm)
+{
+  if (changeForm.length2 > 0) {
+    return Decompress(changeForm);
+  }
+  if (changeForm.data.size() != changeForm.length1) {
+    throw std::runtime_error("Change form data does not match its length");
+  }
+  return changeForm.data;
+}
+
+// Written back the way it was stored, as ReSaver's ChangeForm.setBody does.
+void LoadGame::RewriteChangeFormData(std::shared_ptr<SaveFile_::SaveFile> save,
+                                     SaveFile_::ChangeForm& changeForm,
+                                     const std::vector<uint8_t>& data)
+{
+  if (changeForm.length2 > 0) {
+    WriteChangeForm(save, changeForm, Compress(data), data.size());
+  } else {
+    WriteChangeForm(save, changeForm, data, 0);
+  }
 }
 
 SaveFile_::PlayerLocation* LoadGame::FindSectionWithPlayerLocation(

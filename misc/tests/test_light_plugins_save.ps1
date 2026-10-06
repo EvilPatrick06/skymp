@@ -9,7 +9,9 @@
 #   test_light_face_refs  Aemon Stark's face, KhisartinBeards beard included,
 #                         is named through the save's light plugin list
 #   test_menu_template    the template is a Special Edition save at form
-#                         version 78 that LoadGame can build on
+#                         version 78 that LoadGame can build on, and LoadGame
+#                         edits its player change form stored compressed or
+#                         plain
 #
 #   -Source  the checkout whose savefile and LoadGame code is under test (this
 #            one by default). The tests build against the code before the
@@ -69,6 +71,19 @@ try {
     Get-Definition $loadGame ($loadGame.LastIndexOf("`n", $start - 1) + 1)
   }
   [IO.File]::WriteAllText((Join-Path $scratch 'LightFaceSaveFunctionsUnderTest.inc'), ($parts -join "`n"))
+  # The player change form editing in LoadGame.cpp. A function the checkout
+  # under test does not have is left out (before Thornswood #1715 it had no
+  # ReadChangeFormData or RewriteChangeFormData).
+  $parts = foreach ($name in 'FindSectionWithPlayerLocation', 'CreatePlayerLocation', 'Decompress', 'ReadChangeFormData',
+                             'RewriteChangeFormData', 'EditChangeForm', 'Compress', 'WriteChangeForm', 'ModifyEssStructure') {
+    $start = $loadGame.IndexOf('LoadGame::' + $name + '(')
+    if ($start -lt 0) { continue }
+    $lineStart = $loadGame.LastIndexOf("`n", $start - 1) + 1
+    # A return type on a line of its own above the name
+    if ($loadGame.Substring($lineStart, $start - $lineStart).Trim() -eq '') { $lineStart = $loadGame.LastIndexOf("`n", $lineStart - 2) + 1 }
+    Get-Definition $loadGame $lineStart
+  }
+  [IO.File]::WriteAllText((Join-Path $scratch 'PlayerFormFunctionsUnderTest.inc'), ($parts -join "`n"))
 
   # savefile from the checkout under test, not a prebuilt library.
   $savefile = @('SFReader', 'SFWriter', 'SFStructure', 'SFSeekerOfDifferences', 'SFChangeFormNPC', 'SFChangeFormACHR') |
@@ -77,7 +92,7 @@ try {
   try {
     foreach ($test in 'test_save_format', 'test_menu_save_names', 'test_light_face_refs', 'test_menu_template') {
       $out = & cl.exe /nologo /EHsc /std:c++17 /MT /utf-8 ('/I' + $scratch) ('/I' + $include) ('/I' + (Join-Path $Source 'savefile\include')) `
-        ('/I' + $tests) (Join-Path $tests ($test + '.cpp')) @savefile $zlib ('/Fe:' + $test + '.exe') 2>&1
+        ('/I' + $tests) ('/I' + $platform) (Join-Path $tests ($test + '.cpp')) @savefile $zlib ('/Fe:' + $test + '.exe') 2>&1
       if ($LASTEXITCODE) {
         Write-Output "== $test does not build here:"
         $out | Where-Object { $_ -match 'error' } | Select-Object -First 5 | Write-Output

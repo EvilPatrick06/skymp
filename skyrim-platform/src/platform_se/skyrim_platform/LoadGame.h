@@ -75,6 +75,14 @@ private:
   static std::vector<uint8_t> Decompress(
     const SaveFile_::ChangeForm& changeForm);
 
+  // A change form's data whether it is stored compressed or not, and the
+  // same data written back stored the same way.
+  static std::vector<uint8_t> ReadChangeFormData(
+    const SaveFile_::ChangeForm& changeForm);
+  static void RewriteChangeFormData(std::shared_ptr<SaveFile_::SaveFile> save,
+                                    SaveFile_::ChangeForm& changeForm,
+                                    const std::vector<uint8_t>& data);
+
   static void EditChangeForm(std::vector<uint8_t>& data,
                              const std::array<float, 3>& pos,
                              const std::array<float, 3>& angle,
