@@ -912,6 +912,14 @@ export class RemoteServer extends ClientListener {
             for (let i = 0; i < this.sp.Game.getModCount(); ++i) {
               loadOrder.push(this.sp.Game.getModName(i));
             }
+            // THORNSWOOD PATCH. Light plugins (ESL, ESL-flagged ESP) are not in
+            // getModName's list. A face part from one, like a KhisartinBeards
+            // beard (0xFE029827), names its plugin by light index, so the save
+            // lists them too, in the game's light order.
+            let lightLoadOrder = new Array<string>();
+            for (let i = 0; i < this.sp.Game.getLightModCount(); ++i) {
+              lightLoadOrder.push(this.sp.Game.getLightModName(i));
+            }
 
             logTrace(this, `loading game in world/cell`, msg.transform.worldOrCell.toString(16));
             const loadGameService = this.controller.lookupListener(LoadGameService);
@@ -940,7 +948,8 @@ export class RemoteServer extends ClientListener {
                 : undefined,
               loadOrder,
               { minutes: 0, seconds: 0, hours: this.controller.lookupListener(TimeService).getTime().newGameHourValue },
-              initialInventory
+              initialInventory,
+              lightLoadOrder
             );
             initialInventoryLoaded = !!initialInventory;
             once('update', () => { void settleOwner(); });

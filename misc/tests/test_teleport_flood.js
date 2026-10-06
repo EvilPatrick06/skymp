@@ -14,13 +14,13 @@ const fs = require('node:fs'), path = require('node:path'), os = require('node:o
 
 const root = path.join(__dirname, '../..');
 const rev = process.argv[2];
-const read = (name) => {
-  const rel = `skymp5-server/cpp/server_guest_lib/${name}`;
+const readFile = (rel) => {
   const text = rev
     ? cp.execFileSync('git', ['-C', root, 'show', `${rev}:${rel}`], { maxBuffer: 1 << 26 }).toString('utf8')
     : fs.readFileSync(path.join(root, rel), 'utf8');
   return text.replace(/\r\n/g, '\n');
 };
+const read = (name) => readFile(`skymp5-server/cpp/server_guest_lib/${name}`);
 
 // From the start of the line holding `signature` to the brace closing the
 // first block after it.
@@ -82,17 +82,33 @@ try {
   if (doorStart < 0 || doorEnd < 0) throw new Error('door teleport block not found in MpObjectReference.cpp');
   fs.writeFileSync(path.join(work, 'DoorTeleportUnderTest.inc'), refr.slice(doorStart, doorEnd + doorEndMark.length));
 
-  fs.writeFileSync(path.join(work, 'TeleportNumbering.h'),
-    `#define TELEPORT_NUMBERING_IN_SOURCE ${numbered ? 1 : 0}\n`);
-  console.log(`server code from ${root}${rev ? ' at ' + rev : ''} (teleport numbering ${numbered ? 'present' : 'absent'})`);
+  // The headers and sources the replay compiles with, from the same
+  // revision. Since Thornswood #1715 the load order is an espm::LoadOrder
+  // (libespm/LoadOrder.h), not a list of file names.
+  const sources = [path.join(__dirname, 'test_teleport_flood.cpp')];
+  for (const name of ['FormDesc.h', 'FormDesc.cpp', 'LocationalData.h', 'NiPoint3.h']) {
+    fs.writeFileSync(path.join(work, name), read(name));
+  }
+  sources.push(path.join(work, 'FormDesc.cpp'));
+  const loadOrder = /libespm\/LoadOrder\.h/.test(read('FormDesc.h'));
+  if (loadOrder) {
+    fs.mkdirSync(path.join(work, 'libespm'));
+    fs.writeFileSync(path.join(work, 'libespm', 'LoadOrder.h'), readFile('libespm/include/libespm/LoadOrder.h'));
+    fs.writeFileSync(path.join(work, 'LoadOrder.cpp'), readFile('libespm/src/LoadOrder.cpp'));
+    sources.push(path.join(work, 'LoadOrder.cpp'));
+  }
 
-  const lib = path.join(root, 'skymp5-server/cpp/server_guest_lib');
-  const sources = [path.join(__dirname, 'test_teleport_flood.cpp'), path.join(lib, 'FormDesc.cpp')];
+  fs.writeFileSync(path.join(work, 'TeleportNumbering.h'),
+    `#define TELEPORT_NUMBERING_IN_SOURCE ${numbered ? 1 : 0}\n` +
+    `#define ESPM_LOAD_ORDER_IN_SOURCE ${loadOrder ? 1 : 0}\n`);
+  console.log(`server code from ${root}${rev ? ' at ' + rev : ''} (teleport numbering ${numbered ? 'present' : 'absent'}, ` +
+    `load order ${loadOrder ? 'espm::LoadOrder' : 'a list of file names'})`);
+
   const exe = path.join(work, process.platform === 'win32' ? 'flood.exe' : 'flood');
   const compiler = process.env.CXX || (process.platform === 'win32' ? 'cl.exe' : 'c++');
   const args = process.platform === 'win32'
-    ? ['/nologo', '/EHsc', '/std:c++17', '/I' + work, '/I' + lib, '/Fe:' + exe, '/Fo:' + work + path.sep].concat(sources)
-    : ['-std=c++17', '-I' + work, '-I' + lib].concat(sources, ['-o', exe]);
+    ? ['/nologo', '/EHsc', '/std:c++17', '/I' + work, '/Fe:' + exe, '/Fo:' + work + path.sep].concat(sources)
+    : ['-std=c++17', '-I' + work].concat(sources, ['-o', exe]);
   const build = cp.spawnSync(compiler, args, { encoding: 'utf8', cwd: work });
   if (build.error) throw build.error;
   if (build.status !== 0) {

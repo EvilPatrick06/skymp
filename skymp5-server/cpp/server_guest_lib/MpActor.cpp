@@ -2331,7 +2331,7 @@ void MpActor::ReapplyMagicEffects()
   if (activeEffects.empty()) {
     return;
   }
-  const std::vector<std::string>& modFiles = GetParent()->espmFiles;
+  const auto& modFiles = GetParent()->espmFiles;
   const bool hasSweetpie = std::any_of(
     modFiles.begin(), modFiles.end(),
     [](std::string_view fileName) { return fileName == "SweetPie.esp"; });

@@ -60,8 +60,16 @@ inline void Count(std::vector<uint8_t>& out, uint32_t value) {
 }
 inline std::vector<uint8_t> Replace(const std::vector<uint8_t>& templateData,
                                     uint32_t flags, const std::vector<Item>& items) {
-  // This template uses initial type4, actor extras, inventory and animations.
-  if (flags != 0xb8000022) throw std::runtime_error("Unexpected template ACHR flags");
+  // The template's player form: moved (initial type 4), inventory, leveled
+  // inventory, animation and game only extras, and with or without the
+  // encounter zone extra (CHANGE_REFR_EXTRA_ENCOUNTER_ZONE, 0x20000000; UESP
+  // Skyrim Mod:ChangeFlags), which is one more entry of the extra list
+  // Extras() reads. Measured: the Legendary Edition template 0xB8000022, a
+  // new game SkyrimSE 1.6.1170 saved after player.additem (5 Oct 2026)
+  // 0x98000022. Any other set may lay the form out otherwise, so it stops.
+  constexpr uint32_t kEncounterZoneExtra = 0x20000000;
+  if ((flags & ~kEncounterZoneExtra) != 0x98000022)
+    throw std::runtime_error("Unexpected template ACHR flags");
   Cursor cursor(templateData);
   cursor.Skip(27 + 8); // location/rotation and two opaque actor integers.
   cursor.Extras();

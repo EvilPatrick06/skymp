@@ -29,7 +29,11 @@ TEST_CASE("Animations system processes animation events correctly",
   REQUIRE(actor.GetChangeForm().actorValues.staminaPercentage == 1.f);
 
   // Sweetpie
-  p.worldState.espmFiles.push_back("SweetPie.esp");
+  {
+    auto withSweetPie = p.worldState.espmFiles.GetFileNames();
+    withSweetPie.push_back("SweetPie.esp");
+    p.worldState.espmFiles = espm::LoadOrder::FullPlugins(withSweetPie);
+  }
   p.animationSystem.Init(&p.worldState);
 
   data.animEventName = "attackStart";

@@ -13,7 +13,7 @@ class PapyrusUtils
 public:
   static Napi::Value GetJsObjectFromPapyrusObject(
     Napi::Env env, const VarValue& value,
-    const std::vector<std::string>& espmFilenames)
+    const espm::LoadOrder& loadOrder)
   {
     auto ptr = static_cast<IGameObject*>(value);
     if (!ptr) {
@@ -24,7 +24,7 @@ public:
       auto rawId = concrete->record.rec->GetId();
       auto id = concrete->record.ToGlobalId(rawId);
 
-      auto desc = FormDesc::FromFormId(id, espmFilenames).ToString();
+      auto desc = FormDesc::FromFormId(id, loadOrder).ToString();
 
       auto result = Napi::Object::New(env);
       result.Set("type", Napi::String::New(env, "espm"));
@@ -36,7 +36,7 @@ public:
       auto formId =
         concrete->GetFormPtr() ? concrete->GetFormPtr()->GetFormId() : 0;
 
-      auto desc = FormDesc::FromFormId(formId, espmFilenames).ToString();
+      auto desc = FormDesc::FromFormId(formId, loadOrder).ToString();
 
       auto result = Napi::Object::New(env);
       result.Set("type", Napi::String::New(env, "form"));
@@ -50,18 +50,18 @@ public:
 
   static Napi::Value GetJsValueFromPapyrusValue(
     Napi::Env env, const VarValue& value,
-    const std::vector<std::string>& espmFilenames)
+    const espm::LoadOrder& loadOrder)
   {
     if (value.promise) {
       Napi::Promise::Deferred deferred = Napi::Promise::Deferred::New(env);
 
-      value.promise->Then([deferred, espmFilenames](const VarValue& v) {
+      value.promise->Then([deferred, loadOrder](const VarValue& v) {
         auto value =
-          GetJsValueFromPapyrusValue(deferred.Env(), v, espmFilenames);
+          GetJsValueFromPapyrusValue(deferred.Env(), v, loadOrder);
         deferred.Resolve(value);
       });
 
-      value.promise->Catch([deferred, espmFilenames](const char* what) {
+      value.promise->Catch([deferred, loadOrder](const char* what) {
         auto error = Napi::String::New(deferred.Env(), what);
         deferred.Reject(error);
       });
@@ -69,7 +69,7 @@ public:
     }
     switch (value.GetType()) {
       case VarValue::kType_Object:
-        return GetJsObjectFromPapyrusObject(env, value, espmFilenames);
+        return GetJsObjectFromPapyrusObject(env, value, loadOrder);
       case VarValue::kType_Identifier:
         throw std::runtime_error(
           "Unexpected convertion from Papyrus identifier");
@@ -103,7 +103,7 @@ public:
         for (uint32_t i = 0; i < n; ++i) {
           arr.Set(i,
                   GetJsValueFromPapyrusValue(env, (*value.pArray)[i],
-                                             espmFilenames));
+                                             loadOrder));
         }
         return arr;
       }
@@ -188,8 +188,8 @@ public:
           auto desc = NapiHelper::ExtractString(obj.Get("desc"), "desc");
           auto type = NapiHelper::ExtractString(obj.Get("type"), "type");
 
-          const auto espmFileNames = wst.GetEspm().GetFileNames();
-          uint32_t id = FormDesc::FromString(desc).ToFormId(espmFileNames);
+          uint32_t id =
+            FormDesc::FromString(desc).ToFormId(wst.GetEspm().GetLoadOrder());
 
           if (type == "form") {
             MpObjectReference& refr = wst.GetFormAt<MpObjectReference>(id);

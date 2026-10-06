@@ -101,7 +101,11 @@ enum class AnimationVariableBool
 
 struct WorldState
 {
+#if ESPM_LOAD_ORDER_IN_SOURCE
+  espm::LoadOrder espmFiles = espm::LoadOrder::FullPlugins({ "Skyrim.esm" });
+#else
   std::vector<std::string> espmFiles{ "Skyrim.esm" };
+#endif
   std::vector<std::optional<std::chrono::system_clock::time_point>>
     lastMovUpdateByIdx;
   uint32_t lastTeleportSeq = 0;
