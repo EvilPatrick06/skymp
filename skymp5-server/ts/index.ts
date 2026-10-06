@@ -14,6 +14,21 @@ sourceMapSupport.install({
   }
 });
 
+// Read the source map now, while the server starts, instead of at the first
+// stack trace. source-map-support turns the 10 MB map into its lookup table
+// the first time a stack is formatted, 0.5 to 1.6 s on the one thread. The
+// first stack is the failed probe for a UI dev server in ui.ts (axios formats
+// one for every failed request), and on Windows that failure comes back about
+// 1.7 s after the probe starts, just as the gamemode starts, so the whole
+// event loop stopped there on every start, gamemode timers with it
+// (Thornswood #1972). Read here it costs the same once, before any of that
+// runs, and every stack after it is formatted from the table already made.
+{
+  const started = Date.now();
+  sourceMapSupport.mapSourcePosition({ source: __filename, line: 1, column: 0 });
+  console.log(`Read the server's source map in ${Date.now() - started} ms`);
+}
+
 import * as scampNative from "./scampNative";
 import { Settings } from "./settings";
 import { System } from "./systems/system";
