@@ -69,6 +69,8 @@ struct WorldState::Impl
   bool chunkLoadingInProgress = false;
   bool formLoadingInProgress = false;
   std::vector<RelootTimeForTypesEntry> relootTimeForTypes;
+  // The clock SetTimerClock gave, for reloot timers made after it.
+  Viet::Timer::Clock timerClock;
   std::set<std::string> forbiddenRelootTypes;
   std::vector<std::unique_ptr<IPapyrusClassBase>> classes;
   // By GetAllForms' modIndex
@@ -1398,7 +1400,19 @@ void WorldState::SetRelootTime(const std::string& recordType,
   if (it != pImpl->relootTimeForTypes.end()) {
     it->time = time;
   } else {
-    pImpl->relootTimeForTypes.push_back({ recordType, time });
+    RelootTimeForTypesEntry entry{ recordType, time };
+    entry.timer.SetClock(pImpl->timerClock);
+    pImpl->relootTimeForTypes.push_back(std::move(entry));
+  }
+}
+
+void WorldState::SetTimerClock(Viet::Timer::Clock clock)
+{
+  pImpl->timerClock = clock;
+  timerEffects.SetClock(clock);
+  timerRegular.SetClock(clock);
+  for (auto& entry : pImpl->relootTimeForTypes) {
+    entry.timer.SetClock(clock);
   }
 }
 

@@ -7,12 +7,12 @@
 //
 // Usage: node test_teleport_flood.js [revision]
 // With a revision the server sources are read from git at that revision
-// instead of the working tree: the "before" run of the regression. Needs a
-// C++ compiler: cl.exe from a Visual Studio developer prompt on Windows, or
-// CXX.
+// instead of the working tree: the "before" run of the regression. The C++
+// compiler comes from ./cxx.js (CXX, a developer prompt, or Visual Studio
+// found through vswhere), so ctest can run it from a plain shell (#1970).
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os'), cp = require('node:child_process');
 
-const root = path.join(__dirname, '../..');
+const root = path.join(__dirname, '../../..');
 const rev = process.argv[2];
 const readFile = (rel) => {
   const text = rev
@@ -105,11 +105,11 @@ try {
     `load order ${loadOrder ? 'espm::LoadOrder' : 'a list of file names'})`);
 
   const exe = path.join(work, process.platform === 'win32' ? 'flood.exe' : 'flood');
-  const compiler = process.env.CXX || (process.platform === 'win32' ? 'cl.exe' : 'c++');
+  const { command: compiler, env } = require('./cxx').compiler();
   const args = process.platform === 'win32'
     ? ['/nologo', '/EHsc', '/std:c++17', '/I' + work, '/Fe:' + exe, '/Fo:' + work + path.sep].concat(sources)
     : ['-std=c++17', '-I' + work].concat(sources, ['-o', exe]);
-  const build = cp.spawnSync(compiler, args, { encoding: 'utf8', cwd: work });
+  const build = cp.spawnSync(compiler, args, { encoding: 'utf8', cwd: work, env });
   if (build.error) throw build.error;
   if (build.status !== 0) {
     process.stdout.write(build.stdout || ''); process.stderr.write(build.stderr || '');
