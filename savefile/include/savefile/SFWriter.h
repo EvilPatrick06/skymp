@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <ostream>
 
 namespace SaveFile_ {
 class Writer
@@ -15,7 +16,8 @@ public:
   bool CreateSaveFile(const std::filesystem::path& path);
 
 private:
-  std::ofstream writer;
+  // The file, or while a compressed body is built, a memory buffer.
+  std::ostream* writer = nullptr;
   std::ifstream ifstr;
   std::shared_ptr<SaveFile> saveStructure;
 
@@ -24,7 +26,7 @@ private:
   template <class T>
   void Write(const T& data)
   {
-    writer.write((char*)&data, sizeof(data));
+    writer->write((char*)&data, sizeof(data));
     currentWritePositionInFile = currentWritePositionInFile + sizeof(data);
   };
 
