@@ -3,7 +3,14 @@
 # Every pull request into thornswood/engine-changes builds the engine the way
 # upstream's "PR Windows Flatrim (AE/SE)" builds a pull request into main: the
 # same pr_base action with the same inputs, on GitHub's windows-2022 image,
-# and the unit tests after it. Nothing else in this fork runs on its own.
+# and the unit tests after it, except that it does not repeat the unit tests
+# under OpenCppCoverage. Nothing else in this fork runs on its own.
+#
+# Why no coverage: the first build of this workflow took 96 minutes on 5 Oct,
+# of which test_unit_coverage was 43 and vcpkg building every library for the
+# first time was 30. vcpkg now restores those from GitHub Packages, and the
+# coverage run checked nothing test_unit does not, so a build is the
+# configure, the compile (14 minutes) and the tests (about 3).
 # Upstream's workflows that would start here (the four that dispatch upstream's
 # installer, the Linux builds, the formatting, Prettier and dependent issue
 # checks) carry `if: github.repository == 'skyrim-multiplayer/skymp'`, so they
@@ -53,3 +60,4 @@ jobs:
           SERVER_DIST_ARTIFACT_NAME: server-dist
           SKYMP5_PATCHES_PAT: ""
           NUGET_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COVERAGE: "false"
