@@ -42,6 +42,10 @@ public:
 
   std::vector<std::string> GetFileNames() const noexcept;
 
+  // The same plugins with the slot the game gives each, full or light. Form
+  // ids and "id:file" descriptors convert through this (FormDesc).
+  const LoadOrder& GetLoadOrder() const noexcept;
+
   struct FileInfo
   {
     uint32_t crc32 = 0;
