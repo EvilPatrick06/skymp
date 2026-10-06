@@ -9,7 +9,9 @@
 // Each of them started a ragdoll removal (a latent Papyrus call) and, when
 // that returned, a MoveTo of the own character.
 //
-// Usage: node test_teleport_flood_client.js <engine root> <typescript dir> [revision]
+// Usage: node test_teleport_flood_client.js [engine root] [typescript dir] [revision]
+// The engine root defaults to this checkout and the TypeScript to the
+// client's own node_modules, so ctest can run it with no arguments (#1970).
 // With a revision the sources are read from git at that revision instead of
 // the working tree (the "before" run of the regression).
 // Exit code 0 when the counts are the ones the fix promises, 1 otherwise.
@@ -18,11 +20,9 @@ const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
 
-const [root, tsDir, rev] = process.argv.slice(2);
-if (!root || !tsDir) {
-  console.error('usage: node test_teleport_flood_client.js <engine root> <typescript dir> [revision]');
-  process.exit(2);
-}
+const [rootArg, tsArg, rev] = process.argv.slice(2);
+const root = rootArg || path.join(__dirname, '../../..');
+const tsDir = tsArg || path.join(root, 'skymp5-client', 'node_modules', 'typescript');
 const ts = require(tsDir);
 const read = (name) => {
   const rel = `skymp5-client/src/services/services/${name}`;
