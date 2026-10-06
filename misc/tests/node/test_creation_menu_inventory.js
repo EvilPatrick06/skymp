@@ -4,10 +4,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
-const ts = require('../../skymp5-client/node_modules/typescript');
-const source = fs.readFileSync(path.join(__dirname, '../../skymp5-client/src/services/services/remoteServer.ts'), 'utf8');
+const ts = require('../../../skymp5-client/node_modules/typescript');
+const source = fs.readFileSync(path.join(__dirname, '../../../skymp5-client/src/services/services/remoteServer.ts'), 'utf8');
 const js = ts.transpileModule(source, {compilerOptions: {module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2018}}).outputText;
-const invSource = fs.readFileSync(path.join(__dirname, '../../skymp5-client/src/sync/inventory.ts'), 'utf8');
+const invSource = fs.readFileSync(path.join(__dirname, '../../../skymp5-client/src/sync/inventory.ts'), 'utf8');
 const invSandbox = {exports: {}, require: () => ({Game: {getFormEx: id => ({getName: () => 'base' + id})}})};
 vm.runInNewContext(ts.transpileModule(invSource, {compilerOptions: {module: ts.ModuleKind.CommonJS}}).outputText, invSandbox);
 const diff = invSandbox.exports.getDiff;
@@ -75,7 +75,7 @@ function fixture(save = false, options = {}) {
     once: (event, fn) => onceHandlers[event].push(fn), on: (event, fn) => { (onHandlers[event] ||= []).push(fn); },
     printConsole() {}
   };
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../skyrim-platform/src/platform_se/skyrim_platform/assets/storageProxy.js'), 'utf8'))(sp);
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../../skyrim-platform/src/platform_se/skyrim_platform/assets/storageProxy.js'), 'utf8'))(sp);
   sp.storage.worldModel = world;
   const listeners = new Map();
   const controller = {emitter: {on: (name, fn) => listeners.set(name, fn), emit() {}}, lookupListener: () => ({

@@ -256,6 +256,11 @@ public:
   // Only for tests
   auto& GetGrids() { return grids; }
 
+  // The clock every timer of this world runs on, reloot timers included
+  // (Viet::Timer::SetClock). The system clock unless a test sets one it moves
+  // itself; an empty clock puts the system clock back (Thornswood #2000).
+  void SetTimerClock(Viet::Timer::Clock clock);
+
   void SetNpcSettings(
     std::unordered_map<std::string, NpcSettingsEntry>&& settings);
   void SetForbiddenRelootTypes(const std::set<std::string>& types);
