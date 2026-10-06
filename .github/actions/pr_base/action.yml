@@ -39,6 +39,14 @@ inputs:
     description: "Set to true if building for Emscripten"
     required: false
     default: "false"
+  # THORNSWOOD PATCH (Thornswood #1774). The coverage run repeats the unit
+  # tests under OpenCppCoverage: 43 of the 96 minutes of the fork's first pull
+  # request build on 5 Oct. The fork's build passes "false"; upstream's keep
+  # the default.
+  COVERAGE:
+    description: "Set to false to build and test without OpenCppCoverage on Windows"
+    required: false
+    default: "true"
 runs:
   using: composite
   steps:  
@@ -88,7 +96,7 @@ runs:
       shell: powershell
 
     - name: Check and install OpenCppCoverage using github-script
-      if: runner.os == 'Windows'
+      if: ${{ runner.os == 'Windows' && inputs.COVERAGE == 'true' }}
       uses: actions/github-script@v6
       with:
         script: |
@@ -242,7 +250,7 @@ runs:
 
         $cmake_command = if ('${{ inputs.EMSCRIPTEN }}' -eq 'true') { "emcmake cmake" } else { "cmake" }
 
-        $cppcov_path_arg = if ($env:RUNNER_OS -eq 'Windows') { '-DCPPCOV_PATH="C:\Program Files\OpenCppCoverage"' } else { '-DCPPCOV_PATH=OFF' }
+        $cppcov_path_arg = if ($env:RUNNER_OS -eq 'Windows' -and '${{ inputs.COVERAGE }}' -eq 'true') { '-DCPPCOV_PATH="C:\Program Files\OpenCppCoverage"' } else { '-DCPPCOV_PATH=OFF' }
         $vcpkg_root_arg = if ($env:RUNNER_OS -eq 'Windows') { '-DVCPKG_ROOT=C:/vcpkg' } else { '-DVCPKG_ROOT="${{github.workspace}}/vcpkg"' }
         $vcpkg_chainload_toolchain_arg = if ('${{ inputs.EMSCRIPTEN }}' -eq 'true') { '-DVCPKG_CHAINLOAD_TOOLCHAIN_FILE="${{github.workspace}}/emsdk/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake"' } else { '' }
         $vcpkg_triplet_arg = if ('${{ inputs.EMSCRIPTEN }}' -eq 'true') { '-DVCPKG_TARGET_TRIPLET=wasm32-emscripten' } else { '' }
@@ -386,6 +394,7 @@ runs:
         path: ${{github.workspace}}/build/dist/server
 
     - uses: actions/upload-artifact@v7
+      if: ${{ inputs.COVERAGE == 'true' }}
       with:
         name: coverage (${{ inputs.DESCRIPTION }})
         path: ${{github.workspace}}/build/__coverage
