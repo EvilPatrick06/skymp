@@ -14,6 +14,7 @@ on:
 
 jobs:
   deploy_gamemode:
+    if: github.repository == 'skyrim-multiplayer/skymp'  # upstream only, not the Thornswood fork (Thornswood #1774)
     runs-on: ubuntu-latest
     steps:
       - name: Trigger gamemode deploy job

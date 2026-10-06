@@ -23,6 +23,7 @@ on:
 
 jobs:
   check:
+    if: github.repository == 'skyrim-multiplayer/skymp'  # upstream only, not the Thornswood fork (Thornswood #1774)
     runs-on: ubuntu-latest
     steps:
       - uses: z0al/dependent-issues@v1
