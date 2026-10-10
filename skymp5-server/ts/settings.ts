@@ -72,7 +72,10 @@ export class Settings {
       'offlineMode',
       'discordAuth',
     ].forEach((prop) => {
-      if (settings[prop]) {
+      // An empty "master" is how an offline build says there is none
+      // (generate_server_settings.cmake), so it is kept rather than left
+      // to the public default (Thornswood #1788).
+      if (settings[prop] || (prop === 'master' && settings[prop] === '')) {
         (this as Record<string, unknown>)[prop] = settings[prop];
       }
     });
