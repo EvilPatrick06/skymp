@@ -32,6 +32,14 @@ export interface ScampServer {
   compareAndSetInventory(formId: number, expected: InventorySnapshot,
     expectedReceipt: string, replacement: InventorySnapshot, sequence: number,
     expectedProfileId: number): boolean;
+  /** Commits one hidden custom property, inventory and receipt in one save.
+   * Each property value is limited to 16 KiB of serialized JSON. A publication
+   * error may occur after commit; inspect the receipt before deciding outcome.
+   */
+  compareAndSetInventoryAndProperty(formId: number, expected: InventorySnapshot,
+    expectedReceipt: string, replacement: InventorySnapshot, sequence: number,
+    expectedProfileId: number,
+    property: {name: string; expected: unknown; replacement: unknown; expectedLifeGeneration: number}): boolean;
   getInventoryReceipt(formId: number): string;
   getSavedInventoryReceipt(formId: number): string;
   prepareNpcLoad(): number;
