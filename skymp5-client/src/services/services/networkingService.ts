@@ -8,6 +8,11 @@ import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { RemoteServer } from "./remoteServer";
 import { SendRawMessageEvent } from "../events/sendRawMessageEvent";
 
+// Thornswood #1893. Where the last engine-level refusal (connectionDenied) is
+// left for the game's own plugins: { error, at }. The client's emitter is
+// internal, so this is how thornswood-front.js hears why it was refused.
+export const connectionDeniedStorageKey = "thornswoodConnectionDenied";
+
 export class NetworkingService extends ClientListener {
   constructor(private sp: Sp, private controller: CombinedController) {
     super();
@@ -74,7 +79,7 @@ export class NetworkingService extends ClientListener {
           break;
         case "connectionDenied":
           this.controller.emitter.emit("connectionDenied", { error });
-          this.reconnect();
+          this.onConnectionDenied(error);
           break;
         case "connectionFailed":
           this.controller.emitter.emit("connectionFailed", {});
@@ -192,6 +197,22 @@ export class NetworkingService extends ClientListener {
           break;
       }
     });
+  }
+
+  // Thornswood #1893. A refusal at the engine's door (no free incoming
+  // connections, IP recently connected, already connected, incompatible
+  // protocol version, banned) used to be answered with reconnect() at once,
+  // which was refused again, in a loop with no wait for as long as the game
+  // was open; the quick retries are themselves what "IP recently connected"
+  // refuses. Now the connection is closed and not opened again here. The
+  // reason is left in storage for the game's plugins to show, and the next
+  // connection is the one a person asks for (picking a character).
+  private onConnectionDenied(error: unknown) {
+    const reason = typeof error === "string" ? error : String(error ?? "");
+    logTrace(this, "connectionDenied, not reconnecting: " + reason);
+    this.sp.storage[connectionDeniedStorageKey] = { error: reason, at: Date.now() };
+    // Not from inside mpClientPlugin.tick's own callback.
+    this.controller.once("tick", () => this.close());
   }
 
   private createClientSafe() {
