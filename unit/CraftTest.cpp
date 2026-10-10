@@ -4,6 +4,7 @@
 #include "CraftItemMessage.h"
 #include "PacketParser.h"
 #include "PartOneListener.h"
+#include <map>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include "SetInventoryMessage.h"
@@ -550,4 +551,207 @@ TEST_CASE("A craft whose inputs the server does not hold never reaches "
 
   p.DestroyActor(0xff000000);
   DoDisconnect(p, 0);
+}
+
+namespace {
+// THORNSWOOD PATCH (Thornswood #1648). A gamemode that holds the soul gem
+// table from docs/systems/enchantments.md, the way game/gamemode.js does, and
+// judges each craft by the inputs onCraft now carries as its seventh
+// argument. The person's rank is set by the test. Only acts while armed,
+// because PartOne is shared and keeps every listener.
+constexpr uint32_t kPettySoulGem = 0x2e4e2;
+constexpr uint32_t kLesserSoulGem = 0x2e4e4;
+constexpr uint32_t kCommonSoulGem = 0x2e4e6;
+constexpr uint32_t kGreaterSoulGem = 0x2e4f4;
+constexpr uint32_t kGrandSoulGem = 0x2e4fc;
+constexpr uint32_t kIronDagger = 0x1397e;
+
+class SoulGemRankGate : public PartOneListener
+{
+public:
+  void OnConnect(Networking::UserId) override {}
+  void OnDisconnect(Networking::UserId) override {}
+  void OnCustomPacket(Networking::UserId,
+                      const simdjson::dom::element&) override
+  {
+  }
+  static int RankNeeded(uint32_t baseId)
+  {
+    switch (baseId) {
+      case kPettySoulGem:
+        return 0; // novice
+      case kLesserSoulGem:
+        return 1; // advanced
+      case kCommonSoulGem:
+        return 2; // expert
+      case kGreaterSoulGem:
+      case kGrandSoulGem:
+        return 3; // master
+      default:
+        return -1; // not a soul gem
+    }
+  }
+  bool OnMpApiEvent(const GameModeEvent& event) override
+  {
+    if (!armed || event.GetName() != std::string("onCraft")) {
+      return true;
+    }
+    auto args = nlohmann::json::parse(event.GetArgumentsJsonArray());
+    asked++;
+    argCount = args.size();
+    effectsWasNull = args.at(5).is_null();
+    inputs = args.at(6);
+    for (auto& entry : inputs) {
+      int need = RankNeeded(entry.at("baseId").get<uint32_t>());
+      if (need > rank) {
+        refused++;
+        return false;
+      }
+    }
+    return true;
+  }
+
+  bool armed = false;
+  int rank = 0;
+  int asked = 0;
+  int refused = 0;
+  size_t argCount = 0;
+  bool effectsWasNull = false;
+  nlohmann::json inputs;
+};
+
+std::shared_ptr<SoulGemRankGate> SoulGemGate(PartOne& p)
+{
+  static std::shared_ptr<SoulGemRankGate> gate;
+  if (!gate) {
+    gate = std::make_shared<SoulGemRankGate>();
+    p.AddListener(gate);
+  }
+  gate->asked = 0;
+  gate->refused = 0;
+  gate->inputs = nullptr;
+  return gate;
+}
+
+CraftItemMessage EnchantDagger(uint32_t gem)
+{
+  CraftItemMessage msg;
+  msg.data.craftInputObjects =
+    Inventory().AddItem(kIronDagger, 1).AddItem(gem, 1);
+  msg.data.workbench = kForge;
+  // An enchanted piece keeps its own record, so what arrives is the dagger.
+  msg.data.resultObjectId = kIronDagger;
+  return msg;
+}
+}
+
+TEST_CASE("onCraft carries the craft's inputs as its seventh argument "
+          "(Thornswood #1648)",
+          "[Craft][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto gate = SoulGemGate(p);
+  gate->rank = 3;
+  auto& ac = MakeCrafter(p, kForge);
+  ac.AddItem(kIronDagger, 1);
+  ac.AddItem(kPettySoulGem, 1);
+
+  RawMessageData msgData;
+  msgData.userId = 0;
+  gate->armed = true;
+  p.GetActionListener().OnCraftItem(msgData, EnchantDagger(kPettySoulGem));
+  gate->armed = false;
+
+  REQUIRE(gate->asked == 1);
+  REQUIRE(gate->argCount == 7);
+  REQUIRE(gate->effectsWasNull);
+  REQUIRE(gate->inputs.is_array());
+  REQUIRE(gate->inputs.size() == 2);
+  std::map<uint32_t, uint32_t> got;
+  for (auto& entry : gate->inputs) {
+    auto baseId = entry.at("baseId").get<uint32_t>();
+    got[baseId] = entry.at("count").get<uint32_t>();
+  }
+  REQUIRE(got[kIronDagger] == 1);
+  REQUIRE(got[kPettySoulGem] == 1);
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
+
+TEST_CASE("A soul gem above the person's rank is refused and the gem and the "
+          "piece stay in the pack (Thornswood #1648)",
+          "[Craft][espm]")
+{
+  struct Case
+  {
+    int rank;
+    uint32_t gem;
+  };
+  const Case cases[] = { { 0, kLesserSoulGem },  { 0, kGreaterSoulGem },
+                         { 1, kCommonSoulGem },  { 2, kGreaterSoulGem },
+                         { 2, kGrandSoulGem } };
+
+  PartOne& p = GetPartOne();
+  for (auto& c : cases) {
+    auto gate = SoulGemGate(p);
+    gate->rank = c.rank;
+    auto& ac = MakeCrafter(p, kForge);
+    ac.AddItem(kIronDagger, 1);
+    ac.AddItem(c.gem, 1);
+    const Inventory before = ac.GetInventory();
+
+    p.Tick();
+    p.Messages().clear();
+
+    RawMessageData msgData;
+    msgData.userId = 0;
+    gate->armed = true;
+    p.GetActionListener().OnCraftItem(msgData, EnchantDagger(c.gem));
+    gate->armed = false;
+
+    CHECK(gate->refused == 1);
+    CHECK(ac.GetInventory() == before);
+    CHECK(ac.GetInventory().GetItemCount(c.gem) == 1);
+    CHECK(ac.GetInventory().GetItemCount(kIronDagger) == 1);
+
+    // The client is told its pack is as it was, gem and piece included.
+    p.Tick();
+    auto sent = SentInventories(p, 0);
+    CHECK(sent.size() == 1);
+    if (!sent.empty()) {
+      CHECK(sent[0] == before);
+    }
+
+    p.DestroyActor(0xff000000);
+    DoDisconnect(p, 0);
+  }
+}
+
+TEST_CASE("A petty soul gem works at every rank (Thornswood #1648)",
+          "[Craft][espm]")
+{
+  PartOne& p = GetPartOne();
+  for (int rank = 0; rank <= 3; ++rank) {
+    auto gate = SoulGemGate(p);
+    gate->rank = rank;
+    auto& ac = MakeCrafter(p, kForge);
+    ac.AddItem(kIronDagger, 1);
+    ac.AddItem(kPettySoulGem, 1);
+
+    RawMessageData msgData;
+    msgData.userId = 0;
+    gate->armed = true;
+    p.GetActionListener().OnCraftItem(msgData, EnchantDagger(kPettySoulGem));
+    gate->armed = false;
+
+    CHECK(gate->asked == 1);
+    CHECK(gate->refused == 0);
+    // The gem is spent and the piece comes back.
+    CHECK(ac.GetInventory().GetItemCount(kPettySoulGem) == 0);
+    CHECK(ac.GetInventory().GetItemCount(kIronDagger) == 1);
+
+    p.DestroyActor(0xff000000);
+    DoDisconnect(p, 0);
+  }
 }
