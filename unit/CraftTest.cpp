@@ -339,9 +339,10 @@ TEST_CASE("A craft the server cannot carry out sends the client its "
 
   RawMessageData msgData;
   msgData.userId = 0;
-  REQUIRE_THROWS_WITH(
-    p.GetActionListener().OnCraftItem(msgData, msg),
-    ContainsSubstring("Source inventory doesn't have enough 0x1be1a"));
+  // Since Thornswood #1618 the missing input is caught before the gamemode is
+  // asked, so the craft is refused rather than thrown on; the inventory goes
+  // back all the same.
+  REQUIRE_NOTHROW(p.GetActionListener().OnCraftItem(msgData, msg));
 
   // Nothing was taken and nothing was made.
   REQUIRE(ac.GetInventory() == before);
