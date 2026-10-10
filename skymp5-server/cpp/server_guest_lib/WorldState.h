@@ -121,6 +121,10 @@ public:
   // No loading
   MpForm* LookupFormByIdx(int idx);
 
+  // THORNSWOOD PATCH (Thornswood #1277). Clears refrByIdxUnreliable at this
+  // reference's index if the entry is this reference.
+  void ForgetRefrByIdx(MpObjectReference* refr);
+
   // No loading version of LookupFormById
   const std::shared_ptr<MpForm>& LookupFormByIdNoLoad(uint32_t formId);
 
@@ -218,6 +222,12 @@ public:
     it->second->BeforeDestroy();
     if (auto ref = it->second->AsObjectReference()) {
       ForgetInventoryReceipt(*ref);
+    }
+
+    // THORNSWOOD PATCH (Thornswood #1277): the lookup-by-index entry goes
+    // with the form, so LookupFormByIdx never reads through a freed pointer.
+    if (auto ref = it->second->AsObjectReference()) {
+      ForgetRefrByIdx(ref);
     }
 
     if (auto formIndex = dynamic_cast<FormIndex*>(form.get())) {
