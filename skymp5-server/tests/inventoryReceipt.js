@@ -70,6 +70,7 @@ assert.throws(()=>commit({name:property,expected:null,replacement:Array(3000).fi
   'the normalized stored JSON must also fit the property bound');
 for(const life of [-1,0.5,Number.MAX_SAFE_INTEGER+1,undefined])
   assert.throws(()=>commit({name:property,expected:null,replacement:next,expectedLifeGeneration:life}),/lifeGeneration/i);
+register('_skympNpcLifeGeneration');
 assert.equal(commit({name:property,expected:null,replacement:{toJSON(){
   server.set(human,'_skympNpcLifeGeneration',1);return next;
 }}}),false,'serialization cannot commit against a replacement actor life');
