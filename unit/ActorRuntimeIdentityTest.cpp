@@ -1,5 +1,6 @@
 #include "TestUtils.hpp"
 #include "WorldState.h"
+#include "gamemode_events/GameModeEvent.h"
 
 extern espm::Loader& GetEspmLoader();
 
@@ -103,4 +104,103 @@ TEST_CASE("Disconnect invalidates identity before gamemode listeners run",
   server.AddListener(listener);
   DoDisconnect(server, 0);
   REQUIRE(listener->called);
+}
+
+TEST_CASE("Lifecycle handlers cannot continue into another ownership session",
+          "[actor-runtime-identity][espm]")
+{
+  for (const std::string event : {"onDeath", "onRespawn"}) {
+    for (const bool recreate : {false, true}) {
+      CAPTURE(event, recreate);
+      PartOne server;
+      server.AttachEspm(&GetEspmLoader());
+      DoConnect(server, 0);
+      constexpr uint32_t id = 0xff000abc;
+      server.CreateActor(id, {1, 1, 1}, 0, 0x3c, 42);
+      server.SetUserActor(0, id);
+      auto& actor = server.worldState.GetFormAt<MpActor>(id);
+      if (event == "onRespawn") actor.Kill();
+      struct Listener : FakeListener
+      {
+        std::string event;
+        std::function<void()> callback;
+        bool called = false;
+        bool OnMpApiEvent(const GameModeEvent& current) override
+        {
+          if (!called && event == current.GetName()) {
+            called = true;
+            callback();
+          }
+          return true;
+        }
+      };
+      auto listener = std::make_shared<Listener>();
+      listener->event = event;
+      listener->callback = [&] {
+        server.SetUserActor(0, 0);
+        if (recreate) {
+          server.DestroyActor(id);
+          server.CreateActor(id, {1, 1, 1}, 0, 0x3c, 42);
+        }
+        server.SetUserActor(0, id);
+      };
+      server.AddListener(listener);
+      if (event == "onDeath") actor.Kill();
+      else actor.Respawn(false);
+      REQUIRE(listener->called);
+      auto& current = server.worldState.GetFormAt<MpActor>(id);
+      REQUIRE(current.IsDead() == !recreate);
+      if (!recreate) REQUIRE(current.IsRespawning());
+    }
+  }
+}
+
+TEST_CASE("Old respawn timers cannot reset a new life or restored session",
+          "[actor-runtime-identity][espm]")
+{
+  for (const std::string change : {"resurrect", "reconnect", "reload"}) {
+    CAPTURE(change);
+    PartOne server;
+    server.AttachEspm(&GetEspmLoader());
+    auto time = std::chrono::system_clock::now();
+    server.worldState.SetTimerClock([&] { return time; });
+    constexpr uint32_t id = 0xff000abc;
+    auto wolf = std::make_unique<MpActor>(
+      LocationalData{{1, 1, 1}, {}, FormDesc::Tamriel()},
+      server.CreateFormCallbacks(), 0xe1672);
+    server.worldState.AddForm(std::move(wolf), id);
+    auto& actor = server.worldState.GetFormAt<MpActor>(id);
+    auto saved = actor.GetChangeForm();
+    saved.profileId = 42;
+    actor.ApplyChangeForm(saved);
+    DoConnect(server, 0);
+    server.SetUserActor(0, id);
+    actor.SetInventory(Inventory());
+    actor.SetRespawnTime(1);
+    actor.Kill();
+    REQUIRE_FALSE(actor.GetInventory().entries.empty());
+    REQUIRE(actor.IsRespawning());
+    if (change == "resurrect") actor.Respawn(false);
+    else if (change == "reconnect") {
+      server.SetUserActor(0, 0);
+      actor.SetRespawnTime(10);
+      server.SetUserActor(0, id);
+    } else {
+      saved = actor.GetChangeForm();
+      saved.spawnDelay = 10;
+      actor.ApplyChangeForm(saved);
+    }
+    Inventory inventory;
+    inventory.entries.emplace_back(0xf, 321);
+    actor.SetInventory(inventory);
+    time += std::chrono::seconds(2);
+    server.worldState.Tick();
+    REQUIRE(actor.GetInventory().ToJson() == inventory.ToJson());
+    REQUIRE(actor.IsDead() == (change != "resurrect"));
+    if (change != "resurrect") {
+      time += std::chrono::seconds(10);
+      server.worldState.Tick();
+      REQUIRE_FALSE(actor.IsDead());
+    }
+  }
 }
