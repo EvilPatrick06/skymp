@@ -2,6 +2,7 @@
 #include "WorldState.h"
 #include "database_drivers/FileDatabase.h"
 #include "save_storages/AsyncSaveStorage.h"
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <limits>
@@ -179,6 +180,98 @@ TEST_CASE("Ordinary property setters cannot forge inventory receipts",
                                "{\"sequence\":99}", true, true));
   REQUIRE(actor.GetInventoryReceiptDump() == "null");
   REQUIRE(actor.GetInventory().ToJson() == InitialInventory().ToJson());
+}
+
+TEST_CASE("Inventory and quest state compare and commit together",
+          "[inventory-receipt]")
+{
+  PartOne server;
+  auto& actor = CreateHuman(server);
+  auto before = actor.GetInventory();
+  auto after = before;
+  after.entries[0].count += 25;
+  using Change = MpObjectReference::InventoryPropertyChange;
+  Change change{ "thornswoodQuests", "null",
+                 R"({"v":1,"open":{},"cool":{"wolf":123456}})" };
+  auto wrong = change;
+  wrong.expectedDump = "{}";
+  REQUIRE_FALSE(actor.CompareAndSetInventory(before, "null", after, 1, &wrong));
+  REQUIRE(actor.GetInventory().ToJson() == before.ToJson());
+  REQUIRE(actor.GetDynamicFields().GetValueDump(change.name) == "null");
+  REQUIRE(actor.GetInventoryReceiptDump() == "null");
+
+  for (const auto& invalid : { std::string("{"),
+                               std::string(16 * 1024 + 1, ' ') }) {
+    wrong = change;
+    wrong.replacementDump = invalid;
+    REQUIRE_THROWS(actor.CompareAndSetInventory(before, "null", after, 1, &wrong));
+    REQUIRE(actor.GetInventory().ToJson() == before.ToJson());
+    REQUIRE(actor.GetDynamicFields().GetValueDump(change.name) == "null");
+    REQUIRE(actor.GetInventoryReceiptDump() == "null");
+  }
+  wrong = change;
+  wrong.name = MpObjectReference::kInventoryReceiptProperty;
+  REQUIRE_THROWS(actor.CompareAndSetInventory(before, "null", after, 1, &wrong));
+
+  REQUIRE(actor.CompareAndSetInventory(before, "null", after, 1, &change));
+  REQUIRE(actor.GetInventory().ToJson() == after.ToJson());
+  REQUIRE(nlohmann::json::parse(actor.GetDynamicFields().GetValueDump(change.name)) ==
+          nlohmann::json::parse(change.replacementDump));
+  auto receipt = actor.GetInventoryReceiptDump();
+  REQUIRE_FALSE(actor.CompareAndSetInventory(after, receipt, before, 2, &change));
+  REQUIRE(actor.GetInventoryReceiptDump() == receipt);
+
+  // Reload canonicalizes key order. Comparison must retain JSON semantics.
+  change.expectedDump = R"({"cool":{"wolf":123456},"open":{},"v":1})";
+  change.replacementDump = R"({"v":1,"open":{"ebony":{"drawn":0}},"cool":{"wolf":123456}})";
+  REQUIRE(actor.CompareAndSetInventory(after, receipt, after, 2, &change));
+  REQUIRE(actor.GetInventory().entries[1].name == "Keepsake");
+  REQUIRE(actor.GetInventory().entries[1].enchantmentId == 0x1234);
+}
+
+TEST_CASE("Saved quest receipts acknowledge the same inventory and property",
+          "[inventory-receipt][espm]")
+{
+  PartOne server;
+  AttachSkyrimFiles(server);
+  auto storage = std::make_shared<ControlledFileStorage>();
+  server.AttachSaveStorage(storage);
+  auto& actor = CreateHuman(server);
+  auto before = actor.GetInventory();
+  auto after = before;
+  after.entries[0].count += 25;
+  MpObjectReference::InventoryPropertyChange change{
+    "thornswoodQuests", "null",
+    R"({"v":1,"open":{},"cool":{"wolf":123456}})"
+  };
+  REQUIRE(actor.CompareAndSetInventory(before, "null", after, 1, &change));
+  const auto receipt = actor.GetInventoryReceiptDump();
+  REQUIRE(server.worldState.GetSavedInventoryReceipt(actor) == "null");
+  server.Tick();
+  REQUIRE(static_cast<bool>(storage->completion));
+  auto submitted = std::find_if(storage->pending.begin(), storage->pending.end(),
+    [](const auto& form) { return form && form->profileId == 42; });
+  REQUIRE(submitted != storage->pending.end());
+  REQUIRE((*submitted)->inv.ToJson() == after.ToJson());
+  REQUIRE(nlohmann::json::parse((*submitted)->dynamicFields.GetValueDump(change.name)) ==
+          nlohmann::json::parse(change.replacementDump));
+  REQUIRE((*submitted)->dynamicFields.GetValueDump(MpObjectReference::kInventoryReceiptProperty) == receipt);
+  storage->Commit();
+  server.Tick();
+  REQUIRE(server.worldState.GetSavedInventoryReceipt(actor) == receipt);
+
+  PartOne restarted;
+  AttachSkyrimFiles(restarted);
+  auto reloadedStorage = std::make_shared<
+    Viet::AsyncSaveStorage<MpChangeForm, FormDesc, std::vector<FormDesc>>>(
+    std::make_shared<FileDatabase>(storage->root.string(), spdlog::default_logger()),
+    spdlog::default_logger(), "file");
+  restarted.AttachSaveStorage(reloadedStorage);
+  auto& reloaded = restarted.worldState.GetFormAt<MpActor>(kHuman);
+  REQUIRE(reloaded.GetInventory().ToJson() == after.ToJson());
+  REQUIRE(nlohmann::json::parse(reloaded.GetDynamicFields().GetValueDump(change.name)) ==
+          nlohmann::json::parse(change.replacementDump));
+  REQUIRE(restarted.worldState.GetSavedInventoryReceipt(reloaded) == receipt);
 }
 
 TEST_CASE("Inventory receipt transactions refuse NPC profiles",

@@ -857,7 +857,8 @@ const std::string& MpObjectReference::GetInventoryReceiptDump() const
 
 bool MpObjectReference::CompareAndSetInventory(
   const Inventory& expected, const std::string& expectedReceipt,
-  const Inventory& replacement, uint64_t sequence)
+  const Inventory& replacement, uint64_t sequence,
+  const InventoryPropertyChange* property)
 {
   constexpr uint64_t maxSequence = 9007199254740991;
   auto actor = AsActor();
@@ -890,9 +891,30 @@ bool MpObjectReference::CompareAndSetInventory(
   ValidateTransactionInventory(expected);
   ValidateTransactionInventory(replacement);
 
-  // Stage every allocating operation before modifying either live field.
+  std::string nextPropertyDump;
+  if (property) {
+    if (property->name.empty() || property->name.size() > 128 ||
+        property->name == kInventoryReceiptProperty ||
+        property->expectedDump.size() > 16 * 1024 ||
+        property->replacementDump.size() > 16 * 1024) {
+      throw std::runtime_error("Invalid inventory transaction property");
+    }
+    const auto expectedProperty = nlohmann::json::parse(property->expectedDump);
+    nextPropertyDump = nlohmann::json::parse(property->replacementDump).dump();
+    if (nlohmann::json::parse(GetDynamicFields().GetValueDump(property->name)) !=
+        expectedProperty) {
+      return false;
+    }
+  }
+
+  // Stage all three fields before publishing them together. Save submission
+  // and notification can still throw after this live commit; receipts decide
+  // that outcome rather than a caller compensating or repeating the write.
   Inventory nextInventory = replacement;
   DynamicFields nextFields = GetDynamicFields();
+  if (property) {
+    nextFields.SetValueDump(property->name, nextPropertyDump);
+  }
   auto receipt = nlohmann::json{
     { "actor", identity }, { "profile", actor->GetProfileId() },
     { "sequence", sequence }

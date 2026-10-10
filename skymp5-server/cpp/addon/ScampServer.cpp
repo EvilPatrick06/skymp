@@ -120,6 +120,8 @@ Napi::Object ScampServer::Init(Napi::Env env, Napi::Object exports)
       InstanceMethod("set", &ScampServer::Set),
       InstanceMethod("compareAndSetInventory",
                      &ScampServer::CompareAndSetInventory),
+      InstanceMethod("compareAndSetInventoryAndProperty",
+                     &ScampServer::CompareAndSetInventoryAndProperty),
       InstanceMethod("getInventoryReceipt", &ScampServer::GetInventoryReceipt),
       InstanceMethod("getSavedInventoryReceipt",
                      &ScampServer::GetSavedInventoryReceipt),
@@ -679,6 +681,18 @@ Napi::Value ScampServer::ValidateInventoryTransaction(const Napi::CallbackInfo& 
 
 Napi::Value ScampServer::CompareAndSetInventory(const Napi::CallbackInfo& info)
 {
+  return CompareAndSetInventoryImpl(info, false);
+}
+
+Napi::Value ScampServer::CompareAndSetInventoryAndProperty(
+  const Napi::CallbackInfo& info)
+{
+  return CompareAndSetInventoryImpl(info, true);
+}
+
+Napi::Value ScampServer::CompareAndSetInventoryImpl(
+  const Napi::CallbackInfo& info, bool withProperty)
+{
   try {
     const auto id = InventoryActorId(info[0]);
     const auto sequence = NapiHelper::ExtractDouble(info[4], "sequence");
@@ -698,13 +712,35 @@ Napi::Value ScampServer::CompareAndSetInventory(const Napi::CallbackInfo& info)
       throw std::runtime_error(
         "Inventory profile must be a positive int32 integer");
     }
+    std::optional<MpObjectReference::InventoryPropertyChange> property;
+    if (withProperty) {
+      const auto change = NapiHelper::ExtractObject(info[6], "property");
+      const auto name = NapiHelper::ExtractString(
+        change.Get("name"), "property.name", GetPropertyAlphabet(), { 1, 128 });
+      property = MpObjectReference::InventoryPropertyChange{
+        name, NapiHelper::Stringify(info.Env(), change.Get("expected")),
+        NapiHelper::Stringify(info.Env(), change.Get("replacement"))
+      };
+      // Serialization can invoke JS getters/toJSON, including a gamemode
+      // reload. Validate registration only after those callbacks finish.
+      static const auto standard =
+        PropertyBindingFactory().CreateStandardPropertyBindings();
+      const auto found = gamemodeApiState.createdProperties.find(name);
+      if (name == MpObjectReference::kInventoryReceiptProperty ||
+          standard.count(name) || found == gamemodeApiState.createdProperties.end() ||
+          found->second.isVisibleByOwner || found->second.isVisibleByNeighbors) {
+        throw std::runtime_error(
+          "Inventory transaction requires a registered hidden custom property");
+      }
+    }
     auto& actor = partOne->worldState.GetFormAt<MpActor>(id);
     if (actor.GetProfileId() != static_cast<int32_t>(profile)) {
       throw std::runtime_error(
         "Inventory profile does not match the expected human");
     }
     const auto changed = actor.CompareAndSetInventory(
-      expected, receipt, replacement, static_cast<uint64_t>(sequence));
+      expected, receipt, replacement, static_cast<uint64_t>(sequence),
+      property ? &*property : nullptr);
     return Napi::Boolean::New(info.Env(), changed);
   } catch (const std::exception& error) {
     throw Napi::Error::New(info.Env(), error.what());

@@ -157,10 +157,17 @@ public:
   static constexpr const char* kInventoryReceiptProperty = "_inventoryReceipt";
   const std::string& GetInventoryReceiptDump() const;
   static void ValidateTransactionInventory(const Inventory& inventory);
+  struct InventoryPropertyChange
+  {
+    std::string name;
+    std::string expectedDump;
+    std::string replacementDump;
+  };
   bool CompareAndSetInventory(const Inventory& expected,
                                const std::string& expectedReceipt,
                                const Inventory& replacement,
-                               uint64_t sequence);
+                               uint64_t sequence,
+                               const InventoryPropertyChange* property = nullptr);
   void AddItem(uint32_t baseId, uint32_t count);
   void AddItems(const std::vector<Inventory::Entry>& entries);
   void RemoveItem(uint32_t baseId, uint32_t count, MpObjectReference* target);
