@@ -1383,7 +1383,11 @@ uint32_t SaveFile_::Reader::ReadVsval_bit()
                          (Read8_bit() << 24)) >>
                         2); /// Read three additional Byte and Create Uint32_t
     default:
-      assert(0);
-      return 0;
+      // The low two bits are 3, a size no vsval has. assert(0) here was
+      // compiled out of a Release build, which then read every byte after it
+      // wrong (Thornswood #2001).
+      throw std::runtime_error("Vsval of unknown size type " +
+                               std::to_string(firstByte & VsvalTypes::unknown) +
+                               " (first byte " + std::to_string(firstByte) + ")");
   }
 }

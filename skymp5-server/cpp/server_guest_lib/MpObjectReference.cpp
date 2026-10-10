@@ -857,7 +857,8 @@ const std::string& MpObjectReference::GetInventoryReceiptDump() const
 
 bool MpObjectReference::CompareAndSetInventory(
   const Inventory& expected, const std::string& expectedReceipt,
-  const Inventory& replacement, uint64_t sequence)
+  const Inventory& replacement, uint64_t sequence,
+  const InventoryPropertyChange* property)
 {
   constexpr uint64_t maxSequence = 9007199254740991;
   auto actor = AsActor();
@@ -890,9 +891,43 @@ bool MpObjectReference::CompareAndSetInventory(
   ValidateTransactionInventory(expected);
   ValidateTransactionInventory(replacement);
 
-  // Stage every allocating operation before modifying either live field.
+  std::string nextPropertyDump;
+  if (property) {
+    const auto life = nlohmann::json::parse(
+      GetDynamicFields().GetValueDump("_skympNpcLifeGeneration"));
+    if (!life.is_null() && (!life.is_number_integer() || life < 0 ||
+                            life > maxSequence)) {
+      throw std::runtime_error("Invalid persisted inventory lifeGeneration");
+    }
+    if (property->expectedLifeGeneration > maxSequence ||
+        property->expectedLifeGeneration != (life.is_null() ? 0 : life.get<uint64_t>())) {
+      return false;
+    }
+    if (property->name.empty() || property->name.size() > 128 ||
+        property->name == kInventoryReceiptProperty ||
+        property->expectedDump.size() > 16 * 1024 ||
+        property->replacementDump.size() > 16 * 1024) {
+      throw std::runtime_error("Invalid inventory transaction property");
+    }
+    const auto expectedProperty = nlohmann::json::parse(property->expectedDump);
+    nextPropertyDump = nlohmann::json::parse(property->replacementDump).dump();
+    if (nextPropertyDump.size() > 16 * 1024) {
+      throw std::runtime_error("Invalid inventory transaction property size");
+    }
+    if (nlohmann::json::parse(GetDynamicFields().GetValueDump(property->name)) !=
+        expectedProperty) {
+      return false;
+    }
+  }
+
+  // Stage all three fields before publishing them together. Save submission
+  // and notification can still throw after this live commit; receipts decide
+  // that outcome rather than a caller compensating or repeating the write.
   Inventory nextInventory = replacement;
   DynamicFields nextFields = GetDynamicFields();
+  if (property) {
+    nextFields.SetValueDump(property->name, nextPropertyDump);
+  }
   auto receipt = nlohmann::json{
     { "actor", identity }, { "profile", actor->GetProfileId() },
     { "sequence", sequence }
@@ -1521,8 +1556,25 @@ void MpObjectReference::GivePickupItemsToActivationSource(
     uint32_t resultingCount =
       std::max(kCountDefault, std::max(countRecord, countChangeForm));
 
-    activationSource.AddItem(resultItem, resultingCount);
+    if (pickupExtra) {
+      activationSource.AddItems(
+        { Inventory::Entry(resultItem, resultingCount, *pickupExtra) });
+    } else {
+      activationSource.AddItem(resultItem, resultingCount);
+    }
   }
+}
+
+void MpObjectReference::SetPickupExtra(
+  const std::optional<Inventory::ExtraData>& extra)
+{
+  pickupExtra = extra;
+}
+
+const std::optional<Inventory::ExtraData>& MpObjectReference::GetPickupExtra()
+  const noexcept
+{
+  return pickupExtra;
 }
 
 void MpObjectReference::ProcessActivateNormal(

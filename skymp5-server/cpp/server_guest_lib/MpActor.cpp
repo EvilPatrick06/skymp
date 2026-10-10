@@ -2021,6 +2021,16 @@ void MpActor::DropItem(const uint32_t baseId, const Inventory::Entry& entry)
 
   placedObject->SetCount(count);
 
+  // The placed reference carries the dropped entry's extra, so the pickup
+  // gives back the same piece. Worn flags stay with the actor.
+  Inventory::ExtraData extra = entry;
+  extra.worn_ = std::nullopt;
+  extra.wornLeft = std::nullopt;
+  if (!Inventory::Entry(baseId, count, extra)
+         .EqualExceptCount(Inventory::Entry(baseId, count))) {
+    placedObject->SetPickupExtra(extra);
+  }
+
   uint32_t droppedItemFormId = placedObject->GetFormId();
 
   // Filter our dropped items queue
