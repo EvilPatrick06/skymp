@@ -8,13 +8,17 @@ const main = () => {
   const after = {entries:[{baseId:15, count:50}]};
   mp.set(id, 'inventory', before);
   const initial = mp.getActorRuntimeIdentity(id);
+  const livingBody = mp.getNpcAIState(id).runtimeLifeIdentity;
+  assert.match(livingBody, /^[1-9][0-9]{0,19}$/);
   assert.match(initial, /^[1-9][0-9]{0,19}$/);
   assert.equal(mp.getActorRuntimeIdentity(id), initial);
   mp.set(id, 'isDead', true);
   assert.notEqual(mp.getActorRuntimeIdentity(id), initial);
+  assert.equal(mp.getNpcAIState(id).runtimeLifeIdentity,livingBody);
   mp.set(id, 'isDead', false);
   const current = mp.getActorRuntimeIdentity(id);
   assert.notEqual(current, initial);
+  assert.notEqual(mp.getNpcAIState(id).runtimeLifeIdentity,livingBody);
   const change = {name, expected:null, replacement:{done:true}, expectedLifeGeneration:0,
     expectedRuntimeIdentity:initial};
   assert.equal(mp.compareAndSetInventoryAndProperty(id, before, 'null', after, 1, 42, change), false);

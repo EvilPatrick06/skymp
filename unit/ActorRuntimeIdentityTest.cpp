@@ -58,23 +58,50 @@ TEST_CASE("Human respawn and reload cannot restore runtime identity",
   auto& actor = server.worldState.GetFormAt<MpActor>(id);
   const auto life = actor.GetDynamicFields().GetValueDump("_skympNpcLifeGeneration");
   const auto before = actor.GetRuntimeIdentity();
+  const auto livingBody = actor.GetRuntimeLifeIdentity();
   actor.Kill();
   const auto dead = actor.GetRuntimeIdentity();
   REQUIRE(dead != before);
+  REQUIRE(actor.GetRuntimeLifeIdentity() == livingBody);
   actor.Respawn(false);
   const auto alive = actor.GetRuntimeIdentity();
   REQUIRE(alive != dead);
   REQUIRE(alive != before);
+  REQUIRE(actor.GetRuntimeLifeIdentity() != livingBody);
   REQUIRE(actor.GetDynamicFields().GetValueDump("_skympNpcLifeGeneration") == life);
   const auto saved = actor.GetChangeForm();
   actor.ApplyChangeForm(saved);
   REQUIRE(actor.GetRuntimeIdentity() != alive);
+  REQUIRE(actor.GetRuntimeLifeIdentity() == actor.GetRuntimeIdentity());
   const auto reloaded = actor.GetRuntimeIdentity();
   actor.SetInventory(actor.GetInventory());
   REQUIRE(actor.GetRuntimeIdentity() == reloaded);
   server.DestroyActor(id);
   server.CreateActor(id, {1, 1, 1}, 0, 0x3c, 42);
   REQUIRE(server.worldState.GetFormAt<MpActor>(id).GetRuntimeIdentity() != reloaded);
+}
+
+TEST_CASE("A dead body identity cannot cross ownership or saved-state replacement",
+          "[actor-runtime-identity][espm]")
+{
+  PartOne server;
+  server.AttachEspm(&GetEspmLoader());
+  DoConnect(server, 0);
+  constexpr uint32_t id = 0xff000abc;
+  server.CreateActor(id, {1, 1, 1}, 0, 0x3c, 42);
+  server.SetUserActor(0, id);
+  auto& actor = server.worldState.GetFormAt<MpActor>(id);
+  const auto livingBody = actor.GetRuntimeLifeIdentity();
+  actor.Kill();
+  REQUIRE(actor.GetRuntimeLifeIdentity() == livingBody);
+  server.SetUserActor(0, 0);
+  REQUIRE(actor.GetRuntimeLifeIdentity() != livingBody);
+  const auto detached = actor.GetRuntimeLifeIdentity();
+  server.SetUserActor(0, id);
+  REQUIRE(actor.GetRuntimeLifeIdentity() != detached);
+  const auto attached = actor.GetRuntimeLifeIdentity();
+  actor.ApplyChangeForm(actor.GetChangeForm());
+  REQUIRE(actor.GetRuntimeLifeIdentity() != attached);
 }
 
 TEST_CASE("Disconnect invalidates identity before gamemode listeners run",
