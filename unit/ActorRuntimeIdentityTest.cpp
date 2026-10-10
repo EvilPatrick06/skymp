@@ -204,3 +204,88 @@ TEST_CASE("Old respawn timers cannot reset a new life or restored session",
     }
   }
 }
+
+TEST_CASE("The resurrection setter retains an actor destroyed by its callback",
+          "[actor-runtime-identity][espm]")
+{
+  PartOne server;
+  server.AttachEspm(&GetEspmLoader());
+  constexpr uint32_t id = 0xff000abc;
+  server.CreateActor(id, {1, 1, 1}, 0, 0x3c, 42);
+  auto& actor = server.worldState.GetFormAt<MpActor>(id);
+  actor.Kill();
+  const std::weak_ptr<MpForm> lifetime = server.worldState.LookupFormById(id);
+  struct Listener : FakeListener
+  {
+    std::function<void()> callback;
+    bool called = false;
+    bool OnMpApiEvent(const GameModeEvent& event) override
+    {
+      if (!called && std::string(event.GetName()) == "onRespawn") {
+        called = true;
+        callback();
+      }
+      return true;
+    }
+  };
+  auto listener = std::make_shared<Listener>();
+  listener->callback = [&] {
+    server.DestroyActor(id);
+    REQUIRE(lifetime.use_count() >= 2); // event plus complete setter continuation
+  };
+  server.AddListener(listener);
+  actor.SetIsDead(false);
+  REQUIRE(listener->called);
+  REQUIRE(lifetime.expired());
+}
+
+TEST_CASE("Death loot stops when an item-added callback transfers ownership",
+          "[actor-runtime-identity][espm]")
+{
+  PartOne server;
+  server.AttachEspm(&GetEspmLoader());
+  DoConnect(server, 0);
+  auto createBear = [&](uint32_t id) -> MpActor& {
+    auto bear = std::make_unique<MpActor>(
+      LocationalData{{1, 1, 1}, {}, FormDesc::Tamriel()},
+      server.CreateFormCallbacks(), 0x1e7a4);
+    server.worldState.AddForm(std::move(bear), id);
+    auto& actor = server.worldState.GetFormAt<MpActor>(id);
+    auto saved = actor.GetChangeForm();
+    saved.profileId = 42;
+    actor.ApplyChangeForm(saved);
+    actor.SetInventory(Inventory());
+    return actor;
+  };
+  auto& control = createBear(0xff000abd);
+  control.Kill();
+  REQUIRE(control.GetInventory().entries.size() > 1);
+  constexpr uint32_t id = 0xff000abc;
+  auto& actor = createBear(id);
+  server.SetUserActor(0, id);
+  struct Listener : FakeListener
+  {
+    std::function<void()> callback;
+    bool called = false;
+    bool OnMpApiEvent(const GameModeEvent& event) override
+    {
+      if (!called && std::string(event.GetName()) == "onPapyrusEvent:OnItemAdded") {
+        called = true;
+        callback();
+      }
+      return true;
+    }
+  };
+  Inventory replacement;
+  replacement.entries.emplace_back(0xf, 321);
+  auto listener = std::make_shared<Listener>();
+  listener->callback = [&] {
+    server.SetUserActor(0, 0);
+    server.SetUserActor(0, id);
+    actor.SetInventory(replacement);
+  };
+  server.AddListener(listener);
+  actor.Kill();
+  REQUIRE(listener->called);
+  REQUIRE(actor.GetInventory().ToJson() == replacement.ToJson());
+}
