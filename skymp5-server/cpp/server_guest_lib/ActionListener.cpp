@@ -669,6 +669,36 @@ void ActionListener::OnTakeItem(const RawMessageData& rawMsgData,
   ref.TakeItem(*actor, entry);
 }
 
+namespace {
+// The drop message names only the base and the count. Take a plain stack
+// when the actor has enough of one, otherwise the first entry of that base
+// that holds the count, with its extra, so a named key, an enchanted piece or
+// a worn-down piece is what goes on the ground (Thornswood #1719).
+Inventory::Entry ResolveDroppedEntry(const Inventory& inventory,
+                                     uint32_t baseId, uint32_t count)
+{
+  Inventory::Entry plain(baseId, count);
+  const Inventory::Entry* chosen = nullptr;
+  for (auto& e : inventory.entries) {
+    if (e.baseId != baseId || e.count < count) {
+      continue;
+    }
+    if (e.EqualExceptCount(plain)) {
+      return plain;
+    }
+    if (!chosen) {
+      chosen = &e;
+    }
+  }
+  if (!chosen) {
+    return plain;
+  }
+  Inventory::Entry res = *chosen;
+  res.count = count;
+  return res;
+}
+}
+
 void ActionListener::OnDropItem(const RawMessageData& rawMsgData,
                                 const DropItemMessage& msg)
 {
@@ -689,9 +719,8 @@ void ActionListener::OnDropItem(const RawMessageData& rawMsgData,
                          ac->GetFormId());
   }
 
-  Inventory::Entry entry;
-  entry.baseId = baseId;
-  entry.count = msg.count;
+  Inventory::Entry entry =
+    ResolveDroppedEntry(ac->GetInventory(), baseId, msg.count);
 
   ac->DropItem(baseId, entry);
 }
