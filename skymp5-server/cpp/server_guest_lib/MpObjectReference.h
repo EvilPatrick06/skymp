@@ -215,6 +215,12 @@ public:
   void VisitNeighbours(const Visitor& visitor);
 
   void SendInventoryUpdate();
+
+  // The extra (name, enchantment, charge, poison, soul, health) of the entry
+  // this reference was dropped as. The pickup adds the item with it, so a
+  // piece picked up is the piece that was dropped (Thornswood #1719).
+  void SetPickupExtra(const std::optional<Inventory::ExtraData>& extra);
+  const std::optional<Inventory::ExtraData>& GetPickupExtra() const noexcept;
   const std::vector<MpActor*>& GetActorListeners() const noexcept;
 
   static const char* GetPropertyPrefixPrivate() noexcept { return "private."; }
@@ -275,6 +281,7 @@ private:
   std::optional<std::chrono::system_clock::duration> relootTimeOverride;
   std::unique_ptr<uint8_t> chanceNoneOverride;
   bool activationBlocked = false;
+  std::optional<Inventory::ExtraData> pickupExtra;
 
   struct Impl;
   std::shared_ptr<Impl> pImpl;
