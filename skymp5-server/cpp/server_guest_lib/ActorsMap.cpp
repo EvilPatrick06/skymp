@@ -25,6 +25,7 @@ void ActorsMap::Set(Networking::UserId userId, MpActor* actor)
   }
   Erase(userId);
   Erase(actor);
+  actor->InvalidateRuntimeIdentity();
   actorByUserId[userId] = actor;
   userIdByActor[actor] = userId;
 }
@@ -33,6 +34,7 @@ void ActorsMap::Erase(Networking::UserId userId)
 {
   auto actor = Find(userId);
   if (actor) {
+    actor->InvalidateRuntimeIdentity();
     userIdByActor.erase(actor);
     actorByUserId[userId] = nullptr;
   }
@@ -42,6 +44,7 @@ void ActorsMap::Erase(MpActor* actor)
 {
   auto userId = Find(actor);
   if (userId != Networking::InvalidUserId) {
+    actor->InvalidateRuntimeIdentity();
     userIdByActor.erase(actor);
     actorByUserId[userId] = nullptr;
   }

@@ -141,6 +141,7 @@ Napi::Object ScampServer::Init(Napi::Env env, Napi::Object exports)
       InstanceMethod("stopNpcMovement", &ScampServer::StopNpcMovement),
       InstanceMethod("getNavmeshRecords", &ScampServer::GetNavmeshRecords),
       InstanceMethod("getNpcAIState", &ScampServer::GetNpcAIState),
+      InstanceMethod("getActorRuntimeIdentity", &ScampServer::GetActorRuntimeIdentity),
       InstanceMethod("getFactionReactions", &ScampServer::GetFactionReactions),
       InstanceMethod("serverNpcAttack", &ScampServer::ServerNpcAttack),
       InstanceMethod("getLoadedFormCount", &ScampServer::GetLoadedFormCount),
@@ -729,6 +730,16 @@ Napi::Value ScampServer::CompareAndSetInventoryImpl(
         NapiHelper::Stringify(info.Env(), change.Get("replacement")),
         static_cast<uint64_t>(life)
       };
+      if (change.Has("expectedRuntimeIdentity")) {
+        const auto runtime = NapiHelper::ExtractString(
+          change.Get("expectedRuntimeIdentity"), "expectedRuntimeIdentity",
+          std::nullopt, {1, 20});
+        if (runtime[0] == '0' || !std::all_of(runtime.begin(), runtime.end(),
+            [](char c) { return c >= '0' && c <= '9'; })) {
+          throw std::runtime_error("Invalid inventory runtime identity");
+        }
+        property->expectedRuntimeIdentity = std::stoull(runtime);
+      }
       // Serialization can invoke JS getters/toJSON, including a gamemode
       // reload. Validate registration only after those callbacks finish.
       static const auto standard =
@@ -1695,6 +1706,18 @@ Napi::Value ScampServer::GetNavmeshRecords(const Napi::CallbackInfo& info)
     return result;
   } catch (const std::exception& e) {
     throw Napi::Error::New(info.Env(), e.what());
+  }
+}
+
+Napi::Value ScampServer::GetActorRuntimeIdentity(const Napi::CallbackInfo& info)
+{
+  try {
+    const auto id = NapiHelper::ExtractUInt32(info[0], "formId");
+    const auto identity = partOne->worldState.GetFormAt<MpActor>(id).GetRuntimeIdentity();
+    if (!identity) throw std::runtime_error("Actor runtime identity exhausted");
+    return Napi::String::New(info.Env(), std::to_string(identity));
+  } catch (const std::exception& error) {
+    throw Napi::Error::New(info.Env(), error.what());
   }
 }
 

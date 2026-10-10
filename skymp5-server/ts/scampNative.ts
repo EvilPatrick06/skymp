@@ -39,7 +39,10 @@ export interface ScampServer {
   compareAndSetInventoryAndProperty(formId: number, expected: InventorySnapshot,
     expectedReceipt: string, replacement: InventorySnapshot, sequence: number,
     expectedProfileId: number,
-    property: {name: string; expected: unknown; replacement: unknown; expectedLifeGeneration: number}): boolean;
+    property: {name: string; expected: unknown; replacement: unknown; expectedLifeGeneration: number;
+      expectedRuntimeIdentity?: string}): boolean;
+  /** Process-local actor/session revision; never persisted or supplied by clients. */
+  getActorRuntimeIdentity(formId: number): string;
   getInventoryReceipt(formId: number): string;
   getSavedInventoryReceipt(formId: number): string;
   prepareNpcLoad(): number;

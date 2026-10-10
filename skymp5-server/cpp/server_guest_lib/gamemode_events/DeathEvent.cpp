@@ -1,18 +1,25 @@
 #include "DeathEvent.h"
 
 #include "MpActor.h"
+#include "WorldState.h"
 #include <spdlog/spdlog.h>
 
 DeathEvent::DeathEvent(MpActor* actor_, MpActor* optionalKiller_,
                        float healthPercentageBeforeDeath_,
                        float magickaPercentageBeforeDeath_,
                        float staminaPercentageBeforeDeath_)
-  : actor(actor_)
-  , optionalKiller(optionalKiller_)
+  : actorId(actor_ ? actor_->GetFormId() : 0)
+  , killerId(optionalKiller_ ? optionalKiller_->GetFormId() : 0)
+  , runtimeIdentity(actor_ ? actor_->GetRuntimeIdentity() : 0)
   , healthPercentageBeforeDeath(healthPercentageBeforeDeath_)
   , magickaPercentageBeforeDeath(magickaPercentageBeforeDeath_)
   , staminaPercentageBeforeDeath(staminaPercentageBeforeDeath_)
 {
+  if (actor_ && actor_->GetParent()) {
+    actor = std::dynamic_pointer_cast<MpActor>(
+      actor_->GetParent()->LookupFormById(actorId));
+    if (actor.get() != actor_) actor.reset();
+  }
   if (!actor_) {
     spdlog::error("DeathEvent::DeathEvent - actor is nullptr");
   }
@@ -26,9 +33,6 @@ const char* DeathEvent::GetName() const
 
 std::string DeathEvent::GetArgumentsJsonArray() const
 {
-  auto actorId = actor ? actor->GetFormId() : 0;
-  auto killerId = optionalKiller ? optionalKiller->GetFormId() : 0;
-
   std::string result;
   result += "[";
   result += std::to_string(actorId);
@@ -44,7 +48,7 @@ uint32_t DeathEvent::GetDyingActorId() const
     spdlog::error("DeathEvent::GetDyingActorId - actor is nullptr");
     return 0;
   }
-  return actor->GetFormId();
+  return actorId;
 }
 
 float DeathEvent::GetHealthPercentageBeforeDeath() const noexcept
@@ -64,7 +68,7 @@ float DeathEvent::GetStaminaPercentageBeforeDeath() const noexcept
 
 void DeathEvent::OnFireSuccess(WorldState*)
 {
-  if (actor) {
+  if (actor && actor->HasRuntimeIdentity(runtimeIdentity)) {
     actor->RespawnWithDelay();
   }
 };

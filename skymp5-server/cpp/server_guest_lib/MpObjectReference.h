@@ -163,6 +163,7 @@ public:
     std::string expectedDump;
     std::string replacementDump;
     uint64_t expectedLifeGeneration = 0;
+    std::optional<uint64_t> expectedRuntimeIdentity;
   };
   bool CompareAndSetInventory(const Inventory& expected,
                                const std::string& expectedReceipt,

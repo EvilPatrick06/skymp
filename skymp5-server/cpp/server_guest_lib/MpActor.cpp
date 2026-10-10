@@ -30,6 +30,7 @@
 #include <atomic>
 #include <chrono>
 #include <functional>
+#include <limits>
 #include <optional>
 #include <random>
 #include <string>
@@ -88,9 +89,23 @@ struct MpActor::Impl
 
   // THORNSWOOD. See NumberTeleportForOwnClient. 0: nothing outstanding.
   uint32_t newestTeleportSeq = 0;
+  uint64_t runtimeIdentity = 0;
 };
 
 namespace {
+
+uint64_t NextRuntimeIdentity() noexcept
+{
+  static std::atomic<uint64_t> next{1};
+  auto value = next.load(std::memory_order_relaxed);
+  while (value != std::numeric_limits<uint64_t>::max()) {
+    if (next.compare_exchange_weak(value, value + 1,
+                                  std::memory_order_relaxed)) return value;
+  }
+  // Zero revokes identity permanently at exhaustion, including in the
+  // noexcept disconnect path. Never wrap and reuse an earlier revision.
+  return 0;
+}
 
 void RestoreActorValuePatched(MpActor* actor, espm::ActorValue actorValue,
                               float value)
@@ -118,6 +133,25 @@ MpActor::MpActor(const LocationalData& locationalData_,
 {
   pImpl.reset(new Impl);
   asActor = this;
+  InvalidateRuntimeIdentity();
+}
+
+uint64_t MpActor::GetRuntimeIdentity() const noexcept
+{
+  return pImpl->runtimeIdentity;
+}
+
+void MpActor::InvalidateRuntimeIdentity() noexcept
+{
+  pImpl->runtimeIdentity = NextRuntimeIdentity();
+  ++pImpl->respawnTimerIndex;
+  pImpl->isRespawning = false;
+}
+
+bool MpActor::HasRuntimeIdentity(uint64_t expected) const
+{
+  return expected != 0 && GetRuntimeIdentity() == expected && GetParent() &&
+    GetParent()->LookupFormById(GetFormId()).get() == this;
 }
 
 void MpActor::SetServerControlled(bool controlled)
@@ -780,6 +814,7 @@ void MpActor::ApplyChangeForm(const MpChangeForm& newChangeForm)
     throw std::runtime_error(
       "Expected record type to be ACHR, but found REFR");
   }
+  InvalidateRuntimeIdentity();
 
   // Published-to-hidden only. An NPC stays published with an empty dump, so
   // an empty dump alone must not remove anyone. Do this before the assign,
@@ -1277,6 +1312,7 @@ void MpActor::SendAndSetDeathState(bool isDead, bool shouldTeleport)
     nextGeneration = saved.is_null() ? 1 : saved.get<int64_t>() + 1;
   }
 
+  if (isDead != IsDead()) InvalidateRuntimeIdentity();
   auto respawnMsg = GetDeathStateMsg(position, isDead, shouldTeleport);
   if (IsServerControlled()) {
     SendServerStateToObservers(respawnMsg, true);
@@ -1592,6 +1628,7 @@ void MpActor::ModifyActorValuePercentage(espm::ActorValue av,
 
 void MpActor::BeforeDestroy()
 {
+  InvalidateRuntimeIdentity();
   for (auto& sink : pImpl->destroyEventSinks) {
     sink->BeforeDestroy(*this);
   }
@@ -1631,12 +1668,14 @@ void MpActor::Kill(MpActor* killer, bool shouldTeleport)
   // Keep in sync with MpActor::SetIsDead
   SendAndSetDeathState(true, shouldTeleport);
 
+  const auto keepAlive = GetParent()->LookupFormById(GetFormId());
+  const auto runtimeIdentity = GetRuntimeIdentity();
   DeathEvent deathEvent(this, killer, healthPercentageBeforeDeath,
                         magickaPercentageBeforeDeath,
                         staminaPercentageBeforeDeath);
   deathEvent.Fire(GetParent());
 
-  AddDeathItem();
+  if (HasRuntimeIdentity(runtimeIdentity)) AddDeathItem();
 }
 
 void MpActor::RespawnWithDelay(bool shouldTeleport)
@@ -1674,10 +1713,14 @@ void MpActor::RespawnWithDelay(bool shouldTeleport)
     }
     pImpl->isRespawning = true;
     const auto respawnTimerIndex = ++pImpl->respawnTimerIndex;
+    const auto runtimeIdentity = GetRuntimeIdentity();
+    const std::weak_ptr<MpForm> lifetime = worldState->LookupFormById(formId);
     worldState->SetTimer(time).Then([worldState, this, formId, shouldTeleport,
-                                     respawnTimerIndex,
+                                     respawnTimerIndex, runtimeIdentity, lifetime,
                                      respawnTime](Viet::Void) {
-      if (worldState->LookupFormById(formId).get() == this) {
+      const auto keepAlive = lifetime.lock();
+      if (keepAlive.get() == this && HasRuntimeIdentity(runtimeIdentity) &&
+          IsDead() && IsRespawning()) {
         bool isLatestRespawn = respawnTimerIndex == pImpl->respawnTimerIndex;
         if (isLatestRespawn) {
           // This is implemented here, not in MpActor::Respawn because we don't
@@ -1875,12 +1918,14 @@ void MpActor::SetIsDead(bool isDead)
       // Keep in sync with MpActor::Kill
       SendAndSetDeathState(isDead, kShouldTeleport);
 
+      const auto keepAlive = GetParent()->LookupFormById(GetFormId());
+      const auto runtimeIdentity = GetRuntimeIdentity();
       DeathEvent deathEvent(this, nullptr, healthPercentageBeforeDeath,
                             magickaPercentageBeforeDeath,
                             staminaPercentageBeforeDeath);
       deathEvent.Fire(GetParent());
 
-      AddDeathItem();
+      if (HasRuntimeIdentity(runtimeIdentity)) AddDeathItem();
 
       spdlog::trace("MpActor::SetIsDead {:x} - actor is now dead",
                     GetFormId());

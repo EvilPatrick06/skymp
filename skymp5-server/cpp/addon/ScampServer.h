@@ -79,6 +79,7 @@ public:
   Napi::Value StopNpcMovement(const Napi::CallbackInfo& info);
   Napi::Value GetNavmeshRecords(const Napi::CallbackInfo& info);
   Napi::Value GetNpcAIState(const Napi::CallbackInfo& info);
+  Napi::Value GetActorRuntimeIdentity(const Napi::CallbackInfo& info);
   Napi::Value GetFactionReactions(const Napi::CallbackInfo& info);
   Napi::Value ServerNpcAttack(const Napi::CallbackInfo& info);
   Napi::Value GetLoadedFormCount(const Napi::CallbackInfo& info);
