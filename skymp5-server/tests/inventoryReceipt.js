@@ -49,7 +49,7 @@ const property='thornswoodQuests';
 const register=(name,owner=false,neighbors=false)=>server.makeProperty(name,{
   isVisibleByOwner:owner,isVisibleByNeighbors:neighbors,updateOwner:'',updateNeighbor:''});
 const next={v:1,open:{},cool:{wolf:123456}};
-const commit=change=>server.compareAndSetInventoryAndProperty(human,after,receipt,before,2,42,change);
+const commit=change=>server.compareAndSetInventoryAndProperty(human,after,receipt,before,2,42,{expectedLifeGeneration:0,...change});
 for(const name of ['missing','_inventoryReceipt'])
   assert.throws(()=>commit({name,expected:null,replacement:next}),/hidden custom property/);
 register('inventory');
@@ -58,8 +58,26 @@ register('shownOwner',true);register('shownNeighbor',false,true);
 for(const name of ['shownOwner','shownNeighbor'])
   assert.throws(()=>commit({name,expected:null,replacement:next}),/hidden custom property/);
 register(property);
+for(const entry of [{baseId:0x00ffffff,count:1},{baseId:0x3c,count:1},
+  {baseId:15,count:1,enchantmentId:0x00ffffff},{baseId:15,count:1,poisonId:15}]) {
+  assert.throws(()=>server.compareAndSetInventoryAndProperty(human,after,receipt,{entries:[entry]},2,42,
+    {name:property,expected:null,replacement:next,expectedLifeGeneration:0}),/transaction.*form/i);
+  assert.deepEqual(server.get(human,'inventory'),after);
+  assert.equal(server.get(human,property),null);
+  assert.equal(server.getInventoryReceipt(human),receipt);
+}
+assert.throws(()=>commit({name:property,expected:null,replacement:Array(3000).fill(1e-7)}),/transaction property/,
+  'the normalized stored JSON must also fit the property bound');
+for(const life of [-1,0.5,Number.MAX_SAFE_INTEGER+1,undefined])
+  assert.throws(()=>commit({name:property,expected:null,replacement:next,expectedLifeGeneration:life}),/lifeGeneration/i);
+assert.equal(commit({name:property,expected:null,replacement:{toJSON(){
+  server.set(human,'_skympNpcLifeGeneration',1);return next;
+}}}),false,'serialization cannot commit against a replacement actor life');
+assert.deepEqual(server.get(human,'inventory'),after);
+assert.equal(server.getInventoryReceipt(human),receipt);
+server.set(human,'_skympNpcLifeGeneration',0);
 assert.throws(()=>server.compareAndSetInventoryAndProperty(human,after,receipt,before,2,43,
-  {name:property,expected:null,replacement:next}),/profile/);
+  {name:property,expected:null,replacement:next,expectedLifeGeneration:0}),/profile/);
 assert.throws(()=>commit({name:property,expected:null,replacement:'x'.repeat(16384)}),/transaction property/);
 assert.equal(commit({name:property,expected:{},replacement:next}),false);
 // JSON serialization may reload the gamemode. Eligibility must be checked

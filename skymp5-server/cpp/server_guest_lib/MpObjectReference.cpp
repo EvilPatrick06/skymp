@@ -893,6 +893,16 @@ bool MpObjectReference::CompareAndSetInventory(
 
   std::string nextPropertyDump;
   if (property) {
+    const auto life = nlohmann::json::parse(
+      GetDynamicFields().GetValueDump("_skympNpcLifeGeneration"));
+    if (!life.is_null() && (!life.is_number_integer() || life < 0 ||
+                            life > maxSequence)) {
+      throw std::runtime_error("Invalid persisted inventory lifeGeneration");
+    }
+    if (property->expectedLifeGeneration > maxSequence ||
+        property->expectedLifeGeneration != (life.is_null() ? 0 : life.get<uint64_t>())) {
+      return false;
+    }
     if (property->name.empty() || property->name.size() > 128 ||
         property->name == kInventoryReceiptProperty ||
         property->expectedDump.size() > 16 * 1024 ||
@@ -901,6 +911,9 @@ bool MpObjectReference::CompareAndSetInventory(
     }
     const auto expectedProperty = nlohmann::json::parse(property->expectedDump);
     nextPropertyDump = nlohmann::json::parse(property->replacementDump).dump();
+    if (nextPropertyDump.size() > 16 * 1024) {
+      throw std::runtime_error("Invalid inventory transaction property size");
+    }
     if (nlohmann::json::parse(GetDynamicFields().GetValueDump(property->name)) !=
         expectedProperty) {
       return false;

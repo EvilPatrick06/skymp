@@ -274,6 +274,27 @@ TEST_CASE("Saved quest receipts acknowledge the same inventory and property",
   REQUIRE(restarted.worldState.GetSavedInventoryReceipt(reloaded) == receipt);
 }
 
+TEST_CASE("Quest inventory refuses replaced lives and normalized oversized properties",
+          "[inventory-receipt][espm]")
+{
+  PartOne server;
+  AttachSkyrimFiles(server);
+  auto& actor = CreateHuman(server);
+  const auto before = actor.GetInventory();
+  MpObjectReference::InventoryPropertyChange change{ "thornswoodQuests", "null", "{}" };
+  actor.SetPropertyValueDump("_skympNpcLifeGeneration", "1", false, false);
+  REQUIRE_FALSE(actor.CompareAndSetInventory(before, "null", before, 1, &change));
+  actor.SetPropertyValueDump("_skympNpcLifeGeneration", "0", false, false);
+  change.replacementDump = "[";
+  for (int i = 0; i < 3000; ++i) change.replacementDump += i ? ",1e-7" : "1e-7";
+  change.replacementDump += "]";
+  REQUIRE(change.replacementDump.size() < 16 * 1024);
+  REQUIRE_THROWS(actor.CompareAndSetInventory(before, "null", before, 1, &change));
+  REQUIRE(actor.GetInventory().ToJson() == before.ToJson());
+  REQUIRE(actor.GetInventoryReceiptDump() == "null");
+  REQUIRE(actor.GetDynamicFields().GetValueDump(change.name) == "null");
+}
+
 TEST_CASE("Inventory receipt transactions refuse NPC profiles",
           "[inventory-receipt]")
 {

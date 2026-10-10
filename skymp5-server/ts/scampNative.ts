@@ -39,7 +39,7 @@ export interface ScampServer {
   compareAndSetInventoryAndProperty(formId: number, expected: InventorySnapshot,
     expectedReceipt: string, replacement: InventorySnapshot, sequence: number,
     expectedProfileId: number,
-    property: {name: string; expected: unknown; replacement: unknown}): boolean;
+    property: {name: string; expected: unknown; replacement: unknown; expectedLifeGeneration: number}): boolean;
   getInventoryReceipt(formId: number): string;
   getSavedInventoryReceipt(formId: number): string;
   prepareNpcLoad(): number;

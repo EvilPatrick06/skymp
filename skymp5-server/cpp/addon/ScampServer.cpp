@@ -21,6 +21,7 @@
 #include "formulas/TES5DamageFormula.h"
 #include "gamemode_events/DeathEvent.h"
 #include "libespm/IterateFields.h"
+#include "libespm/Utils.h"
 #include "papyrus-vm/Utils.h"
 #include "property_bindings/PropertyBindingFactory.h"
 #include "script_storages/ScriptStorageFactory.h"
@@ -717,9 +718,16 @@ Napi::Value ScampServer::CompareAndSetInventoryImpl(
       const auto change = NapiHelper::ExtractObject(info[6], "property");
       const auto name = NapiHelper::ExtractString(
         change.Get("name"), "property.name", GetPropertyAlphabet(), { 1, 128 });
+      const auto life = NapiHelper::ExtractDouble(
+        change.Get("expectedLifeGeneration"), "lifeGeneration");
+      if (!std::isfinite(life) || std::floor(life) != life ||
+          life < 0 || life > 9007199254740991.0) {
+        throw std::runtime_error("Inventory lifeGeneration must be a nonnegative safe integer");
+      }
       property = MpObjectReference::InventoryPropertyChange{
         name, NapiHelper::Stringify(info.Env(), change.Get("expected")),
-        NapiHelper::Stringify(info.Env(), change.Get("replacement"))
+        NapiHelper::Stringify(info.Env(), change.Get("replacement")),
+        static_cast<uint64_t>(life)
       };
       // Serialization can invoke JS getters/toJSON, including a gamemode
       // reload. Validate registration only after those callbacks finish.
@@ -731,6 +739,24 @@ Napi::Value ScampServer::CompareAndSetInventoryImpl(
           found->second.isVisibleByOwner || found->second.isVisibleByNeighbors) {
         throw std::runtime_error(
           "Inventory transaction requires a registered hidden custom property");
+      }
+      const auto& browser = partOne->GetEspm().GetBrowser();
+      for (const auto* snapshot : { &expected, &replacement }) {
+        for (const auto& entry : snapshot->entries) {
+          const auto base = browser.LookupById(entry.baseId).rec;
+          if (!base || !espm::utils::IsItem(base->GetType())) {
+            throw std::runtime_error("Invalid inventory transaction base form");
+          }
+          for (const auto& field : { std::make_pair(entry.enchantmentId, "ENCH"),
+                                    std::make_pair(entry.poisonId, "ALCH") }) {
+            if (field.first) {
+              const auto record = browser.LookupById(*field.first).rec;
+              if (!record || record->GetType() != field.second) {
+                throw std::runtime_error("Invalid inventory transaction metadata form");
+              }
+            }
+          }
+        }
       }
     }
     auto& actor = partOne->worldState.GetFormAt<MpActor>(id);
