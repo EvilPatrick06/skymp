@@ -60,8 +60,9 @@ TEST_CASE("A dropped piece keeps its extra through the pickup",
   constexpr uint32_t ironDagger = 0x0001397E;
   constexpr uint32_t ironSword = 0x00012EB7;
   constexpr uint32_t ironHelmet = 0x00012E4D;
-  // KEYM WhiterunYsoldasHouseKey in Skyrim.esm
-  constexpr uint32_t houseKey = 0x00093B13;
+  // MISC dunRagnTorstensKey in Skyrim.esm. Thornswood's keys are MISC
+  // records; KEYM is not in espm::utils::IsItem, so it is not picked up.
+  constexpr uint32_t houseKey = 0x000AADB7;
   DoConnect(partOne, 0);
 
   partOne.CreateActor(0xff000000, { 1, 2, 3 }, 0, 0x3c);
