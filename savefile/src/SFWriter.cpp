@@ -282,8 +282,10 @@ void SaveFile_::Writer::WriteGlobalDataTable(GlobalData& globalData)
         globalData.data.get())); /// TODO Always Empty.
       break;
     default:
-      assert(0);
-      break;
+      // assert(0) here was compiled out of a Release build, which then wrote
+      // the save on without this block (Thornswood #2001).
+      throw std::runtime_error("savefile writes no global data of type " +
+                               std::to_string(globalData.type));
   }
   assert(stepAfterWriteData == this->currentWritePositionInFile);
 }

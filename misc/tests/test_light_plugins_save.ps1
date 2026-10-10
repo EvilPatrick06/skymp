@@ -6,6 +6,10 @@
 #   test_quest_run_data   savefile reads a quest run data item of type 0,
 #                         which a new game saved after player.additem holds,
 #                         and writes the save back byte for byte
+#   test_vsval_unknown_size        savefile stops on a vsval of size type 3
+#                         and names it (Thornswood #2001)
+#   test_global_data_unknown_type  savefile stops writing global data of a
+#                         type it does not know and names it (#2001)
 #   test_menu_save_names  every form the template names still names its
 #                         plugin once a client's plugins are listed, and the
 #                         client's forms name the plugins the client meant
@@ -93,7 +97,7 @@ try {
     ForEach-Object { Join-Path $Source ('savefile\src\' + $_ + '.cpp') }
   Push-Location $scratch
   try {
-    foreach ($test in 'test_save_format', 'test_quest_run_data', 'test_menu_save_names', 'test_light_face_refs', 'test_menu_template') {
+    foreach ($test in 'test_save_format', 'test_quest_run_data', 'test_vsval_unknown_size', 'test_global_data_unknown_type', 'test_menu_save_names', 'test_light_face_refs', 'test_menu_template') {
       $out = & cl.exe /nologo /EHsc /std:c++17 /MT /utf-8 ('/I' + $scratch) ('/I' + $include) ('/I' + (Join-Path $Source 'savefile\include')) `
         ('/I' + $tests) ('/I' + $platform) (Join-Path $tests ($test + '.cpp')) @savefile $zlib ('/Fe:' + $test + '.exe') 2>&1
       if ($LASTEXITCODE) {
