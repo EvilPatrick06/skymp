@@ -1556,8 +1556,25 @@ void MpObjectReference::GivePickupItemsToActivationSource(
     uint32_t resultingCount =
       std::max(kCountDefault, std::max(countRecord, countChangeForm));
 
-    activationSource.AddItem(resultItem, resultingCount);
+    if (pickupExtra) {
+      activationSource.AddItems(
+        { Inventory::Entry(resultItem, resultingCount, *pickupExtra) });
+    } else {
+      activationSource.AddItem(resultItem, resultingCount);
+    }
   }
+}
+
+void MpObjectReference::SetPickupExtra(
+  const std::optional<Inventory::ExtraData>& extra)
+{
+  pickupExtra = extra;
+}
+
+const std::optional<Inventory::ExtraData>& MpObjectReference::GetPickupExtra()
+  const noexcept
+{
+  return pickupExtra;
 }
 
 void MpObjectReference::ProcessActivateNormal(
