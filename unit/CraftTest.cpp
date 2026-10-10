@@ -339,9 +339,10 @@ TEST_CASE("A craft the server cannot carry out sends the client its "
 
   RawMessageData msgData;
   msgData.userId = 0;
-  REQUIRE_THROWS_WITH(
-    p.GetActionListener().OnCraftItem(msgData, msg),
-    ContainsSubstring("Source inventory doesn't have enough 0x1be1a"));
+  // Since Thornswood #1618 the missing input is caught before the gamemode is
+  // asked, so the craft is refused rather than thrown on; the inventory goes
+  // back all the same.
+  REQUIRE_NOTHROW(p.GetActionListener().OnCraftItem(msgData, msg));
 
   // Nothing was taken and nothing was made.
   REQUIRE(ac.GetInventory() == before);
@@ -466,6 +467,86 @@ TEST_CASE("A craft that goes through still sends the inventory with the "
   auto sent = SentInventories(p, 0);
   REQUIRE(sent.size() == 1);
   REQUIRE(sent[0] == ac.GetInventory());
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
+
+namespace {
+// THORNSWOOD PATCH (Thornswood #1618). Counts every onCraft the gamemode is
+// asked about while armed, recipe or not, and allows them all, so a craft
+// that reaches the gamemode is visible here.
+class CountCrafts : public PartOneListener
+{
+public:
+  void OnConnect(Networking::UserId) override {}
+  void OnDisconnect(Networking::UserId) override {}
+  void OnCustomPacket(Networking::UserId,
+                      const simdjson::dom::element&) override
+  {
+  }
+  bool OnMpApiEvent(const GameModeEvent& event) override
+  {
+    if (armed && event.GetName() == std::string("onCraft")) {
+      asked++;
+    }
+    return true;
+  }
+
+  bool armed = false;
+  int asked = 0;
+};
+}
+
+TEST_CASE("A craft whose inputs the server does not hold never reaches "
+          "mp.onCraft (Thornswood #1618)",
+          "[Craft][espm]")
+{
+  // The iron helmet recipe's inputs, as the client claims them. The actor
+  // holds only part of them.
+  const Inventory claimedInputs =
+    Inventory().AddItem(0x5ace4, 1).AddItem(0x800e4, 3).AddItem(0x5ace5, 4);
+
+  PartOne& p = GetPartOne();
+  const auto workbenchId = 0x1ad6e;
+  auto& refr = p.worldState.GetFormAt<MpObjectReference>(workbenchId);
+
+  DoConnect(p, 0);
+  p.CreateActor(0xff000000, refr.GetPos(), 0,
+                refr.GetCellOrWorld().ToFormId(p.worldState.espmFiles));
+  p.SetUserActor(0, 0xff000000);
+  auto& ac = p.worldState.GetFormAt<MpActor>(0xff000000);
+  ac.AddItem(0x5ace4, 1);
+  ac.AddItem(0x800e4, 3);
+  ac.AddItem(0x5ace5, 3); // one short
+
+  auto gamemode = std::make_shared<CountCrafts>();
+  p.AddListener(gamemode);
+  gamemode->armed = true;
+
+  RawMessageData msgData;
+  msgData.userId = 0;
+  const Inventory before = ac.GetInventory();
+
+  // With a recipe.
+  CraftItemMessage withRecipe;
+  withRecipe.data.craftInputObjects = claimedInputs;
+  withRecipe.data.workbench = workbenchId;
+  withRecipe.data.resultObjectId = 0x1398a;
+  CHECK_NOTHROW(p.GetActionListener().OnCraftItem(msgData, withRecipe));
+
+  // With no recipe (the alchemy and enchanting path).
+  CraftItemMessage noRecipe;
+  noRecipe.data.craftInputObjects = Inventory().AddItem(0x5ace5, 4);
+  noRecipe.data.workbench = workbenchId;
+  noRecipe.data.resultObjectId = 0xd8d4e;
+  CHECK_NOTHROW(p.GetActionListener().OnCraftItem(msgData, noRecipe));
+
+  gamemode->armed = false;
+
+  CHECK(gamemode->asked == 0);
+  CHECK(ac.GetInventory() == before);
+  CHECK(ac.GetInventory().GetItemCount(0x1398a) == 0);
 
   p.DestroyActor(0xff000000);
   DoDisconnect(p, 0);

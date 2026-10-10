@@ -166,7 +166,20 @@ void WorldState::AddForm(std::unique_ptr<MpForm> form, uint32_t formId,
 
   // MpObjectReference::Init requests save for newly created forms. That's why
   // we want formIndex to be assigned before init.
-  form->Init(this, formId, optionalChangeFormToApply != nullptr);
+  // THORNSWOOD PATCH (Thornswood #1277). A form whose Init throws is never
+  // inserted and is freed on the way out, so its lookup entry and its index
+  // are given back here rather than left pointing at it.
+  try {
+    form->Init(this, formId, optionalChangeFormToApply != nullptr);
+  } catch (...) {
+    if (auto refr = form->AsObjectReference()) {
+      ForgetRefrByIdx(refr);
+      if (formIdxManager) {
+        formIdxManager->DestroyID(refr->idx);
+      }
+    }
+    throw;
+  }
 
   auto it = forms.insert({ formId, std::move(form) }).first;
 
@@ -1197,6 +1210,13 @@ std::shared_ptr<std::vector<uint32_t>> WorldState::GetAllForms(
   return resCache;
 }
 
+void WorldState::ForgetRefrByIdx(MpObjectReference* refr)
+{
+  const auto idx = refr->GetIdx();
+  if (idx < refrByIdxUnreliable.size() && refrByIdxUnreliable[idx] == refr) {
+    refrByIdxUnreliable[idx] = nullptr;
+  }
+}
 MpForm* WorldState::LookupFormByIdx(int idx)
 {
   if (formIdxManager) {
