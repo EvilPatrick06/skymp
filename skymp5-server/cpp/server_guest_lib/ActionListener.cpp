@@ -17,6 +17,8 @@
 #include "gamemode_events/UpdateAppearanceAttemptEvent.h"
 #include "gamemode_events/UpdateEquipmentAttemptEvent.h"
 #include "script_objects/EspmGameObject.h"
+#include <algorithm>
+#include <cmath>
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 #include <spdlog/spdlog.h>
@@ -36,10 +38,8 @@ uint32_t LongToNormal(uint64_t longFormId)
 }
 }
 
-MpActor* ActionListener::SendToNeighbours(uint32_t idx,
-                                          Networking::UserId userId,
-                                          Networking::PacketData data,
-                                          size_t length, bool reliable)
+MpActor* ActionListener::NeighboursTarget(uint32_t idx,
+                                          Networking::UserId userId)
 {
   MpActor* myActor = partOne.serverState.ActorByUser(userId);
   // The old behavior is doing nothing in that case. This is covered by tests
@@ -90,10 +90,43 @@ MpActor* ActionListener::SendToNeighbours(uint32_t idx,
     }
   }
 
+  return actor;
+}
+
+MpActor* ActionListener::SendToNeighbours(uint32_t idx,
+                                          Networking::UserId userId,
+                                          Networking::PacketData data,
+                                          size_t length, bool reliable)
+{
+  MpActor* actor = NeighboursTarget(idx, userId);
+  if (!actor) {
+    return nullptr;
+  }
+
   for (auto listener : actor->GetActorListeners()) {
     auto targetuserId = partOne.serverState.UserByActor(listener);
     if (targetuserId != Networking::InvalidUserId) {
       partOne.GetSendTarget().Send(targetuserId, data, length, reliable);
+    }
+  }
+
+  return actor;
+}
+
+MpActor* ActionListener::SendToNeighbours(uint32_t idx,
+                                          Networking::UserId userId,
+                                          const IMessageBase& message,
+                                          bool reliable)
+{
+  MpActor* actor = NeighboursTarget(idx, userId);
+  if (!actor) {
+    return nullptr;
+  }
+
+  for (auto listener : actor->GetActorListeners()) {
+    auto targetuserId = partOne.serverState.UserByActor(listener);
+    if (targetuserId != Networking::InvalidUserId) {
+      listener->SendToUser(message, reliable);
     }
   }
 
@@ -227,6 +260,16 @@ void ActionListener::OnUpdateAnimation(const RawMessageData& rawMsgData,
   targetActor->SetLastAnimEvent(msg.data);
 }
 
+namespace {
+float ClampAppearanceWeight(float weight)
+{
+  if (!std::isfinite(weight)) {
+    return 0.f;
+  }
+  return std::clamp(weight, 0.f, 100.f);
+}
+}
+
 void ActionListener::OnUpdateAppearance(const RawMessageData& rawMsgData,
                                         const UpdateAppearanceMessage& msg)
 {
@@ -241,9 +284,19 @@ void ActionListener::OnUpdateAppearance(const RawMessageData& rawMsgData,
   const bool isAllowed = actor->IsRaceMenuOpen();
 
   if (isAllowed) {
+    // Neighbours get the parsed and checked appearance, never the client's
+    // raw bytes: the weight is held to the race menu's 0 to 100 and fields
+    // the engine does not know are not passed on (Thornswood #1005).
+    Appearance checked = msg.data.value();
+    checked.weight = ClampAppearanceWeight(checked.weight);
+
     actor->SetRaceMenuOpen(false);
-    actor->SetAppearance(&msg.data.value());
-    SendToNeighbours(msg.idx, rawMsgData, true);
+    actor->SetAppearance(&checked);
+
+    UpdateAppearanceMessage forwarded;
+    forwarded.idx = msg.idx;
+    forwarded.data = checked;
+    SendToNeighbours(msg.idx, rawMsgData.userId, forwarded, true);
   }
 
   UpdateAppearanceAttemptEvent updateAppearanceAttemptEvent(

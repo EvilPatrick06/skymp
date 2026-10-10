@@ -108,6 +108,14 @@ private:
   MpActor* SendToNeighbours(uint32_t idx, const RawMessageData& rawMsgData,
                             bool reliable = false);
 
+  // Sends a server-built message instead of the client's bytes, to the same
+  // neighbours and under the same checks.
+  MpActor* SendToNeighbours(uint32_t idx, Networking::UserId userId,
+                            const IMessageBase& message, bool reliable);
+
+  // The checks SendToNeighbours makes; returns the target actor or nullptr.
+  MpActor* NeighboursTarget(uint32_t idx, Networking::UserId userId);
+
   PartOne& partOne;
 
   // TODO: inverse dependency
