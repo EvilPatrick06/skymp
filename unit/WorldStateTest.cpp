@@ -239,3 +239,68 @@ TEST_CASE("A saved character whose race can be read still loads",
   REQUIRE(worldState.GetUnreadableChangeForms().empty());
   REQUIRE(worldState.GenerateFormId() == 0xff000001);
 }
+
+namespace {
+// An actor whose Init throws, standing in for any form that fails to
+// initialize after AddForm has given it an index (Thornswood #1277).
+class ActorThatFailsInit : public MpActor
+{
+public:
+  using MpActor::MpActor;
+  void Init(WorldState*, uint32_t, bool) override
+  {
+    throw std::runtime_error("init failed on purpose");
+  }
+};
+
+std::unique_ptr<MpForm> MakeUnownedActor()
+{
+  return std::make_unique<MpActor>(LocationalData(),
+                                   FormCallbacks::DoNothing());
+}
+}
+
+TEST_CASE("LookupFormByIdx returns null for a destroyed actor and the new "
+          "actor when its index is reused (Thornswood #1277)",
+          "[WorldState]")
+{
+  WorldState worldState;
+
+  worldState.AddForm(MakeUnownedActor(), 0xff000001);
+  auto& first = worldState.GetFormAt<MpActor>(0xff000001);
+  const int idx = static_cast<int>(first.GetIdx());
+  REQUIRE(worldState.LookupFormByIdx(idx) == &first);
+
+  worldState.DestroyForm<MpActor>(0xff000001);
+  REQUIRE(worldState.LookupFormByIdx(idx) == nullptr);
+
+  worldState.AddForm(MakeUnownedActor(), 0xff000002);
+  auto& second = worldState.GetFormAt<MpActor>(0xff000002);
+  REQUIRE(static_cast<int>(second.GetIdx()) == idx);
+  REQUIRE(worldState.LookupFormByIdx(idx) == &second);
+}
+
+TEST_CASE("A form whose Init fails leaves no index and no lookup entry "
+          "behind (Thornswood #1277)",
+          "[WorldState]")
+{
+  WorldState worldState;
+
+  worldState.AddForm(MakeUnownedActor(), 0xff000001);
+  const int firstIdx =
+    static_cast<int>(worldState.GetFormAt<MpActor>(0xff000001).GetIdx());
+  const int failedIdx = firstIdx + 1;
+
+  REQUIRE_THROWS_WITH(
+    worldState.AddForm(std::make_unique<ActorThatFailsInit>(
+                         LocationalData(), FormCallbacks::DoNothing()),
+                       0xff000002),
+    ContainsSubstring("init failed on purpose"));
+  REQUIRE(worldState.LookupFormByIdx(failedIdx) == nullptr);
+
+  // The failed form's index was given back, so the next form takes it.
+  worldState.AddForm(MakeUnownedActor(), 0xff000003);
+  auto& next = worldState.GetFormAt<MpActor>(0xff000003);
+  REQUIRE(static_cast<int>(next.GetIdx()) == failedIdx);
+  REQUIRE(worldState.LookupFormByIdx(failedIdx) == &next);
+}

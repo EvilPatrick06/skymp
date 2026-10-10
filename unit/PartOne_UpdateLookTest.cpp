@@ -175,3 +175,76 @@ TEST_CASE("UpdateAppearance2", "[PartOne]")
     nlohmann::json::parse(partOne.worldState.GetFormAt<MpActor>(0xff000ABC)
                             .GetAppearanceAsJson()) == jAppearance["data"]);
 }
+
+TEST_CASE("A weight of 300 never reaches a neighbour", "[PartOne]")
+{
+  // Thornswood #1005: the engine forwards the parsed and checked appearance,
+  // not the client's raw bytes.
+  PartOne partOne;
+
+  DoConnect(partOne, 0);
+  partOne.CreateActor(0xff000ABC, { 1.f, 2.f, 3.f }, 180.f, 0x3c);
+  partOne.SetUserActor(0, 0xff000ABC);
+  partOne.SetRaceMenuOpen(0xff000ABC, true);
+
+  DoConnect(partOne, 1);
+  partOne.CreateActor(0xffABCABC, { 11.f, 22.f, 33.f }, 180.f, 0x3c);
+  partOne.SetUserActor(1, 0xffABCABC);
+
+  partOne.Messages().clear();
+  auto sent = jAppearance;
+  sent["data"]["weight"] = 300;
+  sent["data"]["notAnAppearanceField"] = "carried by the raw bytes";
+  DoMessage(partOne, 0, sent);
+
+  auto expected = jAppearance["data"];
+  expected["weight"] = 100;
+
+  int forwarded = 0;
+  for (auto& m : partOne.Messages()) {
+    if (m.j["t"] == MsgType::UpdateAppearance) {
+      REQUIRE(m.j["idx"] == 0);
+      REQUIRE(m.j["data"]["weight"] == 100);
+      REQUIRE(!m.j["data"].contains("notAnAppearanceField"));
+      REQUIRE(m.j["data"] == expected);
+      ++forwarded;
+    }
+    if (m.j["t"] == MsgType::CreateActor && m.j.contains("appearance")) {
+      REQUIRE(m.j["appearance"]["weight"] == 100);
+    }
+  }
+  // the neighbour (user 1) and the sender's own echo (user 0)
+  REQUIRE(forwarded == 2);
+
+  auto& ac = partOne.worldState.GetFormAt<MpActor>(0xff000ABC);
+  REQUIRE(ac.GetAppearance() != nullptr);
+  REQUIRE(ac.GetAppearance()->weight == 100.f);
+}
+
+TEST_CASE("A negative appearance weight is held to 0", "[PartOne]")
+{
+  PartOne partOne;
+
+  DoConnect(partOne, 0);
+  partOne.CreateActor(0xff000ABC, { 1.f, 2.f, 3.f }, 180.f, 0x3c);
+  partOne.SetUserActor(0, 0xff000ABC);
+  partOne.SetRaceMenuOpen(0xff000ABC, true);
+
+  DoConnect(partOne, 1);
+  partOne.CreateActor(0xffABCABC, { 11.f, 22.f, 33.f }, 180.f, 0x3c);
+  partOne.SetUserActor(1, 0xffABCABC);
+
+  partOne.Messages().clear();
+  auto sent = jAppearance;
+  sent["data"]["weight"] = -50;
+  DoMessage(partOne, 0, sent);
+
+  for (auto& m : partOne.Messages()) {
+    if (m.j["t"] == MsgType::UpdateAppearance) {
+      REQUIRE(m.j["data"]["weight"] == 0);
+    }
+  }
+  REQUIRE(partOne.worldState.GetFormAt<MpActor>(0xff000ABC)
+            .GetAppearance()
+            ->weight == 0.f);
+}
