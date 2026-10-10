@@ -7,10 +7,47 @@
 #include "WorldState.h"
 #include "gamemode_events/CraftEvent.h"
 #include <algorithm>
+#include <map>
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 #include <spdlog/spdlog.h>
 #include <vector>
+
+namespace {
+/*
+  THORNSWOOD PATCH (Thornswood #1618). The inputs are checked against the
+  actor's own inventory before the gamemode is asked.
+
+  The recipe is matched against what the client says went in, and
+  CraftEvent::OnFireSuccess removes the inputs only after mp.onCraft has run.
+  When the server did not hold them, that removal threw ("Source inventory
+  doesn't have enough") after the gamemode had already acted on the craft:
+  taken the charcoal and the tool handle, started the key timer, credited the
+  work. So a craft whose inputs the server does not hold is refused here,
+  before CraftEvent exists, and the gamemode never hears of it. Counts are
+  summed per base id, so a recipe that lists one item twice needs both.
+*/
+bool ActorHoldsEveryInput(const MpActor& me,
+                          const std::vector<Inventory::Entry>& entries)
+{
+  std::map<uint32_t, uint64_t> needed;
+  for (const auto& entry : entries) {
+    needed[entry.baseId] += entry.count;
+  }
+  const Inventory& inventory = me.GetInventory();
+  for (const auto& [baseId, count] : needed) {
+    const uint64_t held = inventory.GetItemCount(baseId);
+    if (held < count) {
+      spdlog::warn("CraftService - actor {:#x} holds {} of {:#x} but the "
+                   "craft needs {}, so it is refused without asking the "
+                   "gamemode",
+                   me.GetFormId(), held, baseId, count);
+      return false;
+    }
+  }
+  return true;
+}
+}
 
 CraftService::CraftService(PartOne& partOne_)
   : partOne(partOne_)
@@ -193,6 +230,10 @@ bool CraftService::CraftItem(MpActor* me, const Inventory& inputObjects,
       "workbenchId={:#x}, resultObjectId={:#x}",
       inputObjects.ToJson().dump(), workbenchId, resultObjectId);
 
+    if (!ActorHoldsEveryInput(*me, inputObjects.entries)) {
+      return false;
+    }
+
     CraftEvent craftEvent(me, resultObjectId, 1, 0, inputObjects.entries,
                           workbenchId);
     if (!craftEvent.Fire(me->GetParent())) {
@@ -370,6 +411,10 @@ bool CraftService::UseCraftRecipe(MpActor* me, const espm::COBJ* recipeUsed,
   }
 
   auto recipeId = espm::utils::GetMappedId(recipeUsed->GetId(), *mapping);
+
+  if (!ActorHoldsEveryInput(*me, entries)) {
+    return false;
+  }
 
   CraftEvent craftEvent(me, outputFormId, recipeData.outputCount, recipeId,
                         entries, workbenchId);
