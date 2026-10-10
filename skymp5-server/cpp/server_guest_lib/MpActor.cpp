@@ -1502,10 +1502,11 @@ void MpActor::EnsureTemplateChainEvaluated(espm::Loader& loader,
     mode);
 }
 
-void MpActor::AddDeathItem()
+void MpActor::AddDeathItem(uint64_t expectedRuntimeIdentity)
 {
   auto map = EvaluateDeathItem();
   for (auto& p : map) {
+    if (!HasRuntimeIdentity(expectedRuntimeIdentity)) return;
     AddItem(p.first, p.second);
   }
 }
@@ -1675,7 +1676,7 @@ void MpActor::Kill(MpActor* killer, bool shouldTeleport)
                         staminaPercentageBeforeDeath);
   deathEvent.Fire(GetParent());
 
-  if (HasRuntimeIdentity(runtimeIdentity)) AddDeathItem();
+  if (HasRuntimeIdentity(runtimeIdentity)) AddDeathItem(runtimeIdentity);
 }
 
 void MpActor::RespawnWithDelay(bool shouldTeleport)
@@ -1901,7 +1902,9 @@ void MpActor::SetRespawnTime(float time)
 
 void MpActor::SetIsDead(bool isDead)
 {
-  spdlog::trace("MpActor::SetIsDead {:x} - isDead: {}", GetFormId(), isDead);
+  const auto formId = GetFormId();
+  const auto keepAlive = GetParent() ? GetParent()->LookupFormById(formId) : nullptr;
+  spdlog::trace("MpActor::SetIsDead {:x} - isDead: {}", formId, isDead);
 
   constexpr bool kShouldTeleport = false;
 
@@ -1918,25 +1921,24 @@ void MpActor::SetIsDead(bool isDead)
       // Keep in sync with MpActor::Kill
       SendAndSetDeathState(isDead, kShouldTeleport);
 
-      const auto keepAlive = GetParent()->LookupFormById(GetFormId());
       const auto runtimeIdentity = GetRuntimeIdentity();
       DeathEvent deathEvent(this, nullptr, healthPercentageBeforeDeath,
                             magickaPercentageBeforeDeath,
                             staminaPercentageBeforeDeath);
       deathEvent.Fire(GetParent());
 
-      if (HasRuntimeIdentity(runtimeIdentity)) AddDeathItem();
+      if (HasRuntimeIdentity(runtimeIdentity)) AddDeathItem(runtimeIdentity);
 
       spdlog::trace("MpActor::SetIsDead {:x} - actor is now dead",
-                    GetFormId());
+                    formId);
     } else {
       spdlog::trace("MpActor::SetIsDead {:x} - actor is already dead",
-                    GetFormId());
+                    formId);
     }
   } else {
     // same as SendAndSetDeathState but resets isRespawning flag
     Respawn(kShouldTeleport);
-    spdlog::trace("MpActor::SetIsDead {:x} - actor is now alive", GetFormId());
+    spdlog::trace("MpActor::SetIsDead {:x} - actor is now alive", formId);
   }
 }
 

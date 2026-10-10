@@ -273,7 +273,7 @@ private:
     ChangeFormGuard::Mode mode = ChangeFormGuard::Mode::RequestSave);
 
   std::map<uint32_t, uint32_t> EvaluateDeathItem();
-  void AddDeathItem();
+  void AddDeathItem(uint64_t expectedRuntimeIdentity);
   void LoadFactions();
 
 protected:
