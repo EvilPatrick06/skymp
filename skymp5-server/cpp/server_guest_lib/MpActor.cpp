@@ -338,6 +338,33 @@ void MpActor::ReplaceEquipment(Equipment newEquipment)
   }
 }
 
+bool MpActor::RenameEquipment(const Equipment& renamed)
+{
+  const Equipment& current = GetEquipment();
+  if (renamed.inv.entries.size() != current.inv.entries.size() ||
+      renamed.leftSpell != current.leftSpell ||
+      renamed.rightSpell != current.rightSpell ||
+      renamed.voiceSpell != current.voiceSpell ||
+      renamed.instantSpell != current.instantSpell) {
+    return false;
+  }
+
+  Equipment next = current;
+  for (size_t i = 0; i < next.inv.entries.size(); ++i) {
+    Inventory::Entry asRenamed = current.inv.entries[i];
+    asRenamed.name = renamed.inv.entries[i].name;
+    if (asRenamed != renamed.inv.entries[i]) {
+      return false;
+    }
+    next.inv.entries[i].name = renamed.inv.entries[i].name;
+  }
+
+  if (next != current) {
+    SetEquipment(next);
+  }
+  return true;
+}
+
 void MpActor::AddSpell(const uint32_t spellId)
 {
   EditChangeForm([&](MpChangeForm& changeForm) {

@@ -239,6 +239,15 @@ public:
   // can see it. The change is counted here. See EquipmentBinding::Set.
   void ReplaceEquipment(Equipment newEquipment);
 
+  // THORNSWOOD (Thornswood #1651). Gives the entries of this actor's
+  // equipment record the names in `renamed`, when `renamed` is the record
+  // with nothing but names changed: the same entries in the same order, the
+  // same counts, extras, worn flags and spells. Returns false and changes
+  // nothing otherwise. Nobody is told, because a name changes nothing anybody
+  // sees on the actor. This is how the record follows the gamemode renaming
+  // a piece in the pack; see EquipmentBinding::Set.
+  bool RenameEquipment(const Equipment& renamed);
+
   void AddSpell(uint32_t spellId);
   void RemoveSpell(uint32_t spellId);
 
