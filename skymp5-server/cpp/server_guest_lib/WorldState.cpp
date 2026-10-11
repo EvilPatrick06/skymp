@@ -372,8 +372,14 @@ bool WorldState::RequestPreparedSave(MpObjectReference& ref,
 
   // All throwing work precedes both queue publication and the live commit.
   if (pImpl->changesByIdx.size() <= idx) pImpl->changesByIdx.resize(idx + 1);
-  static_assert(std::is_nothrow_move_assignable_v<std::optional<MpChangeForm>>);
-  pImpl->changesByIdx[idx] = std::move(snapshot);
+  static_assert(std::is_nothrow_move_assignable_v<MpChangeForm>);
+  auto& queued = pImpl->changesByIdx[idx];
+  if (queued) *queued = std::move(snapshot);
+  else {
+    // MSVC's containers may allocate when move-constructing. Construction
+    // failure leaves this previously empty slot empty and the live actor intact.
+    queued.emplace(std::move(snapshot));
+  }
   pImpl->changesByIdxEmpty = false;
   return true;
 }
