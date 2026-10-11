@@ -21,6 +21,7 @@ import {
   ActorBase,
   FormType,
   Form,
+  renameInventoryItems,
 } from "skyrimPlatform";
 
 export interface Extra {
@@ -48,18 +49,33 @@ export interface Inventory {
   entries: Entry[];
 }
 
-// 'loxsword (Legendary)' => 'loxsword'
-const getRealName = (s?: string): string => {
-  if (!s) {
-    return s as string;
-  }
+/*
+  THORNSWOOD PATCH (Thornswood #1651). What the game adds to a name, and only
+  that.
 
-  const arr = s.split(" ");
-  if (arr.length && arr[arr.length - 1].match(/^\(.*\)$/)) {
-    arr.pop();
-  }
-  return arr.join(" ");
-};
+  The game writes a tempered piece's level on the end of its name when it
+  draws it: ExtraTextDisplayData keeps the name it was given and its length
+  (customNameLength in CommonLib), and GetDisplayName adds " (Fine)" up to
+  " (Legendary)" (the sHealthDataPrefixWeap and sHealthDataPrefixArmo game
+  settings) for the piece's health. So "loxsword" reads back as "loxsword
+  (Legendary)", and a piece with no name of its own as "Iron Sword (Fine)".
+  A piece that is not tempered has a health of 1, which extractExtraData
+  leaves out, and gets nothing added.
+
+  This used to drop any trailing "(...)" from both names before comparing.
+  That made "Iron Sword (85%)" equal to "Iron Sword (84%)" and to a plain
+  "Iron Sword", so a piece the server renamed (a Thornswood piece carries its
+  condition on its name) never reached the game: getDiff found no difference
+  and applyInventory added nothing until the next login. Now a name equals
+  another exactly, or, on a tempered piece, with one level added to it.
+*/
+const isTempered = (e: Entry): boolean => (e.health ?? 1) > 1;
+
+// named is plain with the game's " (...)" level on the end
+const hasLevelAdded = (named: string, plain: string): boolean =>
+  named.length > plain.length &&
+  named.substring(0, plain.length) === plain &&
+  /^ \([^()]+\)$/.test(named.substring(plain.length));
 
 // 'aaaaaaaaaaaaaaaa' => 'aaa...'
 const cropName = (s?: string): string => {
@@ -77,37 +93,29 @@ const cropName = (s?: string): string => {
     : s;
 };
 
-const checkIfNameIsGeneratedByGame = (
-  aStr: string,
-  bStr: string,
-  formName: string
-) => {
-  if (!aStr.length && bStr.startsWith(formName)) {
-    const bEnding = bStr.substr(formName.length);
-    if (!bEnding.length || bEnding.match(/^\s\(.*\)$/)) {
-      return true;
-    }
-  }
-  return false;
-};
-
 const namesEqual = (a: Entry, b: Entry): boolean => {
-  const aStr = a.name || "";
-  const bStr = b.name || "";
-  if (cropName(getRealName(aStr)) === cropName(getRealName(bStr))) {
+  let aStr = a.name || "";
+  let bStr = b.name || "";
+  if (cropName(aStr) === cropName(bStr)) {
     return true;
   }
 
-  if (a.baseId === b.baseId) {
+  // No name is the base's own name: applyInventory writes the form's name
+  // on a piece the server sends without one.
+  if (a.baseId === b.baseId && (!aStr || !bStr)) {
     const form = Game.getFormEx(a.baseId);
-    if (form) {
-      const formName = form.getName();
-      if (
-        checkIfNameIsGeneratedByGame(aStr, bStr, formName) ||
-        checkIfNameIsGeneratedByGame(bStr, aStr, formName)
-      )
+    const formName = form ? form.getName() : "";
+    if (formName) {
+      aStr = aStr || formName;
+      bStr = bStr || formName;
+      if (cropName(aStr) === cropName(bStr)) {
         return true;
+      }
     }
+  }
+
+  if (isTempered(a) || isTempered(b)) {
+    return hasLevelAdded(aStr, bStr) || hasLevelAdded(bStr, aStr);
   }
 
   return false;
@@ -130,6 +138,12 @@ const extrasEqual = (a: Entry, b: Entry, ignoreWorn = false) => {
 
 export const inventoryEntriesEqual = (a: Entry, b: Entry, ignoreWorn = false): boolean =>
   a.baseId === b.baseId && extrasEqual(a, b, ignoreWorn);
+
+// Thornswood #1651. The same piece under another name: what a rename by the
+// server leaves behind.
+export const inventoryEntriesEqualExceptName = (a: Entry, b: Entry, ignoreWorn = false): boolean =>
+  a.baseId === b.baseId &&
+  extrasEqual({ ...a, name: undefined }, { ...b, name: undefined }, ignoreWorn);
 
 export const hasExtras = (e: Entry): boolean => {
   return !extrasEqual(e, { baseId: 0, count: 0 });
@@ -348,9 +362,60 @@ export const applyInventory = (
   ignoreWorn = false
 ): boolean => {
   resetInventoryBase(refr);
-  const diff = getDiff(newInventory, getInventory(refr), ignoreWorn).entries;
+  const actual = getInventory(refr);
+  let diff = getDiff(newInventory, actual, ignoreWorn).entries;
 
   let res = true;
+
+  /*
+    THORNSWOOD PATCH (Thornswood #1651). A rename is applied as a rename.
+
+    When the server renames a piece (a Thornswood piece carries its condition
+    on its name, so a hit, a repair or a chest's dull clock does), the diff
+    holds the piece under its old name to take away and the same piece under
+    its new name to add. Taking away and adding takes a worn piece off the
+    body, because the server's pack does not say what is worn (the equipment
+    record does, and this applies with ignoreWorn). So each such pair is
+    handed to renameInventoryItems, which renames the units where they lie.
+    When no set of the game's lists holds exactly those units, the pair stays
+    in the diff and is applied below as any other difference. Two entries are
+    a pair only when they match in everything but the name (what is worn
+    too, unless ignoreWorn).
+  */
+  const renamed = new Set<Entry>();
+  diff.forEach((added) => {
+    if (added.count <= 0 || (enableCrashProtection && renamed.size > 0)) {
+      return;
+    }
+    const removed = diff.find((x) =>
+      x.count === -added.count && !renamed.has(x) && !namesEqual(x, added) &&
+      inventoryEntriesEqualExceptName(x, added, ignoreWorn));
+    if (!removed) {
+      return;
+    }
+    const f = Game.getFormEx(added.baseId);
+    if (!f) {
+      return;
+    }
+    // The old name as the game spells it. When the server still holds some
+    // of the piece, getDiff hands back the server's spelling ("loxsword" for
+    // the game's "loxsword (Legendary)", none for the game's "Iron Sword"),
+    // and the game renames by its own.
+    const held = actual.entries.find((x) => inventoryEntriesEqual(x, removed, true));
+    const from = (held || removed).name || "";
+    const to = added.name ? cropName(added.name) : f.getName();
+    if (renameInventoryItems(refr.getFormID(), added.baseId, from, to, added.count)) {
+      printConsole(`renameInventoryItems(${refr.getFormID().toString(16)}, ${added.baseId.toString(16)}, ${JSON.stringify(from)}, ${JSON.stringify(to)}, ${added.count})`);
+      renamed.add(added);
+      renamed.add(removed);
+    }
+  });
+  if (renamed.size > 0) {
+    diff = diff.filter((e) => !renamed.has(e));
+    if (enableCrashProtection) {
+      return diff.length === 0;
+    }
+  }
 
   diff.sort((a, b) => (a.count < b.count ? -1 : 1));
   diff.forEach((e, i) => {

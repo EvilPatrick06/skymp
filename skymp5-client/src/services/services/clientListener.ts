@@ -12,6 +12,10 @@ declare module "skyrimPlatform" {
     // Poll completion of work queued before this call. It does not imply
     // successful mutation: compare inventory after completion and retry.
     function getInventoryQueueFence(): () => boolean;
+    // Thornswood #1651. Renames count units of baseId named `from` in the
+    // reference's inventory to `to`, where they lie. False when no set of
+    // its extra lists holds exactly those units; nothing is changed then.
+    function renameInventoryItems(refrId: number, baseId: number, from: string, to: string, count: number): boolean;
     function getExteriorCellCoordinates(cellId: number): number[] | undefined;
     function setTextsVisibility(visibility: 'inheritBrowser' | 'off' | 'on'): void;
     function getTextsVisibility(): 'inheritBrowser' | 'off' | 'on';

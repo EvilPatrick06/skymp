@@ -3,6 +3,7 @@
 #include "NullPointerException.h"
 #include "InventoryQueueFence.h"
 #include "InventoryLoadEpoch.h"
+#include "InventoryRename.h"
 
 extern CallNativeApi::NativeCallRequirements g_nativeCallRequirements;
 
@@ -345,8 +346,108 @@ Napi::Value InventoryApi::SetInventory(const Napi::CallbackInfo& info)
   return info.Env().Undefined();
 }
 
+namespace {
+// THORNSWOOD (Thornswood #1651). The extra lists of one inventory entry of
+// refr, and the choice InventoryRename::Select makes out of them.
+std::vector<RE::ExtraDataList*> ListsOf(RE::TESObjectREFR* refr,
+                                        uint32_t baseId)
+{
+  std::vector<RE::ExtraDataList*> res;
+  auto cntChanges =
+    refr ? refr->extraList.GetByType<RE::ExtraContainerChanges>() : nullptr;
+  if (!cntChanges || !cntChanges->changes || !cntChanges->changes->entryList) {
+    return res;
+  }
+  for (auto entry : *cntChanges->changes->entryList) {
+    if (!entry || !entry->object || entry->object->formID != baseId ||
+        !entry->extraLists) {
+      continue;
+    }
+    for (auto list : *entry->extraLists) {
+      if (list) {
+        res.push_back(list);
+      }
+    }
+  }
+  return res;
+}
+
+std::vector<RE::ExtraDataList*> ListsToRename(RE::TESObjectREFR* refr,
+                                              uint32_t baseId,
+                                              const std::string& from,
+                                              int32_t count)
+{
+  auto nameOf = [](RE::ExtraDataList* list) -> std::optional<std::string> {
+    auto text = list->GetByType<RE::ExtraTextDisplayData>();
+    if (!text) {
+      return std::string();
+    }
+    if (text->displayNameText || text->ownerQuest) {
+      return std::nullopt;
+    }
+    return std::string(text->displayName.c_str());
+  };
+  auto countOf = [](RE::ExtraDataList* list) {
+    return static_cast<int32_t>(list->GetCount());
+  };
+  auto isWorn = [](RE::ExtraDataList* list) {
+    return list->HasType<RE::ExtraWorn>() ||
+      list->HasType<RE::ExtraWornLeft>();
+  };
+  return InventoryRename::Select(ListsOf(refr, baseId), from, count, nameOf,
+                                 countOf, isWorn);
+}
+}
+
+// renameInventoryItems(refrId, baseId, from, to, count): gives `count` units
+// of baseId in refr's inventory that are named `from` the name `to`, where
+// they lie, so a worn piece stays worn (Thornswood #1651). Returns false, and
+// changes nothing, when no set of its extra lists holds exactly those units;
+// the client then applies the change by taking away and adding, as it does
+// any other difference. Queued like AddItemEx, so it keeps its place among
+// the inventory work of the same frame and is dropped by a load.
+Napi::Value InventoryApi::RenameInventoryItems(const Napi::CallbackInfo& info)
+{
+  auto refrId = NapiHelper::ExtractUInt32(info[0], "refrId");
+  auto baseId = NapiHelper::ExtractUInt32(info[1], "baseId");
+  auto from = NapiHelper::ExtractString(info[2], "from");
+  auto to = NapiHelper::ExtractString(info[3], "to");
+  auto count = NapiHelper::ExtractInt32(info[4], "count");
+
+  if (to.empty() || !g_nativeCallRequirements.gameThrQ) {
+    return Napi::Boolean::New(info.Env(), false);
+  }
+
+  auto refr = RE::TESForm::LookupByID<RE::TESObjectREFR>(refrId);
+  if (ListsToRename(refr, baseId, from, count).empty()) {
+    return Napi::Boolean::New(info.Env(), false);
+  }
+
+  const auto inventoryEpoch = InventoryLoadEpoch::Capture();
+  g_nativeCallRequirements.gameThrQ->AddTask(
+    [refrId, baseId, from, to, count, inventoryEpoch](Viet::Void) {
+      if (!InventoryLoadEpoch::IsCurrent(inventoryEpoch)) return;
+      auto refr = RE::TESForm::LookupByID<RE::TESObjectREFR>(refrId);
+      for (auto list : ListsToRename(refr, baseId, from, count)) {
+        if (auto text = list->GetByType<RE::ExtraTextDisplayData>()) {
+          text->SetName(to.c_str());
+          continue;
+        }
+        auto extra = RE::malloc<RE::ExtraTextDisplayData>();
+        if (extra) {
+          ::new (extra) RE::ExtraTextDisplayData(to.c_str());
+          list->Add(extra);
+        }
+      }
+    });
+  return Napi::Boolean::New(info.Env(), true);
+}
+
 void InventoryApi::Register(Napi::Env env, Napi::Object& exports)
 {
+  exports.Set("renameInventoryItems",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(RenameInventoryItems)));
   // Call after synchronous inventory native dispatch. Completion means its
   // queued work has run; callers must still compare actual inventory to the
   // authoritative snapshot, since a paused AddItemEx can reject the call.
