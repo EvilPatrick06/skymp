@@ -141,6 +141,7 @@ Napi::Object ScampServer::Init(Napi::Env env, Napi::Object exports)
       InstanceMethod("stopNpcMovement", &ScampServer::StopNpcMovement),
       InstanceMethod("getNavmeshRecords", &ScampServer::GetNavmeshRecords),
       InstanceMethod("getNpcAIState", &ScampServer::GetNpcAIState),
+      InstanceMethod("getActorRuntimeIdentity", &ScampServer::GetActorRuntimeIdentity),
       InstanceMethod("getFactionReactions", &ScampServer::GetFactionReactions),
       InstanceMethod("serverNpcAttack", &ScampServer::ServerNpcAttack),
       InstanceMethod("getLoadedFormCount", &ScampServer::GetLoadedFormCount),
@@ -695,6 +696,23 @@ Napi::Value ScampServer::CompareAndSetInventoryImpl(
   const Napi::CallbackInfo& info, bool withProperty)
 {
   try {
+    // Snapshot the optional fence before any other getter or serialization
+    // can change its value or remove it to enter the legacy optional path.
+    std::optional<Napi::Object> propertyInput;
+    std::optional<uint64_t> expectedRuntimeIdentity;
+    if (withProperty) {
+      propertyInput = NapiHelper::ExtractObject(info[6], "property");
+      if (propertyInput->Has("expectedRuntimeIdentity")) {
+        const auto runtime = NapiHelper::ExtractString(
+          propertyInput->Get("expectedRuntimeIdentity"), "expectedRuntimeIdentity",
+          std::nullopt, {1, 20});
+        if (runtime[0] == '0' || !std::all_of(runtime.begin(), runtime.end(),
+            [](char c) { return c >= '0' && c <= '9'; })) {
+          throw std::runtime_error("Invalid inventory runtime identity");
+        }
+        expectedRuntimeIdentity = std::stoull(runtime);
+      }
+    }
     const auto id = InventoryActorId(info[0]);
     const auto sequence = NapiHelper::ExtractDouble(info[4], "sequence");
     if (!std::isfinite(sequence) || std::floor(sequence) != sequence ||
@@ -715,7 +733,7 @@ Napi::Value ScampServer::CompareAndSetInventoryImpl(
     }
     std::optional<MpObjectReference::InventoryPropertyChange> property;
     if (withProperty) {
-      const auto change = NapiHelper::ExtractObject(info[6], "property");
+      const auto& change = *propertyInput;
       const auto name = NapiHelper::ExtractString(
         change.Get("name"), "property.name", GetPropertyAlphabet(), { 1, 128 });
       const auto life = NapiHelper::ExtractDouble(
@@ -727,7 +745,7 @@ Napi::Value ScampServer::CompareAndSetInventoryImpl(
       property = MpObjectReference::InventoryPropertyChange{
         name, NapiHelper::Stringify(info.Env(), change.Get("expected")),
         NapiHelper::Stringify(info.Env(), change.Get("replacement")),
-        static_cast<uint64_t>(life)
+        static_cast<uint64_t>(life), expectedRuntimeIdentity
       };
       // Serialization can invoke JS getters/toJSON, including a gamemode
       // reload. Validate registration only after those callbacks finish.
@@ -1698,6 +1716,18 @@ Napi::Value ScampServer::GetNavmeshRecords(const Napi::CallbackInfo& info)
   }
 }
 
+Napi::Value ScampServer::GetActorRuntimeIdentity(const Napi::CallbackInfo& info)
+{
+  try {
+    const auto id = NapiHelper::ExtractUInt32(info[0], "formId");
+    const auto identity = partOne->worldState.GetFormAt<MpActor>(id).GetRuntimeIdentity();
+    if (!identity) throw std::runtime_error("Actor runtime identity exhausted");
+    return Napi::String::New(info.Env(), std::to_string(identity));
+  } catch (const std::exception& error) {
+    throw Napi::Error::New(info.Env(), error.what());
+  }
+}
+
 Napi::Value ScampServer::GetNpcAIState(const Napi::CallbackInfo& info)
 {
   try {
@@ -1750,6 +1780,9 @@ Napi::Value ScampServer::GetNpcAIState(const Napi::CallbackInfo& info)
       throw std::runtime_error("Invalid persisted NPC life generation");
     const int64_t generation = savedLife.is_null() ? 0 : savedLife.get<int64_t>();
     result.Set("lifeGeneration", static_cast<double>(generation));
+    const auto runtimeLife = actor.GetRuntimeLifeIdentity();
+    if (!runtimeLife) throw std::runtime_error("Actor runtime identity exhausted");
+    result.Set("runtimeLifeIdentity", std::to_string(runtimeLife));
     result.Set("difficultyTier", actor.GetNpcDifficultyTier());
     result.Set("aggression", profile->second.second[0]);
     result.Set("confidence", profile->second.second[1]);

@@ -229,6 +229,30 @@ TEST_CASE("Inventory and quest state compare and commit together",
   REQUIRE(actor.GetInventory().entries[1].enchantmentId == 0x1234);
 }
 
+TEST_CASE("A stale runtime owner cannot commit quest goods or their receipt",
+          "[inventory-receipt][actor-runtime-identity]")
+{
+  PartOne server;
+  auto& actor = CreateHuman(server);
+  const auto before = actor.GetInventory();
+  auto after = before;
+  after.entries[0].count += 25;
+  ActorsMap owners;
+  owners.Set(0, &actor);
+  MpObjectReference::InventoryPropertyChange change{
+    "thornswoodQuests", "null", "{}" };
+  change.expectedRuntimeIdentity = actor.GetRuntimeIdentity();
+  owners.Erase(static_cast<Networking::UserId>(0));
+  REQUIRE_FALSE(actor.CompareAndSetInventory(before, "null", after, 1, &change));
+  REQUIRE(actor.GetInventory().ToJson() == before.ToJson());
+  REQUIRE(actor.GetDynamicFields().GetValueDump(change.name) == "null");
+  REQUIRE(actor.GetInventoryReceiptDump() == "null");
+  change.expectedRuntimeIdentity = actor.GetRuntimeIdentity();
+  REQUIRE(actor.CompareAndSetInventory(before, "null", after, 1, &change));
+  REQUIRE(actor.GetInventory().ToJson() == after.ToJson());
+  REQUIRE(actor.GetInventoryReceiptDump() != "null");
+}
+
 TEST_CASE("Saved quest receipts acknowledge the same inventory and property",
           "[inventory-receipt][espm]")
 {

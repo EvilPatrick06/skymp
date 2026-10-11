@@ -893,6 +893,8 @@ bool MpObjectReference::CompareAndSetInventory(
 
   std::string nextPropertyDump;
   if (property) {
+    if (property->expectedRuntimeIdentity &&
+        !actor->HasRuntimeIdentity(*property->expectedRuntimeIdentity)) return false;
     const auto life = nlohmann::json::parse(
       GetDynamicFields().GetValueDump("_skympNpcLifeGeneration"));
     if (!life.is_null() && (!life.is_number_integer() || life < 0 ||

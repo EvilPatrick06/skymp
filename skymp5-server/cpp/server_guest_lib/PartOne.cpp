@@ -203,6 +203,8 @@ void PartOne::SetUserActor(Networking::UserId userId, uint32_t actorFormId)
     // Both functions are required here, but it is NOT covered by unit tests
     // properly. If you do something wrong here, players will not be able to
     // interact with items in the same cell after reconnecting.
+    actor.ReleaseHostedActors();
+    actor.InvalidateRuntimeIdentity();
     actor.UnsubscribeFromAll();
     actor.RemoveFromGridAndUnsubscribeAll();
 
@@ -471,6 +473,10 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
       });
 
       this_->serverState.disconnectingUserId = userId;
+      if (auto actor = this_->serverState.ActorByUser(userId)) {
+        actor->ReleaseHostedActors();
+        actor->InvalidateRuntimeIdentity();
+      }
       for (auto& listener : this_->worldState.listeners)
         listener->OnDisconnect(userId);
       return;
