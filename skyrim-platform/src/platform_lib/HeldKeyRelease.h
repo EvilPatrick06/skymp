@@ -23,6 +23,12 @@
   the game holds, so it sees each of those keys come up exactly once and sees
   nothing else: no key down, and no key up for a key it never saw go down.
 
+  The page has the same rule the other way round, in PageHeldKeys (Thornswood
+  #1920): a key that goes down while one of the two has the keyboard comes up
+  in that one, whoever has the keyboard when it is let go, so neither is left
+  holding a key. J pressed in the game to open the journal comes up in
+  the game; J pressed in the journal to close it comes up in the page.
+
   The events are DirectInput's DIDEVICEOBJECTDATA (or the shorter DX3 form):
   dwOfs, the DirectX scan code for a keyboard, then dwData, whose 0x80 bit is
   set while the key is down. Both forms begin with those two DWORDs, which is
