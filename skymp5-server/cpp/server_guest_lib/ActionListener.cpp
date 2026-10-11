@@ -901,6 +901,12 @@ void ActionListener::OnHostAttempt(const RawMessageData& rawMsgData,
     // 0" and named nobody.
     partOne.GetLogger().info("Hoster of {0:x} changed from {1:x} to {2:x}",
                              remoteId, prevHoster, me->GetFormId());
+    if (prevHoster != me->GetFormId()) {
+      if (auto actor = remote.AsActor()) {
+        actor->InvalidateRuntimeIdentity();
+        if (actor->IsDead()) actor->RespawnWithDelay();
+      }
+    }
     hoster = me->GetFormId();
     remote.UpdateHoster(hoster);
 

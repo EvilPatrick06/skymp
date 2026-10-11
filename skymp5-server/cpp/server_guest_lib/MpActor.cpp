@@ -170,8 +170,9 @@ void MpActor::SetServerControlled(bool controlled)
       GetUserId() != Networking::InvalidUserId) {
     throw std::invalid_argument("Server authority requires an NPC, not a human character");
   }
-  const bool takingOwnership = controlled && !IsServerControlled();
-  if (IsServerControlled() != controlled) {
+  const bool changedOwnership = IsServerControlled() != controlled;
+  if (changedOwnership) {
+    InvalidateRuntimeIdentity();
     SetPropertyValueDump("_skympServerControlled", controlled ? "true" : "false",
                          false, false);
   }
@@ -198,9 +199,7 @@ void MpActor::SetServerControlled(bool controlled)
   }
   UpdateHoster(0);
   if (controlled) ForceSubscriptionsUpdate();
-  if (takingOwnership && IsDead()) {
-    // Invalidate a client-era timer before scheduling the configured return.
-    pImpl->isRespawning = false;
+  if (changedOwnership && IsDead()) {
     RespawnWithDelay();
   }
 }

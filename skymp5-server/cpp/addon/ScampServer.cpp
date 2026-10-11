@@ -696,6 +696,23 @@ Napi::Value ScampServer::CompareAndSetInventoryImpl(
   const Napi::CallbackInfo& info, bool withProperty)
 {
   try {
+    // Snapshot the optional fence before any other getter or serialization
+    // can change its value or remove it to enter the legacy optional path.
+    std::optional<Napi::Object> propertyInput;
+    std::optional<uint64_t> expectedRuntimeIdentity;
+    if (withProperty) {
+      propertyInput = NapiHelper::ExtractObject(info[6], "property");
+      if (propertyInput->Has("expectedRuntimeIdentity")) {
+        const auto runtime = NapiHelper::ExtractString(
+          propertyInput->Get("expectedRuntimeIdentity"), "expectedRuntimeIdentity",
+          std::nullopt, {1, 20});
+        if (runtime[0] == '0' || !std::all_of(runtime.begin(), runtime.end(),
+            [](char c) { return c >= '0' && c <= '9'; })) {
+          throw std::runtime_error("Invalid inventory runtime identity");
+        }
+        expectedRuntimeIdentity = std::stoull(runtime);
+      }
+    }
     const auto id = InventoryActorId(info[0]);
     const auto sequence = NapiHelper::ExtractDouble(info[4], "sequence");
     if (!std::isfinite(sequence) || std::floor(sequence) != sequence ||
@@ -716,7 +733,7 @@ Napi::Value ScampServer::CompareAndSetInventoryImpl(
     }
     std::optional<MpObjectReference::InventoryPropertyChange> property;
     if (withProperty) {
-      const auto change = NapiHelper::ExtractObject(info[6], "property");
+      const auto& change = *propertyInput;
       const auto name = NapiHelper::ExtractString(
         change.Get("name"), "property.name", GetPropertyAlphabet(), { 1, 128 });
       const auto life = NapiHelper::ExtractDouble(
@@ -728,18 +745,8 @@ Napi::Value ScampServer::CompareAndSetInventoryImpl(
       property = MpObjectReference::InventoryPropertyChange{
         name, NapiHelper::Stringify(info.Env(), change.Get("expected")),
         NapiHelper::Stringify(info.Env(), change.Get("replacement")),
-        static_cast<uint64_t>(life)
+        static_cast<uint64_t>(life), expectedRuntimeIdentity
       };
-      if (change.Has("expectedRuntimeIdentity")) {
-        const auto runtime = NapiHelper::ExtractString(
-          change.Get("expectedRuntimeIdentity"), "expectedRuntimeIdentity",
-          std::nullopt, {1, 20});
-        if (runtime[0] == '0' || !std::all_of(runtime.begin(), runtime.end(),
-            [](char c) { return c >= '0' && c <= '9'; })) {
-          throw std::runtime_error("Invalid inventory runtime identity");
-        }
-        property->expectedRuntimeIdentity = std::stoull(runtime);
-      }
       // Serialization can invoke JS getters/toJSON, including a gamemode
       // reload. Validate registration only after those callbacks finish.
       static const auto standard =
