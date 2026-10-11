@@ -92,6 +92,28 @@ const main = () => {
   assert.equal(mp.compareAndSetInventoryAndProperty(id, before, 'null', after, 1, 42, change), true);
   assert.deepEqual(mp.get(id, 'inventory'), after);
   assert.deepEqual(mp.get(id, name), {done:true});
+  const receipt=mp.getInventoryReceipt(id),inventory=mp.get(id,'inventory');
+  let saved;
+  try{saved=mp.getSavedInventoryReceipt(id);}catch(error){assert.match(error.message,/acknowledgement is unavailable/);}
+  assert.notEqual(saved,receipt,'inventory save has not been acknowledged');
+  let state={done:true};
+  for(let kills=1;kills<=3;kills++) {
+    const next={kills};
+    assert.equal(mp.compareAndSetActorProperty(id,42,{name,expected:state,replacement:next,
+      expectedLifeGeneration:0,expectedRuntimeIdentity:mp.getActorRuntimeIdentity(id)}),true);
+    assert.deepEqual(mp.get(id,name),next);state=next;
+    assert.equal(mp.getInventoryReceipt(id),receipt);assert.deepEqual(mp.get(id,'inventory'),inventory);
+  }
+  assert.equal(mp.compareAndSetActorProperty(id,42,{name,expected:{kills:2},replacement:{kills:4},
+    expectedLifeGeneration:0,expectedRuntimeIdentity:mp.getActorRuntimeIdentity(id)}),false);
+  for(const boundary of ['expected','replacement']) {
+    const token=mp.getActorRuntimeIdentity(id);
+    const input={name,expected:state,replacement:{kills:4},expectedLifeGeneration:0,expectedRuntimeIdentity:token};
+    input[boundary]={toJSON(){mp.set(id,'isDead',true);mp.set(id,'isDead',false);
+      input.expectedRuntimeIdentity=mp.getActorRuntimeIdentity(id);return boundary==='expected'?state:{kills:4};}};
+    assert.equal(mp.compareAndSetActorProperty(id,42,input),false,'metadata serialization cannot replace the entry session');
+    assert.deepEqual(mp.get(id,name),state);assert.equal(mp.getInventoryReceipt(id),receipt);
+  }
 };
 
 try { main(); console.log('Test passed!'); process.exit(0); }
