@@ -9,7 +9,7 @@ extern espm::Loader& GetEspmLoader();
 TEST_CASE("Hosted creature ownership ends with its host session",
           "[actor-runtime-identity][HostAttempt][espm]")
 {
-  for (const std::string change : {"disconnect", "detach", "overwrite", "reload", "replace"}) {
+  for (const std::string change : {"disconnect", "detach", "overwrite", "reload", "replace", "creature-reload", "incoming"}) {
     CAPTURE(change);
     PartOne p;
     p.AttachEspm(&GetEspmLoader());
@@ -57,6 +57,27 @@ TEST_CASE("Hosted creature ownership ends with its host session",
     else if (change == "detach") p.SetUserActor(0, 0);
     else if (change == "overwrite") DoConnect(p, 0);
     else if (change == "replace") p.DestroyActor(host);
+    else if (change == "creature-reload") {
+      p.SetUserActor(0, 0);
+      remote.ApplyChangeForm(remote.GetChangeForm());
+    }
+    else if (change == "incoming") {
+      constexpr uint32_t incoming=0xff000abe,probe=0xff000abf;
+      p.CreateActor(incoming,{1,1,1},0,0x3c,42);
+      bool called=false;
+      auto callbacks=p.CreateFormCallbacks();
+      callbacks.unsubscribe=[&](auto,auto){
+        called=true;
+        CHECK(remote.GetRuntimeIdentity()!=runtime);
+        CHECK(remote.GetRuntimeLifeIdentity()!=body);
+        CHECK(p.worldState.hosters.count(remoteId)==0);
+      };
+      auto emitter=std::make_unique<MpActor>(LocationalData{{1,1,1},{},FormDesc::Tamriel()},callbacks,0x1e7a4);
+      p.worldState.AddForm(std::move(emitter),probe);
+      MpObjectReference::Subscribe(&p.worldState.GetFormAt<MpActor>(probe),&p.worldState.GetFormAt<MpActor>(incoming));
+      p.SetUserActor(0,incoming);
+      REQUIRE(called);
+    }
     else {
       auto& actor = p.worldState.GetFormAt<MpActor>(host);
       actor.ApplyChangeForm(actor.GetChangeForm());
@@ -89,6 +110,41 @@ TEST_CASE("Hosted creature ownership ends with its host session",
     p.worldState.Tick();
     REQUIRE_FALSE(remote.IsDead());
   }
+}
+
+TEST_CASE("A running hosted return stops when its inventory callback releases the host",
+          "[actor-runtime-identity][HostAttempt][espm]")
+{
+  PartOne p;
+  p.AttachEspm(&GetEspmLoader());
+  auto time=std::chrono::system_clock::now();
+  p.worldState.SetTimerClock([&]{return time;});
+  constexpr uint32_t host=0xff000abc,remoteId=0xff000abd;
+  bool revoke=false,called=false;
+  auto callbacks=p.CreateFormCallbacks();
+  const auto send=callbacks.sendToUserDeferred;
+  callbacks.sendToUserDeferred=[&](auto actor,auto& message,auto reliable,auto channel,auto overwrite){
+    if(revoke && !called){called=true;p.SetUserActor(0,0);}
+    send(actor,message,reliable,channel,overwrite);
+  };
+  DoConnect(p,0);
+  auto human=std::make_unique<MpActor>(LocationalData{{1,1,1},{},FormDesc::Tamriel()},callbacks,0x7);
+  p.worldState.AddForm(std::move(human),host);
+  p.worldState.GetFormAt<MpActor>(host).RegisterProfileId(42);
+  p.SetUserActor(0,host);
+  auto creature=std::make_unique<MpActor>(LocationalData{{1,1,1},{},FormDesc::Tamriel()},p.CreateFormCallbacks(),0x1e7a4);
+  p.worldState.AddForm(std::move(creature),remoteId);
+  auto& remote=p.worldState.GetFormAt<MpActor>(remoteId);
+  ActionListener listener(p);RawMessageData raw;raw.userId=0;HostMessage msg;msg.remoteId=remoteId;
+  listener.OnHostAttempt(raw,msg);
+  remote.SetRespawnTime(1);remote.Kill();
+  const auto runtime=remote.GetRuntimeIdentity();
+  revoke=true;time+=std::chrono::seconds(2);p.worldState.Tick();
+  REQUIRE(called);
+  REQUIRE(remote.GetRuntimeIdentity()!=runtime);
+  REQUIRE(remote.IsDead());
+  REQUIRE_FALSE(remote.IsRespawning());
+  REQUIRE(p.worldState.hosters.count(remoteId)==0);
 }
 
 TEST_CASE("Hosting an actor before its first movement records the timestamp",
