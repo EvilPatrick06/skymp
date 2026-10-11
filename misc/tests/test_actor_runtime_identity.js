@@ -51,6 +51,30 @@ const main = () => {
       assert.equal(mp.get(victim, name) == null, true);
     }
   }
+  for(const trap of ['has','get'])for(const mutation of ['replace','delete']) {
+    const victim=mp.createActor(0,[0,0,0],0,0x3c,42);mp.set(victim,'inventory',before);
+    const fenced={name,expected:null,replacement:{done:true},expectedLifeGeneration:0,
+      expectedRuntimeIdentity:mp.getActorRuntimeIdentity(victim)};
+    let changed=false;
+    function rotate(target,key) {
+      if(key!=='expectedRuntimeIdentity' || changed)return;
+      changed=true;mp.set(victim,'isDead',true);mp.set(victim,'isDead',false);
+      if(mutation==='replace')target[key]=mp.getActorRuntimeIdentity(victim);else delete target[key];
+    }
+    const input=new Proxy(fenced,{
+      has(target,key){if(trap==='has')rotate(target,key);return Reflect.has(target,key);},
+      get(target,key,receiver){if(trap==='get')rotate(target,key);return Reflect.get(target,key,receiver);}
+    });
+    // A get trap deleting its fence produces invalid input, also a refusal.
+    let committed=false;
+    try{committed=mp.compareAndSetInventoryAndProperty(victim,before,'null',after,1,42,input);}
+    catch(error){assert.equal(trap==='get' && mutation==='delete',true);}
+    assert.equal(changed,true);
+    assert.equal(committed,false,trap+' cannot '+mutation+' the actor entry session');
+    assert.deepEqual(mp.get(victim,'inventory'),before);
+    assert.equal(mp.getInventoryReceipt(victim),'null');
+    assert.equal(mp.get(victim,name)==null,true);
+  }
   change.expectedRuntimeIdentity = current;
   change.replacement = {toJSON() {
     mp.destroyActor(id);
