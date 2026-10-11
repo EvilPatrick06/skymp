@@ -34,7 +34,8 @@ public:
   const bool& IsRespawning() const;
   // Process-local lifetime/ownership fence. Never written into a change form.
   uint64_t GetRuntimeIdentity() const noexcept;
-  void InvalidateRuntimeIdentity() noexcept;
+  uint64_t GetRuntimeLifeIdentity() const noexcept;
+  void InvalidateRuntimeIdentity(bool preserveLife = false) noexcept;
   bool HasRuntimeIdentity(uint64_t expected) const;
 
   bool IsServerControlled() const

@@ -90,6 +90,7 @@ struct MpActor::Impl
   // THORNSWOOD. See NumberTeleportForOwnClient. 0: nothing outstanding.
   uint32_t newestTeleportSeq = 0;
   uint64_t runtimeIdentity = 0;
+  uint64_t runtimeLifeIdentity = 0;
 };
 
 namespace {
@@ -141,9 +142,18 @@ uint64_t MpActor::GetRuntimeIdentity() const noexcept
   return pImpl->runtimeIdentity;
 }
 
-void MpActor::InvalidateRuntimeIdentity() noexcept
+uint64_t MpActor::GetRuntimeLifeIdentity() const noexcept
+{
+  return pImpl->runtimeLifeIdentity;
+}
+
+void MpActor::InvalidateRuntimeIdentity(bool preserveLife) noexcept
 {
   pImpl->runtimeIdentity = NextRuntimeIdentity();
+  // A killing blow still belongs to this body. Revival, reload and ownership
+  // changes revoke it; exhaustion revokes both tokens permanently.
+  if (!preserveLife || !pImpl->runtimeIdentity)
+    pImpl->runtimeLifeIdentity = pImpl->runtimeIdentity;
   ++pImpl->respawnTimerIndex;
   pImpl->isRespawning = false;
 }
@@ -1312,7 +1322,7 @@ void MpActor::SendAndSetDeathState(bool isDead, bool shouldTeleport)
     nextGeneration = saved.is_null() ? 1 : saved.get<int64_t>() + 1;
   }
 
-  if (isDead != IsDead()) InvalidateRuntimeIdentity();
+  if (isDead != IsDead()) InvalidateRuntimeIdentity(isDead);
   auto respawnMsg = GetDeathStateMsg(position, isDead, shouldTeleport);
   if (IsServerControlled()) {
     SendServerStateToObservers(respawnMsg, true);

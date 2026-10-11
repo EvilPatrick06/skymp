@@ -1773,6 +1773,9 @@ Napi::Value ScampServer::GetNpcAIState(const Napi::CallbackInfo& info)
       throw std::runtime_error("Invalid persisted NPC life generation");
     const int64_t generation = savedLife.is_null() ? 0 : savedLife.get<int64_t>();
     result.Set("lifeGeneration", static_cast<double>(generation));
+    const auto runtimeLife = actor.GetRuntimeLifeIdentity();
+    if (!runtimeLife) throw std::runtime_error("Actor runtime identity exhausted");
+    result.Set("runtimeLifeIdentity", std::to_string(runtimeLife));
     result.Set("difficultyTier", actor.GetNpcDifficultyTier());
     result.Set("aggression", profile->second.second[0]);
     result.Set("confidence", profile->second.second[1]);
