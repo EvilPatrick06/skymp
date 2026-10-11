@@ -186,6 +186,40 @@ void MpActor::ReleaseHostedActors() noexcept
   }
 }
 
+bool MpActor::CompareAndSetActorProperty(int32_t expectedProfileId,
+  const InventoryPropertyChange& property)
+{
+  constexpr uint64_t maxLife = 9007199254740991;
+  if (expectedProfileId <= 0 || GetProfileId() != expectedProfileId ||
+      !property.expectedRuntimeIdentity ||
+      !HasRuntimeIdentity(*property.expectedRuntimeIdentity)) return false;
+  if (property.name.empty() || property.name.size() > 128 ||
+      property.name.front() == '_' || property.expectedDump.size() > 16 * 1024 ||
+      property.replacementDump.size() > 16 * 1024)
+    throw std::runtime_error("Invalid actor metadata property");
+  const auto life = nlohmann::json::parse(
+    GetDynamicFields().GetValueDump("_skympNpcLifeGeneration"));
+  if (!life.is_null() && (!life.is_number_integer() || life < 0 || life > maxLife))
+    throw std::runtime_error("Invalid persisted actor lifeGeneration");
+  if (property.expectedLifeGeneration > maxLife ||
+      property.expectedLifeGeneration != (life.is_null() ? 0 : life.get<uint64_t>())) return false;
+  const auto expected = nlohmann::json::parse(property.expectedDump);
+  const auto replacement = nlohmann::json::parse(property.replacementDump).dump();
+  if (replacement.size() > 16 * 1024)
+    throw std::runtime_error("Invalid actor metadata property size");
+  if (nlohmann::json::parse(GetDynamicFields().GetValueDump(property.name)) != expected)
+    return false;
+  DynamicFields nextFields = GetDynamicFields();
+  nextFields.SetValueDump(property.name, replacement);
+  static_assert(std::is_nothrow_move_assignable_v<DynamicFields>);
+  // No inventory or receipt edit: a later whole-character snapshot preserves
+  // the current goods while an earlier inventory save may remain in flight.
+  EditChangeForm([&](MpChangeForm& changeForm) {
+    changeForm.dynamicFields = std::move(nextFields);
+  });
+  return true;
+}
+
 void MpActor::AcceptClientHost()
 {
   pImpl->hostedAuthorityReleased = false;

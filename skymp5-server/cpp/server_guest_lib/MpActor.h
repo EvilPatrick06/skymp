@@ -40,6 +40,8 @@ public:
   void ReleaseHostedActors() noexcept;
   void AcceptClientHost();
   bool HasRuntimeIdentity(uint64_t expected) const;
+  bool CompareAndSetActorProperty(int32_t expectedProfileId,
+    const InventoryPropertyChange& property);
 
   bool IsServerControlled() const
   {
