@@ -47,6 +47,7 @@ public:
   Napi::Value DestroyActor(const Napi::CallbackInfo& info);
   Napi::Value SetRaceMenuOpen(const Napi::CallbackInfo& info);
   Napi::Value GetActorsByProfileId(const Napi::CallbackInfo& info);
+  Napi::Value GetUnreadableChangeForms(const Napi::CallbackInfo& info);
   Napi::Value SetEnabled(const Napi::CallbackInfo& info);
   Napi::Value CreateBot(const Napi::CallbackInfo& info);
   Napi::Value GetUserByActor(const Napi::CallbackInfo& info);

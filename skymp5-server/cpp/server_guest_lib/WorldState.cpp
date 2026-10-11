@@ -1425,6 +1425,18 @@ const std::map<uint32_t, int32_t>& WorldState::GetUnreadableChangeForms()
   return pImpl->unreadableChangeForms;
 }
 
+std::vector<uint32_t> WorldState::GetUnreadableChangeFormsOfProfile(
+  int32_t profileId) const
+{
+  std::vector<uint32_t> res;
+  for (auto& [formId, ownerProfileId] : pImpl->unreadableChangeForms) {
+    if (ownerProfileId == profileId) {
+      res.push_back(formId);
+    }
+  }
+  return res;
+}
+
 void WorldState::SetRelootTime(const std::string& recordType,
                                std::chrono::system_clock::duration time)
 {

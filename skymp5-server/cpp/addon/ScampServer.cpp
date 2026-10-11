@@ -106,6 +106,8 @@ Napi::Object ScampServer::Init(Napi::Env env, Napi::Object exports)
       InstanceMethod("setRaceMenuOpen", &ScampServer::SetRaceMenuOpen),
       InstanceMethod("getActorsByProfileId",
                      &ScampServer::GetActorsByProfileId),
+      InstanceMethod("getUnreadableChangeForms",
+                     &ScampServer::GetUnreadableChangeForms),
       InstanceMethod("setEnabled", &ScampServer::SetEnabled),
       InstanceMethod("createBot", &ScampServer::CreateBot),
       InstanceMethod("getUserByActor", &ScampServer::GetUserByActor),
@@ -1053,6 +1055,28 @@ Napi::Value ScampServer::GetActorsByProfileId(const Napi::CallbackInfo& info)
     for (auto& ac : actors) {
       result.Set(counter, ac);
       ++counter;
+    }
+    return result;
+
+  } catch (std::exception& e) {
+    throw Napi::Error::New(info.Env(), (std::string)e.what());
+  }
+}
+
+// The characters of this profile whose saved record could not be read at
+// start, by form id. They are kept on disk as they were (Thornswood #1269), and
+// the gamemode tells the person once when it makes them a new one.
+Napi::Value ScampServer::GetUnreadableChangeForms(
+  const Napi::CallbackInfo& info)
+{
+  auto profileId = info[0].As<Napi::Number>().Int32Value();
+  try {
+    auto formIds =
+      partOne->worldState.GetUnreadableChangeFormsOfProfile(profileId);
+
+    auto result = Napi::Array::New(info.Env(), formIds.size());
+    for (size_t i = 0; i < formIds.size(); ++i) {
+      result.Set(static_cast<uint32_t>(i), formIds[i]);
     }
     return result;
 
