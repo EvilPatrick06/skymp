@@ -696,6 +696,9 @@ Napi::Value ScampServer::CompareAndSetInventoryImpl(
   const Napi::CallbackInfo& info, bool withProperty)
 {
   try {
+    const auto id = InventoryActorId(info[0]);
+    const auto entryRuntimeIdentity =
+      partOne->worldState.GetFormAt<MpActor>(id).GetRuntimeIdentity();
     // Snapshot the optional fence before any other getter or serialization
     // can change its value or remove it to enter the legacy optional path.
     std::optional<Napi::Object> propertyInput;
@@ -713,7 +716,6 @@ Napi::Value ScampServer::CompareAndSetInventoryImpl(
         expectedRuntimeIdentity = std::stoull(runtime);
       }
     }
-    const auto id = InventoryActorId(info[0]);
     const auto sequence = NapiHelper::ExtractDouble(info[4], "sequence");
     if (!std::isfinite(sequence) || std::floor(sequence) != sequence ||
         sequence <= 0 || sequence > 9007199254740991.0) {
@@ -778,6 +780,11 @@ Napi::Value ScampServer::CompareAndSetInventoryImpl(
       }
     }
     auto& actor = partOne->worldState.GetFormAt<MpActor>(id);
+    // Even reading fence presence/value can invoke a Proxy trap. Independently
+    // fence the actual actor at API entry, including legacy optional callers.
+    if (!actor.HasRuntimeIdentity(entryRuntimeIdentity)) {
+      return Napi::Boolean::New(info.Env(), false);
+    }
     if (actor.GetProfileId() != static_cast<int32_t>(profile)) {
       throw std::runtime_error(
         "Inventory profile does not match the expected human");
