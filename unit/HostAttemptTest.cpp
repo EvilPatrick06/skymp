@@ -155,6 +155,55 @@ TEST_CASE("A running hosted return stops when its inventory callback releases th
   REQUIRE(p.worldState.hosters.count(remoteId)==0);
 }
 
+TEST_CASE("A hosted return cannot revive after synchronous death publication changes its owner",
+          "[actor-runtime-identity][HostAttempt][espm]")
+{
+  const bool reload = GENERATE(false, true);
+  PartOne p;
+  p.AttachEspm(&GetEspmLoader());
+  auto time = std::chrono::system_clock::now();
+  p.worldState.SetTimerClock([&] { return time; });
+  constexpr uint32_t host = 0xff000abc, remoteId = 0xff000abd;
+  bool revoke = false, called = false;
+  auto callbacks = p.CreateFormCallbacks();
+  const auto send = callbacks.sendToUser;
+  callbacks.sendToUser = [&](auto actor, auto& message, auto reliable) {
+    if (revoke && !called) {
+      called = true;
+      auto& remote = p.worldState.GetFormAt<MpActor>(remoteId);
+      if (reload) remote.ApplyChangeForm(remote.GetChangeForm());
+      else p.SetUserActor(0, 0);
+    }
+    send(actor, message, reliable);
+  };
+  DoConnect(p, 0);
+  auto human = std::make_unique<MpActor>(
+    LocationalData{{1, 1, 1}, {}, FormDesc::Tamriel()}, callbacks, 0x7);
+  p.worldState.AddForm(std::move(human), host);
+  p.worldState.GetFormAt<MpActor>(host).RegisterProfileId(42);
+  p.SetUserActor(0, host);
+  auto creature = std::make_unique<MpActor>(
+    LocationalData{{1, 1, 1}, {}, FormDesc::Tamriel()}, callbacks, 0x3053f);
+  p.worldState.AddForm(std::move(creature), remoteId);
+  auto& remote = p.worldState.GetFormAt<MpActor>(remoteId);
+  ActionListener listener(p);
+  RawMessageData raw; raw.userId = 0;
+  HostMessage msg; msg.remoteId = remoteId;
+  listener.OnHostAttempt(raw, msg);
+  remote.SetRespawnTime(1);
+  remote.Kill();
+  REQUIRE(remote.IsDead());
+  revoke = true;
+  time += std::chrono::seconds(2);
+  p.worldState.Tick();
+  REQUIRE(called);
+  REQUIRE(remote.IsDead());
+  if (!reload) {
+    REQUIRE_FALSE(remote.IsRespawning());
+    REQUIRE(p.worldState.hosters.count(remoteId) == 0);
+  }
+}
+
 TEST_CASE("Hosting an actor before its first movement records the timestamp",
           "[HostAttempt][PartOne]")
 {
