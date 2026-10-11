@@ -156,6 +156,38 @@ TEST_CASE("Disconnect invalidates identity before gamemode listeners run",
   REQUIRE(listener->called);
 }
 
+TEST_CASE("A dead creature's new authority owns its respawn timer",
+          "[actor-runtime-identity][espm]")
+{
+  PartOne server;
+  server.AttachEspm(&GetEspmLoader());
+  auto time = std::chrono::system_clock::now();
+  server.worldState.SetTimerClock([&] { return time; });
+  constexpr uint32_t id = 0xff000abc;
+  auto creature = std::make_unique<MpActor>(
+    LocationalData{{1, 1, 1}, {}, FormDesc::Tamriel()},
+    server.CreateFormCallbacks(), 0x1e7a4);
+  server.worldState.AddForm(std::move(creature), id);
+  auto& actor = server.worldState.GetFormAt<MpActor>(id);
+  actor.SetServerControlled(true);
+  const auto body = actor.GetRuntimeLifeIdentity();
+  actor.SetRespawnTime(1);
+  actor.Kill();
+  REQUIRE(actor.GetRuntimeLifeIdentity() == body);
+  actor.SetRespawnTime(10);
+  actor.SetServerControlled(false);
+  Inventory inventory;
+  inventory.entries.emplace_back(0xf, 321);
+  actor.SetInventory(inventory);
+  time += std::chrono::seconds(2);
+  server.worldState.Tick();
+  REQUIRE(actor.IsDead());
+  REQUIRE(actor.GetInventory().ToJson() == inventory.ToJson());
+  time += std::chrono::seconds(10);
+  server.worldState.Tick();
+  REQUIRE_FALSE(actor.IsDead());
+}
+
 TEST_CASE("Lifecycle handlers cannot continue into another ownership session",
           "[actor-runtime-identity][espm]")
 {
