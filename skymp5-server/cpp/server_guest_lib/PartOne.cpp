@@ -190,6 +190,13 @@ void PartOne::SetUserActor(Networking::UserId userId, uint32_t actorFormId)
       throw std::runtime_error(ss.str());
     }
 
+    // Revoke the outgoing human and its hosted NPCs before any callback from
+    // the incoming actor can observe the previous session's authority.
+    if (auto outgoing = serverState.ActorByUser(userId)) {
+      outgoing->ReleaseHostedActors();
+      outgoing->InvalidateRuntimeIdentity();
+    }
+
     // Clear actor's hoster if any.
     // HostStop message will be sent on the next attempt to update actor's
     // movement

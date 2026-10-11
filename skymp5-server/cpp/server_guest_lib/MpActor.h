@@ -38,6 +38,7 @@ public:
   void InvalidateRuntimeIdentity(bool preserveLife = false) noexcept;
   // Revoke NPC authority derived from this human's ending session.
   void ReleaseHostedActors() noexcept;
+  void AcceptClientHost();
   bool HasRuntimeIdentity(uint64_t expected) const;
 
   bool IsServerControlled() const

@@ -91,6 +91,7 @@ struct MpActor::Impl
   uint32_t newestTeleportSeq = 0;
   uint64_t runtimeIdentity = 0;
   uint64_t runtimeLifeIdentity = 0;
+  bool hostedAuthorityReleased = false;
 };
 
 namespace {
@@ -177,10 +178,19 @@ void MpActor::ReleaseHostedActors() noexcept
       const auto& form = world->LookupFormByIdNoLoad(remoteId);
       if (form && form->AsActor()) {
         // Do not rearm a dead creature until a new host accepts authority.
-        form->AsActor()->InvalidateRuntimeIdentity();
+        auto actor = form->AsActor();
+        actor->pImpl->hostedAuthorityReleased = true;
+        actor->InvalidateRuntimeIdentity();
       }
     }
   }
+}
+
+void MpActor::AcceptClientHost()
+{
+  pImpl->hostedAuthorityReleased = false;
+  InvalidateRuntimeIdentity();
+  if (IsDead()) RespawnWithDelay();
 }
 
 void MpActor::SetServerControlled(bool controlled)
@@ -190,6 +200,7 @@ void MpActor::SetServerControlled(bool controlled)
     throw std::invalid_argument("Server authority requires an NPC, not a human character");
   }
   const bool changedOwnership = IsServerControlled() != controlled;
+  if (controlled) pImpl->hostedAuthorityReleased = false;
   if (changedOwnership) {
     InvalidateRuntimeIdentity();
     SetPropertyValueDump("_skympServerControlled", controlled ? "true" : "false",
@@ -1714,7 +1725,8 @@ void MpActor::RespawnWithDelay(bool shouldTeleport)
   spdlog::trace("MpActor::RespawnWithDelay {:x} - isRespawning: {}",
                 GetFormId(), pImpl->isRespawning);
 
-  if (pImpl->isRespawning) {
+  if (pImpl->isRespawning ||
+      (pImpl->hostedAuthorityReleased && !IsServerControlled())) {
     return;
   }
   uint32_t formId = GetFormId();
@@ -1788,6 +1800,11 @@ void MpActor::RespawnWithDelay(bool shouldTeleport)
                 },
                 Mode::NoRequestSave);
               EnsureBaseContainerAdded(worldState->GetEspm());
+              // Inventory publication can detach the host or reload this body.
+              // The old return must not revive the new authority session.
+              if (!HasRuntimeIdentity(runtimeIdentity) || !IsDead() ||
+                  !IsRespawning() || respawnTimerIndex != pImpl->respawnTimerIndex)
+                return;
               spdlog::info("MpActor::RespawnWithDelay {:x} - {} inventory "
                            "entries with keyword kept",
                            GetFormId(), inventoryToKeep.entries.size());

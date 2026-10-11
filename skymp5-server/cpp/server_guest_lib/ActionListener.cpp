@@ -903,8 +903,7 @@ void ActionListener::OnHostAttempt(const RawMessageData& rawMsgData,
                              remoteId, prevHoster, me->GetFormId());
     if (prevHoster != me->GetFormId()) {
       if (auto actor = remote.AsActor()) {
-        actor->InvalidateRuntimeIdentity();
-        if (actor->IsDead()) actor->RespawnWithDelay();
+        actor->AcceptClientHost();
       }
     }
     hoster = me->GetFormId();
