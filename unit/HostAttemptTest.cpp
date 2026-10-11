@@ -204,6 +204,44 @@ TEST_CASE("A hosted return cannot revive after synchronous death publication cha
   }
 }
 
+TEST_CASE("Kill retains the actor during synchronous removal publication",
+          "[actor-runtime-identity][HostAttempt][espm]")
+{
+  PartOne p;
+  p.AttachEspm(&GetEspmLoader());
+  constexpr uint32_t host = 0xff000abc, remoteId = 0xff000abd;
+  bool armed = false, called = false;
+  std::weak_ptr<MpForm> lifetime;
+  auto callbacks = p.CreateFormCallbacks();
+  const auto send = callbacks.sendToUser;
+  callbacks.sendToUser = [&](auto actor, auto& message, auto reliable) {
+    if (armed && !called) {
+      called = true;
+      p.DestroyActor(remoteId);
+      REQUIRE_FALSE(lifetime.expired());
+    }
+    send(actor, message, reliable);
+  };
+  DoConnect(p, 0);
+  auto human = std::make_unique<MpActor>(
+    LocationalData{{1, 1, 1}, {}, FormDesc::Tamriel()}, callbacks, 0x7);
+  p.worldState.AddForm(std::move(human), host);
+  p.worldState.GetFormAt<MpActor>(host).RegisterProfileId(42);
+  p.SetUserActor(0, host);
+  auto creature = std::make_unique<MpActor>(
+    LocationalData{{1, 1, 1}, {}, FormDesc::Tamriel()}, callbacks, 0x3053f);
+  p.worldState.AddForm(std::move(creature), remoteId);
+  lifetime = p.worldState.LookupFormById(remoteId);
+  ActionListener listener(p);
+  RawMessageData raw; raw.userId = 0;
+  HostMessage msg; msg.remoteId = remoteId;
+  listener.OnHostAttempt(raw, msg);
+  armed = true;
+  p.worldState.GetFormAt<MpActor>(remoteId).Kill();
+  REQUIRE(called);
+  REQUIRE(lifetime.expired());
+}
+
 TEST_CASE("Hosting an actor before its first movement records the timestamp",
           "[HostAttempt][PartOne]")
 {

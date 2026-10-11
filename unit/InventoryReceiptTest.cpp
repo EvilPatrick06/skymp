@@ -399,6 +399,93 @@ TEST_CASE("Failed saves do not advance receipt acknowledgement",
   server.Tick();
   REQUIRE(server.worldState.GetSavedInventoryReceipt(actor) == receipt);
 }
+TEST_CASE("Metadata CAS stages its save before changing live progress",
+          "[inventory-receipt][actor-metadata]")
+{
+  struct Actor : MpActor {
+    using MpActor::MpActor;
+    bool failSnapshot = false;
+    void SuspendSaving() { blockSaving = true; }
+    MpChangeForm GetChangeForm() const override {
+      if (failSnapshot) throw std::bad_alloc();
+      return MpActor::GetChangeForm();
+    }
+  };
+  PartOne server;
+  auto created = std::make_unique<Actor>(
+    LocationalData{{1, 1, 1}, {}, FormDesc::Tamriel()},
+    server.CreateFormCallbacks(), 0x7);
+  auto& actor = *created;
+  server.worldState.AddForm(std::move(created), kHuman);
+  actor.RegisterProfileId(42);
+  actor.SetInventory(InitialInventory());
+  MpObjectReference::InventoryPropertyChange change{"thornswoodQuests", "null", "{\"kills\":1}"};
+  change.expectedRuntimeIdentity = actor.GetRuntimeIdentity();
+  SECTION("Snapshot allocation fails before live metadata changes") {
+    actor.failSnapshot = true;
+    REQUIRE_THROWS_AS(actor.CompareAndSetActorProperty(42, change), std::bad_alloc);
+  }
+  SECTION("Suspended saving refuses instead of reporting a queued commit") {
+    actor.SuspendSaving();
+    REQUIRE_FALSE(actor.CompareAndSetActorProperty(42, change));
+  }
+  REQUIRE(actor.GetDynamicFields().GetValueDump(change.name) == "null");
+  REQUIRE(actor.GetInventoryReceiptDump() == "null");
+  REQUIRE(actor.GetInventory().ToJson() == InitialInventory().ToJson());
+}
+
+TEST_CASE("Metadata saves preserve in-flight goods and later inventory receipts",
+          "[inventory-receipt][actor-metadata][espm]")
+{
+  const bool failFirst = GENERATE(false, true);
+  PartOne server;
+  AttachSkyrimFiles(server);
+  auto storage = std::make_shared<ControlledFileStorage>();
+  server.AttachSaveStorage(storage);
+  auto& actor = CreateHuman(server);
+  auto before = actor.GetInventory(), debit = before;
+  debit.entries[0].count = 90;
+  REQUIRE(actor.CompareAndSetInventory(before, "null", debit, 1));
+  const auto debitReceipt = actor.GetInventoryReceiptDump();
+  server.Tick();
+  REQUIRE(static_cast<bool>(storage->completion));
+  MpObjectReference::InventoryPropertyChange change{"thornswoodQuests", "null", ""};
+  change.expectedRuntimeIdentity = actor.GetRuntimeIdentity();
+  for (int kills = 1; kills <= 3; ++kills) {
+    change.replacementDump = nlohmann::json{{"kills", kills}}.dump();
+    REQUIRE(actor.CompareAndSetActorProperty(42, change));
+    change.expectedDump = change.replacementDump;
+    REQUIRE(actor.GetInventoryReceiptDump() == debitReceipt);
+    REQUIRE(actor.GetInventory().ToJson() == debit.ToJson());
+    REQUIRE(server.worldState.GetSavedInventoryReceipt(actor) == "null");
+  }
+  auto credit = debit;
+  credit.entries[0].count += 25;
+  REQUIRE(actor.CompareAndSetInventory(debit, debitReceipt, credit, 2));
+  const auto creditReceipt = actor.GetInventoryReceiptDump();
+  if (failFirst) storage->fail = true;
+  else storage->Commit();
+  server.Tick();
+  REQUIRE(server.worldState.GetSavedInventoryReceipt(actor) == (failFirst ? "null" : debitReceipt));
+  REQUIRE(actor.GetInventoryReceiptDump() == creditReceipt);
+  REQUIRE(actor.GetDynamicFields().GetValueDump(change.name) == change.replacementDump);
+  REQUIRE(static_cast<bool>(storage->completion));
+  const auto submitted = std::find_if(storage->pending.begin(), storage->pending.end(),
+    [](const auto& form) { return form && form->profileId == 42; });
+  REQUIRE(submitted != storage->pending.end());
+  REQUIRE((*submitted)->inv.ToJson() == credit.ToJson());
+  REQUIRE((*submitted)->dynamicFields.GetValueDump(change.name) == change.replacementDump);
+  storage->Commit();
+  server.Tick();
+  REQUIRE(server.worldState.GetSavedInventoryReceipt(actor) == creditReceipt);
+  std::vector<MpChangeForm> saved;
+  storage->database.Iterate([&](const MpChangeForm& form) { if (form.profileId == 42) saved.push_back(form); }, std::nullopt);
+  REQUIRE(saved.size() == 1);
+  REQUIRE(saved[0].inv.ToJson() == credit.ToJson());
+  REQUIRE(saved[0].dynamicFields.GetValueDump(change.name) == change.replacementDump);
+  REQUIRE(saved[0].dynamicFields.GetValueDump(MpObjectReference::kInventoryReceiptProperty) == creditReceipt);
+}
+
 TEST_CASE("Transaction preflight uses the exact native serialized byte bound",
           "[inventory-receipt]")
 {
