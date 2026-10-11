@@ -2159,13 +2159,14 @@ void MpObjectReference::EnsureBaseContainerAdded(espm::Loader& espm)
   for (auto& p : itemsToAdd) {
     entries.push_back({ p.first, p.second });
   }
-  AddItems(entries);
-
-  if (!ChangeForm().baseContainerAdded) {
+  // AddItems marks a nonempty container in the same edit as its inventory.
+  // Finish the empty case before publication can reload or replace this form.
+  if (entries.empty()) {
     EditChangeForm([&](MpChangeFormREFR& changeForm) {
       changeForm.baseContainerAdded = true;
     });
   }
+  AddItems(entries);
 }
 
 void MpObjectReference::CheckInteractionAbility(MpObjectReference& refr)
