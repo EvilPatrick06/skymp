@@ -91,6 +91,9 @@ export interface ScampServer {
   sendCustomPacket(userId: number, jsonContent: string): void;
   setEnabled(actorId: number, enabled: boolean): void;
   getActorsByProfileId(profileId: number): number[];
+  // Thornswood #1269: this profile's characters whose saved record could not
+  // be read at start. Kept on disk as they were; their ids are never reused.
+  getUnreadableChangeForms(profileId: number): number[];
   createBot(): Bot;
   getUserByActor(formId: number): number;
   getUserIp(userId: number): string;

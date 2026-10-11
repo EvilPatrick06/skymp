@@ -255,6 +255,11 @@ public:
   // are left on disk as they are and their ids are never generated again
   // (Thornswood #1269).
   const std::map<uint32_t, int32_t>& GetUnreadableChangeForms() const;
+  // The same, for one profile: the form ids of its characters that were kept
+  // aside, in id order. The gamemode reads it when it makes that profile a
+  // new character, to tell the person the old one was kept.
+  std::vector<uint32_t> GetUnreadableChangeFormsOfProfile(
+    int32_t profileId) const;
   void SetRelootTime(const std::string& recordType,
                      std::chrono::system_clock::duration time);
   std::optional<std::chrono::system_clock::duration> GetRelootTime(
