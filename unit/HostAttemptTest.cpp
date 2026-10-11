@@ -134,7 +134,7 @@ TEST_CASE("A running hosted return stops when its inventory callback releases th
   p.worldState.AddForm(std::move(human),host);
   p.worldState.GetFormAt<MpActor>(host).RegisterProfileId(42);
   p.SetUserActor(0,host);
-  auto creature=std::make_unique<MpActor>(LocationalData{{1,1,1},{},FormDesc::Tamriel()},callbacks,0x1e7a4);
+  auto creature=std::make_unique<MpActor>(LocationalData{{1,1,1},{},FormDesc::Tamriel()},callbacks,0xb623b);
   p.worldState.AddForm(std::move(creature),remoteId);
   auto& remote=p.worldState.GetFormAt<MpActor>(remoteId);
   ActionListener listener(p);RawMessageData raw;raw.userId=0;HostMessage msg;msg.remoteId=remoteId;
