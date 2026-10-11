@@ -4,6 +4,74 @@
 #include "TestUtils.hpp"
 
 PartOne& GetPartOne();
+extern espm::Loader& GetEspmLoader();
+
+TEST_CASE("Hosted creature ownership ends with its host session",
+          "[actor-runtime-identity][HostAttempt][espm]")
+{
+  for (const std::string change : {"disconnect", "detach", "overwrite", "reload"}) {
+    CAPTURE(change);
+    PartOne p;
+    p.AttachEspm(&GetEspmLoader());
+    auto time = std::chrono::system_clock::now();
+    p.worldState.SetTimerClock([&] { return time; });
+    constexpr uint32_t host = 0xff000abc;
+    constexpr uint32_t remoteId = 0xff000abd;
+    DoConnect(p, 0);
+    p.CreateActor(host, {1, 1, 1}, 0, 0x3c, 42);
+    p.SetUserActor(0, host);
+    auto creature = std::make_unique<MpActor>(
+      LocationalData{{1, 1, 1}, {}, FormDesc::Tamriel()},
+      p.CreateFormCallbacks(), 0x1e7a4);
+    p.worldState.AddForm(std::move(creature), remoteId);
+    auto& remote = p.worldState.GetFormAt<MpActor>(remoteId);
+    ActionListener listener(p);
+    RawMessageData raw;
+    raw.userId = 0;
+    HostMessage msg;
+    msg.remoteId = remoteId;
+    listener.OnHostAttempt(raw, msg);
+    remote.SetRespawnTime(1);
+    remote.Kill();
+    REQUIRE(remote.IsRespawning());
+    const auto runtime = remote.GetRuntimeIdentity();
+    const auto body = remote.GetRuntimeLifeIdentity();
+
+    if (change == "disconnect") DoDisconnect(p, 0);
+    else if (change == "detach") p.SetUserActor(0, 0);
+    else if (change == "overwrite") DoConnect(p, 0);
+    else {
+      auto& actor = p.worldState.GetFormAt<MpActor>(host);
+      actor.ApplyChangeForm(actor.GetChangeForm());
+    }
+    // The absent owner's old timer must be inert even before somebody rehosts.
+    remote.SetRespawnTime(10);
+    Inventory inventory;
+    inventory.entries.emplace_back(0xf, 321);
+    remote.SetInventory(inventory);
+    time += std::chrono::seconds(2);
+    p.worldState.Tick();
+    REQUIRE(remote.IsDead());
+    REQUIRE(remote.GetInventory().ToJson() == inventory.ToJson());
+    REQUIRE(remote.GetRuntimeIdentity() != runtime);
+    REQUIRE(remote.GetRuntimeLifeIdentity() != body);
+    REQUIRE(p.worldState.hosters.count(remoteId) == 0);
+
+    if (change == "disconnect") DoConnect(p, 0);
+    p.SetUserActor(0, host);
+    // The same human form ID represents a new authority session.
+    listener.OnHostAttempt(raw, msg);
+    REQUIRE(p.worldState.hosters.at(remoteId) == host);
+    REQUIRE(remote.IsRespawning());
+    time += std::chrono::seconds(2);
+    p.worldState.Tick();
+    REQUIRE(remote.IsDead());
+    REQUIRE(remote.GetInventory().ToJson() == inventory.ToJson());
+    time += std::chrono::seconds(10);
+    p.worldState.Tick();
+    REQUIRE_FALSE(remote.IsDead());
+  }
+}
 
 TEST_CASE("Hosting an actor before its first movement records the timestamp",
           "[HostAttempt][PartOne]")
