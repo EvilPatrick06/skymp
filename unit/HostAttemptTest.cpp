@@ -117,6 +117,7 @@ TEST_CASE("Hosted creature ownership ends with its host session",
 TEST_CASE("A running hosted return stops when its inventory callback releases the host",
           "[actor-runtime-identity][HostAttempt][espm]")
 {
+  const bool reload=GENERATE(false,true);
   PartOne p;
   p.AttachEspm(&GetEspmLoader());
   auto time=std::chrono::system_clock::now();
@@ -126,7 +127,11 @@ TEST_CASE("A running hosted return stops when its inventory callback releases th
   auto callbacks=p.CreateFormCallbacks();
   const auto send=callbacks.sendToUserDeferred;
   callbacks.sendToUserDeferred=[&](auto actor,auto& message,auto reliable,auto channel,auto overwrite){
-    if(revoke && !called){called=true;p.SetUserActor(0,0);}
+    if(revoke && !called){
+      called=true;
+      if(reload){auto restored=actor->GetChangeForm();restored.baseContainerAdded=false;actor->ApplyChangeForm(restored);}
+      else p.SetUserActor(0,0);
+    }
     send(actor,message,reliable,channel,overwrite);
   };
   DoConnect(p,0);
@@ -144,6 +149,7 @@ TEST_CASE("A running hosted return stops when its inventory callback releases th
   revoke=true;time+=std::chrono::seconds(2);p.worldState.Tick();
   REQUIRE(called);
   REQUIRE(remote.GetRuntimeIdentity()!=runtime);
+  if(reload){REQUIRE_FALSE(remote.GetChangeForm().baseContainerAdded);return;}
   REQUIRE(remote.IsDead());
   REQUIRE_FALSE(remote.IsRespawning());
   REQUIRE(p.worldState.hosters.count(remoteId)==0);
