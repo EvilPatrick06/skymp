@@ -114,6 +114,39 @@ const main = () => {
     assert.equal(mp.compareAndSetActorProperty(id,42,input),false,'metadata serialization cannot replace the entry session');
     assert.deepEqual(mp.get(id,name),state);assert.equal(mp.getInventoryReceipt(id),receipt);
   }
+  const metadata = () => ({name,expected:state,replacement:{kills:4},expectedLifeGeneration:0,
+    expectedRuntimeIdentity:mp.getActorRuntimeIdentity(id)});
+  for(const invalid of ['', '0', '01', '1\n', '18446744073709551616', undefined, 1]) {
+    assert.throws(()=>mp.compareAndSetActorProperty(id,42,{...metadata(),expectedRuntimeIdentity:invalid}));
+  }
+  assert.equal(mp.compareAndSetActorProperty(id,43,metadata()),false);
+  assert.equal(mp.compareAndSetActorProperty(id,42,{...metadata(),expectedLifeGeneration:1}),false);
+  for(const reserved of ['_skympNpcLifeGeneration','_skympServerControlled','_skympServerRespawnAt']) {
+    mp.makeProperty(reserved,{isVisibleByOwner:false,isVisibleByNeighbors:false,updateOwner:'',updateNeighbor:''});
+    assert.throws(()=>mp.compareAndSetActorProperty(id,42,{...metadata(),name:reserved}));
+  }
+  mp.makeProperty('visibleMetadata',{isVisibleByOwner:true,isVisibleByNeighbors:false,updateOwner:'',updateNeighbor:''});
+  for(const invalidName of ['visibleMetadata','unregisteredMetadata','inventory'])
+    assert.throws(()=>mp.compareAndSetActorProperty(id,42,{...metadata(),name:invalidName}));
+  for(const mutation of ['replace','delete']) {
+    let changed=false;
+    const input=new Proxy(metadata(),{get(target,key,receiver) {
+      if(key==='expectedRuntimeIdentity' && !changed) {
+        changed=true;mp.set(id,'isDead',true);mp.set(id,'isDead',false);
+        if(mutation==='replace')target[key]=mp.getActorRuntimeIdentity(id);else delete target[key];
+      }
+      return Reflect.get(target,key,receiver);
+    }});
+    let committed=false;
+    try{committed=mp.compareAndSetActorProperty(id,42,input);}catch(error){assert.equal(mutation,'delete');}
+    assert.equal(changed,true);assert.equal(committed,false);
+  }
+  const replacement=metadata();
+  replacement.replacement={toJSON(){mp.destroyActor(id);mp.createActor(id,[0,0,0],0,0x3c,42);
+    mp.set(id,'inventory',inventory);mp.set(id,name,state);
+    replacement.expectedRuntimeIdentity=mp.getActorRuntimeIdentity(id);return {kills:4};}};
+  assert.equal(mp.compareAndSetActorProperty(id,42,replacement),false);
+  assert.deepEqual(mp.get(id,name),state);assert.deepEqual(mp.get(id,'inventory'),inventory);
 };
 
 try { main(); console.log('Test passed!'); process.exit(0); }

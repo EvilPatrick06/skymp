@@ -191,6 +191,7 @@ bool MpActor::CompareAndSetActorProperty(int32_t expectedProfileId,
 {
   constexpr uint64_t maxLife = 9007199254740991;
   if (expectedProfileId <= 0 || GetProfileId() != expectedProfileId ||
+      blockSaving ||
       !property.expectedRuntimeIdentity ||
       !HasRuntimeIdentity(*property.expectedRuntimeIdentity)) return false;
   if (property.name.empty() || property.name.size() > 128 ||
@@ -211,12 +212,13 @@ bool MpActor::CompareAndSetActorProperty(int32_t expectedProfileId,
     return false;
   DynamicFields nextFields = GetDynamicFields();
   nextFields.SetValueDump(property.name, replacement);
-  static_assert(std::is_nothrow_move_assignable_v<DynamicFields>);
   // No inventory or receipt edit: a later whole-character snapshot preserves
   // the current goods while an earlier inventory save may remain in flight.
-  EditChangeForm([&](MpChangeForm& changeForm) {
-    changeForm.dynamicFields = std::move(nextFields);
-  });
+  auto snapshot = GetChangeForm();
+  snapshot.dynamicFields = nextFields;
+  auto world = GetParent();
+  if (!world || !world->RequestPreparedSave(*this, std::move(snapshot))) return false;
+  CommitPreparedDynamicFields(std::move(nextFields));
   return true;
 }
 
@@ -1368,7 +1370,7 @@ float MpActor::GetStaminaRespawnPercentage() const
   return ChangeForm().staminaRespawnPercentage;
 }
 
-void MpActor::SendAndSetDeathState(bool isDead, bool shouldTeleport)
+bool MpActor::SendAndSetDeathState(bool isDead, bool shouldTeleport)
 {
   spdlog::trace(
     "MpActor::SendAndSetDeathState {:x} - isDead: {}, shouldTeleport: {}",
@@ -1387,6 +1389,7 @@ void MpActor::SendAndSetDeathState(bool isDead, bool shouldTeleport)
   }
 
   if (isDead != IsDead()) InvalidateRuntimeIdentity(isDead);
+  const auto runtimeIdentity = GetRuntimeIdentity();
   auto respawnMsg = GetDeathStateMsg(position, isDead, shouldTeleport);
   if (IsServerControlled()) {
     SendServerStateToObservers(respawnMsg, true);
@@ -1396,6 +1399,7 @@ void MpActor::SendAndSetDeathState(bool isDead, bool shouldTeleport)
     }
     GetActorToSendTo().SendToUser(respawnMsg, true);
   }
+  if (!HasRuntimeIdentity(runtimeIdentity)) return false;
 
   EditChangeForm([&](MpChangeForm& changeForm) {
     if (nextGeneration) {
@@ -1415,14 +1419,18 @@ void MpActor::SendAndSetDeathState(bool isDead, bool shouldTeleport)
 
   if (shouldTeleport) {
     SetCellOrWorldObsolete(position.cellOrWorldDesc);
+    if (!HasRuntimeIdentity(runtimeIdentity)) return false;
     SetPos(position.pos);
+    if (!HasRuntimeIdentity(runtimeIdentity)) return false;
     SetAngle(position.rot);
+    if (!HasRuntimeIdentity(runtimeIdentity)) return false;
   }
   pImpl->serverCombatTarget = 0;
   pImpl->serverMovementSpeed = 0;
   if (IsServerControlled()) {
     SendServerStateToObservers(GetServerMovementMessage(), true);
   }
+  return HasRuntimeIdentity(runtimeIdentity);
 }
 
 DeathStateContainerMessage MpActor::GetDeathStateMsg(
@@ -1742,9 +1750,9 @@ void MpActor::Kill(MpActor* killer, bool shouldTeleport)
     changeForm.actorValues.staminaPercentage;
 
   // Keep in sync with MpActor::SetIsDead
-  SendAndSetDeathState(true, shouldTeleport);
-
   const auto keepAlive = GetParent()->LookupFormById(GetFormId());
+  if (!SendAndSetDeathState(true, shouldTeleport)) return;
+
   const auto runtimeIdentity = GetRuntimeIdentity();
   DeathEvent deathEvent(this, killer, healthPercentageBeforeDeath,
                         magickaPercentageBeforeDeath,
@@ -2000,7 +2008,7 @@ void MpActor::SetIsDead(bool isDead)
         changeForm.actorValues.staminaPercentage;
 
       // Keep in sync with MpActor::Kill
-      SendAndSetDeathState(isDead, kShouldTeleport);
+      if (!SendAndSetDeathState(isDead, kShouldTeleport)) return;
 
       const auto runtimeIdentity = GetRuntimeIdentity();
       DeathEvent deathEvent(this, nullptr, healthPercentageBeforeDeath,

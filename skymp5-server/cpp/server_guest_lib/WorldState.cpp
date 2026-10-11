@@ -361,6 +361,23 @@ void WorldState::RequestSave(MpObjectReference& ref)
   pImpl->changesByIdxEmpty = false;
 }
 
+bool WorldState::RequestPreparedSave(MpObjectReference& ref,
+                                     MpChangeForm&& snapshot)
+{
+  const auto current = forms.find(ref.GetFormId());
+  const auto idx = ref.GetIdx();
+  if (pImpl->formLoadingInProgress ||
+      idx == FormIndex::g_invalidIdx || current == forms.end() ||
+      current->second.get() != &ref) return false;
+
+  // All throwing work precedes both queue publication and the live commit.
+  if (pImpl->changesByIdx.size() <= idx) pImpl->changesByIdx.resize(idx + 1);
+  static_assert(std::is_nothrow_move_assignable_v<std::optional<MpChangeForm>>);
+  pImpl->changesByIdx[idx] = std::move(snapshot);
+  pImpl->changesByIdxEmpty = false;
+  return true;
+}
+
 const std::shared_ptr<MpForm>& WorldState::LookupFormById(
   uint32_t formId, std::stringstream* optionalOutTrace)
 {

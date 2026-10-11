@@ -32,7 +32,7 @@ std::string RespawnEvent::GetArgumentsJsonArray() const
 void RespawnEvent::OnFireSuccess(WorldState*)
 {
   if (!actor || !actor->HasRuntimeIdentity(runtimeIdentity)) return;
-  actor->SendAndSetDeathState(false, shouldTeleport);
+  if (!actor->SendAndSetDeathState(false, shouldTeleport)) return;
 
   // TODO: should probably not sending to ourselves. see also RespawnTest.cpp
   actor->SendMessageToActorListeners(

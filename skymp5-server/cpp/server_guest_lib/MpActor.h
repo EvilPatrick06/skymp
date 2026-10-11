@@ -260,7 +260,7 @@ private:
   std::shared_ptr<Impl> pImpl;
   bool factionsLoaded = false;
 
-  void SendAndSetDeathState(bool isDead, bool shouldTeleport);
+  bool SendAndSetDeathState(bool isDead, bool shouldTeleport);
   void SendServerStateToObservers(const IMessageBase& message,
                                   bool reliable) const;
 
