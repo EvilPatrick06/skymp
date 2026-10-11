@@ -39,8 +39,13 @@ TEST_CASE("Hosting an actor before its first movement records the timestamp",
   HostMessage msg;
   msg.remoteId = remote.GetFormId();
   ActionListener listener(p);
+  const auto identityBefore = remote.GetRuntimeIdentity();
+  const auto bodyBefore = remote.GetRuntimeLifeIdentity();
 
   listener.OnHostAttempt(rawMsgData, msg);
+
+  REQUIRE(remote.GetRuntimeIdentity() != identityBefore);
+  REQUIRE(remote.GetRuntimeLifeIdentity() != bodyBefore);
 
   REQUIRE(p.worldState.lastMovUpdateByIdx.size() > remoteIdx);
   REQUIRE(p.worldState.lastMovUpdateByIdx[remoteIdx].has_value());
@@ -59,7 +64,20 @@ TEST_CASE("Hosting an actor before its first movement records the timestamp",
 
   const auto timestamp = p.worldState.lastMovUpdateByIdx[remoteIdx];
   const auto messageCount = p.Messages().size();
+  const auto sameOwner = remote.GetRuntimeIdentity();
   listener.OnHostAttempt(rawMsgData, msg);
   REQUIRE(p.worldState.lastMovUpdateByIdx[remoteIdx] == timestamp);
   REQUIRE(p.Messages().size() == messageCount);
+  REQUIRE(remote.GetRuntimeIdentity() == sameOwner);
+
+  DoConnect(p, 1);
+  p.CreateActor(0xff000002, {0, 0, 0}, 0, 0x3c);
+  p.SetUserActor(1, 0xff000002);
+  p.worldState.lastMovUpdateByIdx[remoteIdx] =
+    std::chrono::system_clock::now() - std::chrono::seconds(3);
+  rawMsgData.userId = 1;
+  listener.OnHostAttempt(rawMsgData, msg);
+  REQUIRE(p.worldState.hosters.at(remote.GetFormId()) == 0xff000002);
+  REQUIRE(remote.GetRuntimeIdentity() != sameOwner);
+  REQUIRE(remote.GetRuntimeLifeIdentity() != bodyBefore);
 }

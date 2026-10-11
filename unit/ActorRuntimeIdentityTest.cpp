@@ -104,6 +104,29 @@ TEST_CASE("A dead body identity cannot cross ownership or saved-state replacemen
   REQUIRE(actor.GetRuntimeLifeIdentity() != attached);
 }
 
+TEST_CASE("Creature authority changes revoke both runtime identities",
+          "[actor-runtime-identity][espm]")
+{
+  PartOne server;
+  server.AttachEspm(&GetEspmLoader());
+  constexpr uint32_t id = 0xff000abc;
+  auto creature = std::make_unique<MpActor>(
+    LocationalData{{1, 1, 1}, {}, FormDesc::Tamriel()},
+    server.CreateFormCallbacks(), 0x1e7a4);
+  server.worldState.AddForm(std::move(creature), id);
+  auto& actor = server.worldState.GetFormAt<MpActor>(id);
+  for (const bool controlled : {true, false, true}) {
+    const auto before = actor.GetRuntimeIdentity();
+    const auto body = actor.GetRuntimeLifeIdentity();
+    actor.SetServerControlled(controlled);
+    REQUIRE(actor.GetRuntimeIdentity() != before);
+    REQUIRE(actor.GetRuntimeLifeIdentity() != body);
+    const auto unchanged = actor.GetRuntimeIdentity();
+    actor.SetServerControlled(controlled);
+    REQUIRE(actor.GetRuntimeIdentity() == unchanged);
+  }
+}
+
 TEST_CASE("Disconnect invalidates identity before gamemode listeners run",
           "[actor-runtime-identity][espm]")
 {

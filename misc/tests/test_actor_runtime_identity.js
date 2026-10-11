@@ -30,6 +30,27 @@ const main = () => {
     assert.deepEqual(mp.get(id, 'inventory'), before);
     assert.equal(mp.getInventoryReceipt(id), 'null');
   }
+  for (const boundary of ['expected','replacement','inventory']) {
+    for (const mutation of ['replace','delete']) {
+      const victim = mp.createActor(0, [0,0,0], 0, 0x3c, 42);
+      mp.set(victim, 'inventory', before);
+      const fenced = {name, expected:null, replacement:{done:true}, expectedLifeGeneration:0,
+        expectedRuntimeIdentity:mp.getActorRuntimeIdentity(victim)};
+      const callback = {toJSON() {
+        mp.set(victim, 'isDead', true); mp.set(victim, 'isDead', false);
+        if (mutation === 'replace') fenced.expectedRuntimeIdentity=mp.getActorRuntimeIdentity(victim);
+        else delete fenced.expectedRuntimeIdentity;
+        return boundary === 'inventory' ? before : boundary === 'expected' ? null : {done:true};
+      }};
+      if (boundary !== 'inventory') fenced[boundary]=callback;
+      assert.equal(mp.compareAndSetInventoryAndProperty(victim,
+        boundary === 'inventory' ? callback : before, 'null', after, 1, 42, fenced), false,
+        boundary+' serialization cannot '+mutation+' the entry ownership fence');
+      assert.deepEqual(mp.get(victim, 'inventory'), before);
+      assert.equal(mp.getInventoryReceipt(victim), 'null');
+      assert.equal(mp.get(victim, name) == null, true);
+    }
+  }
   change.expectedRuntimeIdentity = current;
   change.replacement = {toJSON() {
     mp.destroyActor(id);
