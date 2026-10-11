@@ -620,16 +620,13 @@ public:
   nlohmann::json inputs;
 };
 
+// A new one each time: GetPartOne() is not the same PartOne for the whole
+// run, so a listener kept from an earlier test may be on one no longer used.
+// One left behind unarmed allows everything.
 std::shared_ptr<SoulGemRankGate> SoulGemGate(PartOne& p)
 {
-  static std::shared_ptr<SoulGemRankGate> gate;
-  if (!gate) {
-    gate = std::make_shared<SoulGemRankGate>();
-    p.AddListener(gate);
-  }
-  gate->asked = 0;
-  gate->refused = 0;
-  gate->inputs = nullptr;
+  auto gate = std::make_shared<SoulGemRankGate>();
+  p.AddListener(gate);
   return gate;
 }
 
@@ -712,8 +709,10 @@ TEST_CASE("A soul gem above the person's rank is refused and the gem and the "
 
     CHECK(gate->refused == 1);
     CHECK(ac.GetInventory() == before);
-    CHECK(ac.GetInventory().GetItemCount(c.gem) == 1);
-    CHECK(ac.GetInventory().GetItemCount(kIronDagger) == 1);
+    CHECK(ac.GetInventory().GetItemCount(c.gem) ==
+          before.GetItemCount(c.gem));
+    CHECK(ac.GetInventory().GetItemCount(kIronDagger) ==
+          before.GetItemCount(kIronDagger));
 
     // The client is told its pack is as it was, gem and piece included.
     p.Tick();
@@ -738,6 +737,7 @@ TEST_CASE("A petty soul gem works at every rank (Thornswood #1648)",
     auto& ac = MakeCrafter(p, kForge);
     ac.AddItem(kIronDagger, 1);
     ac.AddItem(kPettySoulGem, 1);
+    const Inventory before = ac.GetInventory();
 
     RawMessageData msgData;
     msgData.userId = 0;
@@ -748,8 +748,10 @@ TEST_CASE("A petty soul gem works at every rank (Thornswood #1648)",
     CHECK(gate->asked == 1);
     CHECK(gate->refused == 0);
     // The gem is spent and the piece comes back.
-    CHECK(ac.GetInventory().GetItemCount(kPettySoulGem) == 0);
-    CHECK(ac.GetInventory().GetItemCount(kIronDagger) == 1);
+    CHECK(ac.GetInventory().GetItemCount(kPettySoulGem) ==
+          before.GetItemCount(kPettySoulGem) - 1);
+    CHECK(ac.GetInventory().GetItemCount(kIronDagger) ==
+          before.GetItemCount(kIronDagger));
 
     p.DestroyActor(0xff000000);
     DoDisconnect(p, 0);
