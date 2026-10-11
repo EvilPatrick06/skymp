@@ -164,6 +164,25 @@ bool MpActor::HasRuntimeIdentity(uint64_t expected) const
     GetParent()->LookupFormById(GetFormId()).get() == this;
 }
 
+void MpActor::ReleaseHostedActors() noexcept
+{
+  if (auto world = GetParent()) {
+    for (auto it = world->hosters.begin(); it != world->hosters.end();) {
+      if (it->second != GetFormId()) {
+        ++it;
+        continue;
+      }
+      const auto remoteId = it->first;
+      it = world->hosters.erase(it);
+      const auto& form = world->LookupFormByIdNoLoad(remoteId);
+      if (form && form->AsActor()) {
+        // Do not rearm a dead creature until a new host accepts authority.
+        form->AsActor()->InvalidateRuntimeIdentity();
+      }
+    }
+  }
+}
+
 void MpActor::SetServerControlled(bool controlled)
 {
   if (IsCreatedAsPlayer() || GetProfileId() >= 0 ||
@@ -823,6 +842,7 @@ void MpActor::ApplyChangeForm(const MpChangeForm& newChangeForm)
     throw std::runtime_error(
       "Expected record type to be ACHR, but found REFR");
   }
+  ReleaseHostedActors();
   InvalidateRuntimeIdentity();
 
   // Published-to-hidden only. An NPC stays published with an empty dump, so
@@ -1638,6 +1658,7 @@ void MpActor::ModifyActorValuePercentage(espm::ActorValue av,
 
 void MpActor::BeforeDestroy()
 {
+  ReleaseHostedActors();
   InvalidateRuntimeIdentity();
   for (auto& sink : pImpl->destroyEventSinks) {
     sink->BeforeDestroy(*this);
