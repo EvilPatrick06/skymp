@@ -25,7 +25,7 @@ import { nameof } from '../../lib/nameof';
 import { setActorValuePercentage } from '../../sync/actorvalues';
 import { applyAppearanceToPlayer } from '../../sync/appearance';
 import { applyEquipment, isBadMenuShown, syncSpellEquipment, SpellType } from '../../sync/equipment';
-import { Inventory, acceptPreloadedInventoryBase, applyInventory, getDiff, getInventory, inventoryEntriesEqual, inventoryEntriesEqualExceptName, resetInventoryBase } from '../../sync/inventory';
+import { Inventory, acceptPreloadedInventoryBase, applyInventory, getDiff, getInventory, inventoryEntriesEqual, resetInventoryBase } from '../../sync/inventory';
 import { Movement } from '../../sync/movement';
 import { learnSpells, removeAllSpells } from '../../sync/spell';
 import { ModelApplyUtils } from '../../view/modelApplyUtils';
@@ -603,14 +603,7 @@ export class RemoteServer extends ClientListener {
         // Restore the original saved snapshot, not that transient model.
         for (const equipped of msg.equipment.inv.entries) {
           if (equipped.count <= 0 || (!equipped.worn && !equipped.wornLeft)) { continue; }
-          // THORNSWOOD (Thornswood #1651). The equipment record names a piece
-          // as the game named it when the record was last sent, which is on
-          // an equip. The server may have renamed pieces in the pack since
-          // (a piece's condition is on its name), so when no stack matches by
-          // name too, the worn piece is the stack that matches in all else.
-          const free = (entry: Inventory['entries'][0]) => entry.count > 0 && !entry.worn && !entry.wornLeft;
-          const owned = inv.entries.find(entry => free(entry) && inventoryEntriesEqual(entry, equipped, true))
-            ?? inv.entries.find(entry => free(entry) && inventoryEntriesEqualExceptName(entry, equipped, true));
+          const owned = inv.entries.find(entry => entry.count > 0 && !entry.worn && !entry.wornLeft && inventoryEntriesEqual(entry, equipped, true));
           if (!owned) { return false; }
           if (owned.count > 1) { inv.entries.push({...owned, count: owned.count - 1}); owned.count = 1; }
           owned.worn = equipped.worn; owned.wornLeft = equipped.wornLeft;

@@ -20,6 +20,17 @@ export class Spawn implements System {
       if (actorId) {
         this.log("Loading character", actorId.toString(16));
         ctx.svr.setEnabled(actorId, true);
+        // Thornswood #1651. The gamemode's last word on the character before
+        // its owner's game is sent it: the durability block names each worn
+        // piece in the equipment record by its name in the pack, since the
+        // owner's game dresses from the record and matches it to the pack by
+        // name.
+        const loading = (globalThis as typeof globalThis & {
+          __thornswoodSpawn?: { loading?: (id: number) => void };
+        }).__thornswoodSpawn;
+        if (typeof loading?.loading === "function") {
+          loading.loading(actorId);
+        }
         ctx.svr.setUserActor(userId, actorId);
         // Upstream left a TODO here. Someone who disconnected during character
         // creation comes back with an actor but no appearance, and an actor

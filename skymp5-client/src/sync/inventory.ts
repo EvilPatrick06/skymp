@@ -405,7 +405,6 @@ export const applyInventory = (
     const from = (held || removed).name || "";
     const to = added.name ? cropName(added.name) : f.getName();
     if (renameInventoryItems(refr.getFormID(), added.baseId, from, to, added.count)) {
-      printConsole(`renameInventoryItems(${refr.getFormID().toString(16)}, ${added.baseId.toString(16)}, ${JSON.stringify(from)}, ${JSON.stringify(to)}, ${added.count})`);
       renamed.add(added);
       renamed.add(removed);
     }
