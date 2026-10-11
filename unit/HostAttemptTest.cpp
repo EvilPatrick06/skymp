@@ -9,7 +9,7 @@ extern espm::Loader& GetEspmLoader();
 TEST_CASE("Hosted creature ownership ends with its host session",
           "[actor-runtime-identity][HostAttempt][espm]")
 {
-  for (const std::string change : {"disconnect", "detach", "overwrite", "reload"}) {
+  for (const std::string change : {"disconnect", "detach", "overwrite", "reload", "replace"}) {
     CAPTURE(change);
     PartOne p;
     p.AttachEspm(&GetEspmLoader());
@@ -36,10 +36,27 @@ TEST_CASE("Hosted creature ownership ends with its host session",
     REQUIRE(remote.IsRespawning());
     const auto runtime = remote.GetRuntimeIdentity();
     const auto body = remote.GetRuntimeLifeIdentity();
+    struct DisconnectListener : FakeListener
+    {
+      std::function<void()> check;
+      bool called = false;
+      void OnDisconnect(Networking::UserId) override { called = true; check(); }
+    };
+    auto onDisconnect = std::make_shared<DisconnectListener>();
+    onDisconnect->check = [&] {
+      REQUIRE(remote.GetRuntimeIdentity() != runtime);
+      REQUIRE(remote.GetRuntimeLifeIdentity() != body);
+      REQUIRE(p.worldState.hosters.count(remoteId) == 0);
+    };
+    p.AddListener(onDisconnect);
 
-    if (change == "disconnect") DoDisconnect(p, 0);
+    if (change == "disconnect") {
+      DoDisconnect(p, 0);
+      REQUIRE(onDisconnect->called);
+    }
     else if (change == "detach") p.SetUserActor(0, 0);
     else if (change == "overwrite") DoConnect(p, 0);
+    else if (change == "replace") p.DestroyActor(host);
     else {
       auto& actor = p.worldState.GetFormAt<MpActor>(host);
       actor.ApplyChangeForm(actor.GetChangeForm());
@@ -58,6 +75,7 @@ TEST_CASE("Hosted creature ownership ends with its host session",
     REQUIRE(p.worldState.hosters.count(remoteId) == 0);
 
     if (change == "disconnect") DoConnect(p, 0);
+    if (change == "replace") p.CreateActor(host, {1, 1, 1}, 0, 0x3c, 42);
     p.SetUserActor(0, host);
     // The same human form ID represents a new authority session.
     listener.OnHostAttempt(raw, msg);
