@@ -37,6 +37,8 @@ async function start(devServer,allSettings={}){
   // main() listens once its dev server probe is answered; wait for those listens.
   const want=devServer?2:1;
   await new Promise((r)=>{const t=()=>mine.length===want&&mine.every(s=>s.listening)?r():setImmediate(t);t();});
+  // Every port this start listens on, so each can be called directly (Thornswood #1294).
+  start.ports=mine.map(s=>s.address().port);
   return port;
 }
 
@@ -119,6 +121,27 @@ async function check(name,fn){
       assert.equal(r.status,403);
       assert.deepEqual(calls,[]);
     });
+    // Thornswood #1294: every listener that exposes /rpc refuses another machine.
+    // With a UI dev server there are two: the proxy on the UI port and the app
+    // behind it on a port of its own, which listens on every address.
+    const behind=start.ports.filter(p=>p!==proxied);
+    await check('with a UI dev server, the app behind the proxy is a second listener',async()=>{
+      assert.equal(behind.length,1);
+    });
+    await check('an RPC from another machine straight to the app behind the proxy is refused',async()=>{
+      calls.length=0;
+      const r=await send('POST','/rpc/FromOutside',{...asJson({payload:1}),from,port:behind[0]});
+      assert.equal(r.status,403);
+      assert.deepEqual(calls,[]);
+    });
+    for(const variant of ['/rpc/FromOutside/','/RPC/FromOutside','/rpc/From%4Futside']){
+      await check('behind the proxy '+variant+' from another machine is refused too',async()=>{
+        calls.length=0;
+        const r=await send('POST',variant,{...asJson({payload:1}),from,port:proxied});
+        assert.equal(r.status,403);
+        assert.deepEqual(calls,[]);
+      });
+    }
     await check('behind the UI dev server proxy an RPC from this machine still runs',async()=>{
       calls.length=0;
       const r=await send('POST','/rpc/Echo',{...asJson({payload:2}),port:proxied});
