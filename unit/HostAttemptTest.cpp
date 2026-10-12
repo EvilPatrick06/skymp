@@ -245,6 +245,10 @@ TEST_CASE("Kill retains the actor during synchronous removal publication",
 TEST_CASE("Observer publication stops when the source runtime changes",
           "[actor-runtime-identity][observer-publication][espm]")
 {
+  struct PublicationActor : MpActor {
+    using MpActor::MpActor;
+    using MpObjectReference::SendMessageToActorListeners;
+  };
   const bool generic = GENERATE(false, true);
   PartOne p;
   p.AttachEspm(&GetEspmLoader());
@@ -272,10 +276,11 @@ TEST_CASE("Observer publication stops when the source runtime changes",
     p.worldState.GetFormAt<MpActor>(id).RegisterProfileId(42 + i);
     p.SetUserActor(i, id);
   }
-  auto creature = std::make_unique<MpActor>(
+  auto creature = std::make_unique<PublicationActor>(
     LocationalData{{1, 1, 1}, {}, FormDesc::Tamriel()}, callbacks, 0x3053f);
+  auto* published = creature.get();
   p.worldState.AddForm(std::move(creature), remoteId);
-  auto& source = p.worldState.GetFormAt<MpActor>(remoteId);
+  auto& source = *published;
   REQUIRE(source.GetActorListeners().size() == 2);
   armed = true;
   if (generic) {
