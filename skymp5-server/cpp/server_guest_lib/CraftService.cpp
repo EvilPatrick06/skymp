@@ -6,8 +6,11 @@
 #include "RawMessageData.h"
 #include "WorldState.h"
 #include "gamemode_events/CraftEvent.h"
+#include "libespm/Convert.h"
+#include "libespm/INGR.h"
 #include <algorithm>
 #include <map>
+#include <set>
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 #include <spdlog/spdlog.h>
@@ -234,8 +237,27 @@ bool CraftService::CraftItem(MpActor* me, const Inventory& inputObjects,
       return false;
     }
 
+    /*
+      THORNSWOOD PATCH (Thornswood #1389). A brew names its effects.
+
+      The gamemode holds the mixtures list (docs/systems/mixtures.md, MIXTURES
+      in game/gamemode.js) and refuses a brew that carries an effect off it,
+      but it can only ask the list when it is told the effects, and a brewed
+      bottle is a runtime form the server has no record of. The effects are
+      not the client's to claim: they follow from the ingredients, which the
+      check above has just found in the server's own inventory, by the game's
+      rule. So they are worked out here and handed over as the sixth
+      argument. An enchantment has no ingredient in it and stays "not named"
+      until the client can say what went on the piece.
+    */
+    auto effects = BrewEffects(br, inputObjects);
+    if (effects) {
+      spdlog::info("A brew of {} carries the effects {}",
+                   inputObjects.ToJson().dump(), fmt::join(*effects, ","));
+    }
+
     CraftEvent craftEvent(me, resultObjectId, 1, 0, inputObjects.entries,
-                          workbenchId);
+                          workbenchId, effects);
     if (!craftEvent.Fire(me->GetParent())) {
       spdlog::info("The gamemode refused the craft of {:#x} with no recipe",
                    resultObjectId);
@@ -258,6 +280,51 @@ bool CraftService::CraftItem(MpActor* me, const Inventory& inputObjects,
     return false;
   }
   return true;
+}
+
+std::optional<std::vector<uint32_t>> CraftService::BrewEffects(
+  const espm::CombineBrowser& br, const Inventory& inputObjects)
+{
+  std::vector<uint32_t> firstNamed;
+  std::map<uint32_t, int> carriedBy;
+  std::set<uint32_t> ingredientsSeen;
+  bool anyIngredient = false;
+
+  for (const auto& entry : inputObjects.entries) {
+    // Two of one ingredient is still one ingredient's effects.
+    if (!ingredientsSeen.insert(entry.baseId).second) {
+      continue;
+    }
+    auto lookup = br.LookupById(entry.baseId);
+    const auto* ingredient = espm::Convert<espm::INGR>(lookup.rec);
+    if (!ingredient) {
+      continue;
+    }
+    anyIngredient = true;
+
+    std::set<uint32_t> carried;
+    for (const auto& effect : ingredient->GetData(cache).effects) {
+      const uint32_t mgef = lookup.ToGlobalId(effect.effectId);
+      if (!carried.insert(mgef).second) {
+        continue;
+      }
+      if (carriedBy[mgef]++ == 0) {
+        firstNamed.push_back(mgef);
+      }
+    }
+  }
+
+  if (!anyIngredient) {
+    return std::nullopt;
+  }
+
+  std::vector<uint32_t> shared;
+  for (uint32_t mgef : firstNamed) {
+    if (carriedBy[mgef] >= 2) {
+      shared.push_back(mgef);
+    }
+  }
+  return shared;
 }
 
 bool CraftService::RecipeItemsMatch(const espm::LookupResult& lookupRes,

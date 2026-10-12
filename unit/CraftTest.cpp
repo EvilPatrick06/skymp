@@ -757,3 +757,198 @@ TEST_CASE("A petty soul gem works at every rank (Thornswood #1648)",
     DoDisconnect(p, 0);
   }
 }
+namespace {
+// THORNSWOOD PATCH (Thornswood #1389). Skyrim.esm's ingredients and the
+// magic effects their records carry, read off the plugin on 12 Oct.
+constexpr uint32_t kBlueMountainFlower = 0x77e1c; // 3eb15 3eb25 3eaf3 73f2b
+constexpr uint32_t kWheat = 0x4b0ba;              // 3eb15 3eaf3 73f2c 10de5f
+constexpr uint32_t kNightshade = 0x2f44c;         // 3eb42 73f2b 10de5e 3eb26
+constexpr uint32_t kLavender = 0x45c28;           // 39e51 3eaf9 73f27 3eb25
+constexpr uint32_t kTundraCotton = 0x3f7f8;       // 39e51 3eaf8 3eb1c 3eb23
+constexpr uint32_t kSaltPile = 0x34cdf;           // 73f51 3eb28 73f25 3eb07
+constexpr uint32_t kRestoreHealth = 0x3eb15;
+constexpr uint32_t kFortifyHealth = 0x3eaf3;
+constexpr uint32_t kDamageMagickaRegen = 0x73f2b;
+constexpr uint32_t kResistMagic = 0x39e51;
+// What a lab hands back is a bottle the brewing client made, a runtime form
+// the server has no record of. A plain healing potion's record stands in for
+// it here (Potion of Minor Healing), because the bottle is added to the pack
+// when the craft goes through, and the effects are read from the ingredients,
+// never from the bottle.
+constexpr uint32_t kBrewedBottle = 0x3eadd;
+
+// A gamemode holding a short mixtures list, the way game/gamemode.js holds
+// MIXTURES: it reads the sixth argument and refuses a brew carrying an effect
+// that is not on it. Only acts while armed; PartOne keeps every listener.
+class MixturesListGate : public PartOneListener
+{
+public:
+  void OnConnect(Networking::UserId) override {}
+  void OnDisconnect(Networking::UserId) override {}
+  void OnCustomPacket(Networking::UserId,
+                      const simdjson::dom::element&) override
+  {
+  }
+  bool OnMpApiEvent(const GameModeEvent& event) override
+  {
+    if (!armed || event.GetName() != std::string("onCraft")) {
+      return true;
+    }
+    auto args = nlohmann::json::parse(event.GetArgumentsJsonArray());
+    asked++;
+    argCount = args.size();
+    effects = args.at(5);
+    if (!effects.is_array()) {
+      return true;
+    }
+    for (auto& mgef : effects) {
+      auto id = mgef.get<uint32_t>();
+      if (id != kRestoreHealth && id != kFortifyHealth) {
+        refused++;
+        return false;
+      }
+    }
+    return true;
+  }
+
+  bool armed = false;
+  int asked = 0;
+  int refused = 0;
+  size_t argCount = 0;
+  nlohmann::json effects;
+};
+
+CraftItemMessage Brew(std::vector<uint32_t> ingredients)
+{
+  CraftItemMessage msg;
+  for (auto id : ingredients) {
+    msg.data.craftInputObjects.AddItem(id, 1);
+  }
+  msg.data.workbench = kForge;
+  msg.data.resultObjectId = kBrewedBottle;
+  return msg;
+}
+}
+
+TEST_CASE("A brew's effects are the ones two of its ingredients share "
+          "(Thornswood #1389)",
+          "[Craft][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto craftService = p.GetActionListener().GetCraftService();
+  auto& br = p.GetEspm().GetBrowser();
+
+  auto two = craftService->BrewEffects(
+    br, Inventory().AddItem(kBlueMountainFlower, 1).AddItem(kWheat, 1));
+  REQUIRE(two.has_value());
+  REQUIRE(*two == std::vector<uint32_t>{ kRestoreHealth, kFortifyHealth });
+
+  // Three ingredients: each effect two of them share, in the order the
+  // inputs first name them.
+  auto three = craftService->BrewEffects(br,
+                                         Inventory()
+                                           .AddItem(kBlueMountainFlower, 1)
+                                           .AddItem(kWheat, 1)
+                                           .AddItem(kNightshade, 1));
+  REQUIRE(three.has_value());
+  REQUIRE(*three ==
+          std::vector<uint32_t>{ kRestoreHealth, kFortifyHealth,
+                                 kDamageMagickaRegen });
+
+  auto resist = craftService->BrewEffects(
+    br, Inventory().AddItem(kLavender, 1).AddItem(kTundraCotton, 1));
+  REQUIRE(resist.has_value());
+  REQUIRE(*resist == std::vector<uint32_t>{ kResistMagic });
+
+  // Nothing shared, and one ingredient twice, hold no effect: a named empty
+  // list, which the gamemode refuses as a bottle with nothing in it.
+  auto none = craftService->BrewEffects(
+    br, Inventory().AddItem(kBlueMountainFlower, 1).AddItem(kSaltPile, 1));
+  REQUIRE(none.has_value());
+  REQUIRE(none->empty());
+  auto twice = craftService->BrewEffects(
+    br, Inventory().AddItem(kBlueMountainFlower, 2));
+  REQUIRE(twice.has_value());
+  REQUIRE(twice->empty());
+
+  // No ingredient at all (an enchantment): not named.
+  auto enchant = craftService->BrewEffects(
+    br, Inventory().AddItem(kIronDagger, 1).AddItem(kPettySoulGem, 1));
+  REQUIRE(!enchant.has_value());
+}
+
+TEST_CASE("onCraft's sixth argument names a brew's effects, and a brew off "
+          "the list is refused with the ingredients kept (Thornswood #1389)",
+          "[Craft][espm]")
+{
+  PartOne& p = GetPartOne();
+  RawMessageData msgData;
+  msgData.userId = 0;
+
+  {
+    auto gate = std::make_shared<MixturesListGate>();
+    p.AddListener(gate);
+    auto& ac = MakeCrafter(p, kForge);
+    ac.AddItem(kBlueMountainFlower, 1);
+    ac.AddItem(kWheat, 1);
+
+    gate->armed = true;
+    p.GetActionListener().OnCraftItem(
+      msgData, Brew({ kBlueMountainFlower, kWheat }));
+    gate->armed = false;
+
+    REQUIRE(gate->asked == 1);
+    REQUIRE(gate->argCount == 7);
+    REQUIRE(gate->effects ==
+            nlohmann::json::array({ kRestoreHealth, kFortifyHealth }));
+    CHECK(gate->refused == 0);
+    // A brew on the list goes through: the ingredients are spent.
+    CHECK(ac.GetInventory().GetItemCount(kBlueMountainFlower) == 0);
+    CHECK(ac.GetInventory().GetItemCount(kWheat) == 0);
+
+    p.DestroyActor(0xff000000);
+    DoDisconnect(p, 0);
+  }
+
+  {
+    auto gate = std::make_shared<MixturesListGate>();
+    p.AddListener(gate);
+    auto& ac = MakeCrafter(p, kForge);
+    ac.AddItem(kLavender, 1);
+    ac.AddItem(kTundraCotton, 1);
+    const Inventory before = ac.GetInventory();
+
+    gate->armed = true;
+    p.GetActionListener().OnCraftItem(msgData,
+                                      Brew({ kLavender, kTundraCotton }));
+    gate->armed = false;
+
+    REQUIRE(gate->asked == 1);
+    REQUIRE(gate->effects == nlohmann::json::array({ kResistMagic }));
+    CHECK(gate->refused == 1);
+    CHECK(ac.GetInventory() == before);
+
+    p.DestroyActor(0xff000000);
+    DoDisconnect(p, 0);
+  }
+
+  {
+    // An enchantment still has no effects named, so the gamemode is told
+    // null and decides as it did before.
+    auto gate = std::make_shared<MixturesListGate>();
+    p.AddListener(gate);
+    auto& ac = MakeCrafter(p, kForge);
+    ac.AddItem(kIronDagger, 1);
+    ac.AddItem(kPettySoulGem, 1);
+
+    gate->armed = true;
+    p.GetActionListener().OnCraftItem(msgData, EnchantDagger(kPettySoulGem));
+    gate->armed = false;
+
+    REQUIRE(gate->asked == 1);
+    CHECK(gate->effects.is_null());
+
+    p.DestroyActor(0xff000000);
+    DoDisconnect(p, 0);
+  }
+}

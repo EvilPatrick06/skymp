@@ -2,6 +2,8 @@
 #include "GameModeEvent.h"
 
 #include "Inventory.h"
+#include <optional>
+#include <vector>
 
 class MpActor;
 
@@ -11,7 +13,8 @@ public:
   CraftEvent(MpActor* actor_, uint32_t craftedItemBaseId_, uint32_t count_,
              uint32_t recipeId_,
              const std::vector<Inventory::Entry>& entries_,
-             uint32_t workbenchId_ = 0);
+             uint32_t workbenchId_ = 0,
+             std::optional<std::vector<uint32_t>> effects_ = std::nullopt);
 
   const char* GetName() const override;
 
@@ -39,6 +42,11 @@ private:
   // client's word for what went in and what came out, and it belongs on the
   // server side where it can be changed without a client build.
   uint32_t workbenchId = 0;
+
+  // THORNSWOOD PATCH (Thornswood #1389). The sixth argument: the MGEF form
+  // ids a craft with no recipe carries, when the server can work them out (a
+  // brew, CraftService::BrewEffects), and null when it cannot.
+  std::optional<std::vector<uint32_t>> effects;
 
   // OnFireSuccess-specific arguments
   const std::vector<Inventory::Entry>& entries;

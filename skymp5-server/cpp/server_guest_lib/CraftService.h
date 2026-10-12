@@ -31,6 +31,16 @@ public:
     const espm::CombineBrowser& br, const Inventory& inputObjects,
     uint32_t resultObjectId);
 
+  // THORNSWOOD PATCH (Thornswood #1389). The magic effects a brew of these
+  // inputs holds, worked out from the ingredient records the way the game
+  // works them out in the alchemy menu: every MGEF that at least two of the
+  // distinct ingredients carry, as global form ids, in the order the inputs
+  // first name them. nullopt when no input is an ingredient (an enchantment,
+  // or anything else with no COBJ), which onCraft passes on as "not named".
+  // public for CraftTest.cpp
+  std::optional<std::vector<uint32_t>> BrewEffects(
+    const espm::CombineBrowser& br, const Inventory& inputObjects);
+
 private:
   // THORNSWOOD PATCH. The craft itself, split out of OnCraftItem so that
   // every way it can fail ends in the same place. True when it went through,
