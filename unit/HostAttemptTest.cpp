@@ -1,6 +1,6 @@
 #include "ActionListener.h"
 #include "ChangeValuesMessage.h"
-#include "GameModeEvent.h"
+#include "gamemode_events/GameModeEvent.h"
 #include "HostMessage.h"
 #include "HostStartMessage.h"
 #include "TestUtils.hpp"
