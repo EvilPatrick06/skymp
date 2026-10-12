@@ -372,9 +372,25 @@ bool WorldState::RequestPreparedSave(MpObjectReference& ref,
 
   // All throwing work precedes both queue publication and the live commit.
   if (pImpl->changesByIdx.size() <= idx) pImpl->changesByIdx.resize(idx + 1);
-  static_assert(std::is_nothrow_move_assignable_v<MpChangeForm>);
   auto& queued = pImpl->changesByIdx[idx];
-  if (queued) *queued = std::move(snapshot);
+  if (queued) {
+    // optional<map> can allocate when moving into an empty optional on MSVC.
+    // Prepare those destinations first, restoring absence if allocation fails.
+    // With both maps engaged their move assignments cannot throw.
+    static_assert(std::is_nothrow_move_assignable_v<std::remove_reference_t<decltype(*snapshot.setNodeTextureSet)>>);
+    static_assert(std::is_nothrow_move_assignable_v<std::remove_reference_t<decltype(*snapshot.setNodeScale)>>);
+    const bool hadTextures = queued->setNodeTextureSet.has_value();
+    const bool hadScales = queued->setNodeScale.has_value();
+    try {
+      if (snapshot.setNodeTextureSet && !hadTextures) queued->setNodeTextureSet.emplace();
+      if (snapshot.setNodeScale && !hadScales) queued->setNodeScale.emplace();
+    } catch (...) {
+      if (!hadTextures) queued->setNodeTextureSet.reset();
+      if (!hadScales) queued->setNodeScale.reset();
+      throw;
+    }
+    *queued = std::move(snapshot);
+  }
   else {
     // MSVC's containers may allocate when move-constructing. Construction
     // failure leaves this previously empty slot empty and the live actor intact.
