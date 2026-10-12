@@ -33,6 +33,46 @@ const allowedIdles = new Array<[number, string]>();
 const refsWithDefaultAnimsDisabled = new Set<number>();
 const allowedAnims = new Set<string>();
 
+/*
+  THORNSWOOD PATCH (Thornswood #489). A stagger that came over the network is
+  played; a stagger this game raises on somebody else's actor still is not.
+
+  deathService.ts blanks "staggerStart" for every actor from 0xff000000 up,
+  upstream's #962: when you power attack someone, your own game staggers them
+  on your screen and theirs does not, so upstream turned the guess off. But
+  the person who was staggered does stagger in their own game (a hit, a
+  shield bash, a shout, the server's Break and Wreck), on their own
+  character, 0x14, which that hook leaves alone. AnimationSource sends that
+  event like any other, applyAnimation below plays it on their actor here
+  with Debug.sendAnimationEvent, and the same hook blanked it on arrival, so
+  nobody else ever saw it.
+
+  So applyAnimation counts each stagger it plays for an actor, and the hook
+  in deathService.ts lets one through for each, through
+  takeStaggerFromNetwork. Everything else it blanks as before.
+
+  The count is taken by the hook, never cleared after the call: Skyrim
+  Platform does not send the event inside Debug.sendAnimationEvent, it queues
+  it for the game thread (CallNative.cpp, isSendAnimEvent, gameThrQ.AddTask)
+  and the hook runs when the game sends it, after this returns. The attacks
+  in allowedAnims above work the same way, for the same reason.
+*/
+export const StaggerEventName = "staggerStart";
+const staggersFromNetwork = new Map<number, number>();
+
+export const takeStaggerFromNetwork = (refrId: number): boolean => {
+  const n = staggersFromNetwork.get(refrId) ?? 0;
+  if (n <= 0) {
+    return false;
+  }
+  if (n === 1) {
+    staggersFromNetwork.delete(refrId);
+  } else {
+    staggersFromNetwork.set(refrId, n - 1);
+  }
+  return true;
+};
+
 const actorSitAnimsLowerCase = [
   'idlestoolenterplayer',
   'idlestoolenter',
@@ -175,6 +215,12 @@ export const applyAnimation = (
     if (animEventNameLowerCase.includes("attack")) {
       allowedAnims.add(refr.getFormID() + ":" + anim.animEventName);
     }
+  }
+
+  // THORNSWOOD PATCH (Thornswood #489): see staggersFromNetwork above.
+  if (anim.animEventName === StaggerEventName) {
+    const refrId = refr.getFormID();
+    staggersFromNetwork.set(refrId, (staggersFromNetwork.get(refrId) ?? 0) + 1);
   }
 
   Debug.sendAnimationEvent(refr, anim.animEventName);
