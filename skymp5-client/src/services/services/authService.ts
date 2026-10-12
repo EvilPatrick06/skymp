@@ -16,6 +16,7 @@ import { NetworkingService } from "./networkingService";
 import { MsgType } from "../../messages";
 import { ConnectionDenied } from "../events/connectionDenied";
 import { SettingsService } from "./settingsService";
+import { isThornswoodNonce, readThornswoodJoinPass, thornswoodJoinPassStorageKey, thornswoodLoginMac } from "../../features/thornswoodLoginProof";
 
 // for browsersideWidgetSetter
 declare const window: any;
@@ -200,6 +201,18 @@ export class AuthService extends ClientListener {
     }
 
     switch (msgContent["customPacketType"]) {
+      // THORNSWOOD PATCH (Thornswood #1320): the server asks this login to
+      // prove its join pass on this connection. Answered once the front
+      // plugin has put the pass in storage (see answerThornswoodChallenge).
+      case 'thornswoodLoginChallenge':
+        if (isThornswoodNonce(msgContent["n"])) {
+          this.thornswoodChallenge = msgContent["n"] as string;
+          this.thornswoodChallengeWaitSaid = false;
+          this.answerThornswoodChallenge();
+        } else {
+          logError(this, 'thornswoodLoginChallenge without a nonce');
+        }
+        break;
       // case 'loginRequired':
       //   logTrace(this, 'loginRequired received');
       //   this.loginWithSkympIoCredentials();
@@ -661,6 +674,8 @@ export class AuthService extends ClientListener {
 
   private handleConnectionAccepted() {
     this.setListenBrowserMessage(false, 'connectionAccepted event received');
+    // THORNSWOOD PATCH (Thornswood #1320): a challenge was for the last connection.
+    this.thornswoodChallenge = null;
     this.loggingStartMoment = Date.now();
 
     const authData = this.sp.storage[authGameDataStorageKey] as AuthGameData | undefined;
@@ -707,6 +722,9 @@ export class AuthService extends ClientListener {
 
   private onTick() {
     this.menuChoiceTick();
+    if (this.thornswoodChallenge !== null) {
+      this.answerThornswoodChallenge();
+    }
     // TODO: Should be no hardcoded/magic-number limit
     // TODO: Busy waiting is bad. Should be replaced with some kind of event
     const maxLoggingDelay = 15000;
@@ -762,6 +780,46 @@ export class AuthService extends ClientListener {
   }
 
   private _isListenBrowserMessage = false;
+
+  /*
+    THORNSWOOD PATCH (Thornswood #1320). The answer to the server's challenge:
+    the join pass and its mac over this connection's nonce, once. The pass
+    comes from the launcher through the front plugin, and the launcher asks
+    the site for it when the character is picked, at the same moment this
+    connects, so the challenge can land first: then it waits for the pass to
+    be in storage, read on each tick, and goes the tick it is there.
+  */
+  private answerThornswoodChallenge() {
+    const nonce = this.thornswoodChallenge;
+    if (nonce === null) {
+      return;
+    }
+    const jp = readThornswoodJoinPass(this.sp.storage[thornswoodJoinPassStorageKey]);
+    if (!jp) {
+      if (!this.thornswoodChallengeWaitSaid) {
+        this.thornswoodChallengeWaitSaid = true;
+        logTrace(this, 'thornswoodLoginChallenge: no join pass in storage yet, answering when there is one');
+      }
+      return;
+    }
+    this.thornswoodChallenge = null;
+    const message: CustomPacketMessage = {
+      t: MsgType.CustomPacket,
+      contentJsonDump: JSON.stringify({
+        customPacketType: 'thornswoodLoginProof',
+        pass: jp.pass,
+        mac: thornswoodLoginMac(jp.key, nonce),
+      }),
+    };
+    this.controller.emitter.emit("sendMessage", {
+      message: message,
+      reliability: "reliable"
+    });
+    logTrace(this, 'thornswoodLoginChallenge answered');
+  }
+
+  private thornswoodChallenge: string | null = null;
+  private thornswoodChallengeWaitSaid = false;
 
   // THORNSWOOD PATCH: see onAuthNeeded. Non-zero while the menu's choice is
   // awaited; the fallback is the settings' profileId, used after three minutes.
