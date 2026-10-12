@@ -459,6 +459,58 @@ TEST_CASE("Death publication retains the original killer lifetime",
   REQUIRE(arguments[1] == (change == "none" ? killerId : 0));
 }
 
+TEST_CASE("Server attack animation stops after stamina publication replaces a participant",
+          "[actor-runtime-identity][attack-publication][espm]")
+{
+  const std::string change = GENERATE("reload-source", "destroy-source", "reload-target", "destroy-target", "none");
+  CAPTURE(change);
+  PartOne p;
+  p.AttachEspm(&GetEspmLoader());
+  p.SetDamageFormula(std::make_unique<TES5DamageFormula>());
+  auto files = p.worldState.espmFiles.GetFileNames();
+  files.push_back("SweetPie.esp");
+  p.worldState.espmFiles = espm::LoadOrder::FullPlugins(files);
+  p.animationSystem.Init(&p.worldState);
+  constexpr uint32_t npcId = 0xff000abc, humanId = 0xff000abd;
+  bool armed = false, published = false;
+  uint32_t npcIdx = 0;
+  auto callbacks = p.CreateFormCallbacks();
+  const auto send = callbacks.sendToUser;
+  callbacks.sendToUser = [&](auto actor, auto& message, auto reliable) {
+    const auto values = dynamic_cast<const ChangeValuesMessage*>(&message);
+    if (armed && !published && values && values->idx == npcIdx) {
+      published = true;
+      const auto id = change.find("target") != std::string::npos ? humanId : npcId;
+      if (change.find("destroy") == 0) p.DestroyActor(id);
+      else if (change.find("reload") == 0) {
+        auto& participant = p.worldState.GetFormAt<MpActor>(id);
+        participant.ApplyChangeForm(participant.GetChangeForm());
+      }
+    }
+    send(actor, message, reliable);
+  };
+  DoConnect(p, 0);
+  auto human = std::make_unique<MpActor>(
+    LocationalData{{1, 40, 1}, {}, FormDesc::Tamriel()}, callbacks, 0x7);
+  p.worldState.AddForm(std::move(human), humanId);
+  p.worldState.GetFormAt<MpActor>(humanId).RegisterProfileId(42);
+  p.SetUserActor(0, humanId);
+  auto owned = std::make_unique<MpActor>(
+    LocationalData{{1, 1, 1}, {}, FormDesc::Tamriel()}, callbacks, 0x3053f);
+  p.worldState.AddForm(std::move(owned), npcId);
+  auto& npc = p.worldState.GetFormAt<MpActor>(npcId);
+  npc.SetServerControlled(true);
+  npc.SetEquipment(Equipment());
+  npc.SetPercentages({1, 1, 1});
+  npc.SetLastAnimEvent(std::nullopt);
+  npcIdx = npc.GetIdx();
+  armed = true;
+  REQUIRE(p.GetActionListener().ServerNpcAttack(npcId, humanId) == (change == "none"));
+  REQUIRE(published);
+  if (change != "destroy-source")
+    REQUIRE(npc.GetLastAnimEvent().has_value() == (change == "none"));
+}
+
 TEST_CASE("Hosting an actor before its first movement records the timestamp",
           "[HostAttempt][PartOne]")
 {
