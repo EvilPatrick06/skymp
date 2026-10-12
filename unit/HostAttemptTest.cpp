@@ -8,6 +8,17 @@
 PartOne& GetPartOne();
 extern espm::Loader& GetEspmLoader();
 
+namespace {
+struct DeathPublicationListener : FakeListener {
+  size_t deaths = 0;
+  bool OnMpApiEvent(const GameModeEvent& event) override
+  {
+    if (std::string(event.GetName()) == "onDeath") ++deaths;
+    return true;
+  }
+};
+}
+
 TEST_CASE("Hosted creature ownership ends with its host session",
           "[actor-runtime-identity][HostAttempt][espm]")
 {
@@ -344,14 +355,14 @@ TEST_CASE("Damage publication cannot mutate a replacement runtime",
   actor.RegisterProfileId(42);
   p.SetUserActor(0, id);
   lifetime = p.worldState.LookupFormById(id);
-  auto listener = FakeListener::New();
+  auto listener = std::make_shared<DeathPublicationListener>();
   p.AddListener(listener);
   armed = true;
   ActorValues lethal;
   lethal.healthPercentage = 0;
   actor.NetSetPercentages(lethal);
   REQUIRE(published);
-  REQUIRE((listener->str().find("onDeath") != std::string::npos) == (change == "none"));
+  REQUIRE(listener->deaths == (change == "none" ? 1 : 0));
   if (change == "reload") REQUIRE_FALSE(actor.IsDead());
   if (change == "destroy") REQUIRE(lifetime.expired());
 }
@@ -384,13 +395,13 @@ TEST_CASE("Death publication retains the original killer lifetime",
   p.CreateActor(killerId, {1, 1, 1}, 0, 0x3c, 43);
   auto& killer = p.worldState.GetFormAt<MpActor>(killerId);
   killerLifetime = p.worldState.LookupFormById(killerId);
-  auto listener = FakeListener::New();
+  auto listener = std::make_shared<DeathPublicationListener>();
   p.AddListener(listener);
   armed = true;
   actor.Kill(&killer);
   REQUIRE(published);
   REQUIRE(killerLifetime.expired());
-  REQUIRE(listener->str().find("onDeath") != std::string::npos);
+  REQUIRE(listener->deaths == 1);
 }
 
 TEST_CASE("Hosting an actor before its first movement records the timestamp",
