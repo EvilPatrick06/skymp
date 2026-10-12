@@ -1322,6 +1322,7 @@ bool ActionListener::ServerNpcAttack(uint32_t aggressorId, uint32_t targetId)
   const auto last = aggressor->GetLastAnimEvent();
   animation.data.numChanges = last ? last->numChanges + 1 : 1;
   partOne.animationSystem.Process(aggressor, animation.data);
+  if (!lease.Current()) return false;
   aggressor->PublishServerAttackAnimation(animation.data);
   return true;
 }
