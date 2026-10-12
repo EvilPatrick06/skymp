@@ -22,6 +22,9 @@ async function login(guilds,roles){
     if(name==='../settings')return {Settings:{get:async()=>({discordAuth:{botToken:'bot',guilds}})}};
     if(name==='fetch-retry')return {default:(f)=>f};
     if(name==='./metricsSystem')return {loginsCounter:{inc(){}},loginErrorsCounter:{inc(){}}};
+    // Thornswood #1320: login.ts asks thornswoodLogin.ts in offline mode; this test is online.
+    if(name==='./thornswoodLogin')return {ThornswoodLogin:class{}};
+    if(name==='crypto')return require('node:crypto');
     throw new Error('Unexpected dependency '+name);
   }};
   vm.createContext(sandbox);vm.runInContext(compiled,sandbox);
