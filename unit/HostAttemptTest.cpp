@@ -413,6 +413,68 @@ TEST_CASE("Damage publication cannot mutate a replacement runtime",
     REQUIRE(aggressor.GetLastHitTime(id) == previousHit);
 }
 
+TEST_CASE("Non-actor hit publication retains both native participants",
+          "[actor-runtime-identity][hit-reference-publication][espm]")
+{
+  const bool spell = GENERATE(false, true);
+  const std::string change = GENERATE("destroy-target", "destroy-aggressor", "none");
+  CAPTURE(spell, change);
+  PartOne p;
+  p.AttachEspm(&GetEspmLoader());
+  constexpr uint32_t aggressorId = 0xff000abc, targetId = 0xff000abd;
+  constexpr uint32_t dagger = 0x1397e, flames = 0x12fcd;
+  DoConnect(p, 0);
+  p.CreateActor(aggressorId, {1, 1, 1}, 0, 0x3c, 42);
+  p.SetUserActor(0, aggressorId);
+  auto& aggressor = p.worldState.GetFormAt<MpActor>(aggressorId);
+  Equipment equipment;
+  if (spell) equipment.leftSpell = flames;
+  else {
+    aggressor.AddItem(dagger, 1);
+    Inventory::ExtraData worn;
+    worn.worn_ = true;
+    equipment.inv.entries.emplace_back(dagger, 1, worn);
+  }
+  aggressor.SetEquipment(equipment);
+  auto target = std::make_unique<MpObjectReference>(
+    LocationalData{{1, 1, 1}, {}, FormDesc::Tamriel()},
+    p.CreateFormCallbacks(), 0xbbcf1, "FURN");
+  p.worldState.AddForm(std::move(target), targetId);
+  const std::weak_ptr<MpForm> targetLifetime = p.worldState.LookupFormById(targetId);
+  const std::weak_ptr<MpForm> aggressorLifetime = p.worldState.LookupFormById(aggressorId);
+  struct Listener : FakeListener {
+    std::function<void()> callback;
+    bool called = false;
+    bool OnMpApiEvent(const GameModeEvent& event) override {
+      if (std::string(event.GetName()) == "onPapyrusEvent:OnHit") {
+        called = true;
+        callback();
+      }
+      return true;
+    }
+  };
+  auto listener = std::make_shared<Listener>();
+  listener->callback = [&] {
+    if (change == "destroy-target") p.worldState.DestroyForm(targetId);
+    if (change == "destroy-aggressor") p.DestroyActor(aggressorId);
+    // REQUIRE stops before dispatch could dereference a freed participant in
+    // the failing version. No fixture-owned shared pointer masks the bug.
+    REQUIRE_FALSE(targetLifetime.expired());
+    REQUIRE_FALSE(aggressorLifetime.expired());
+  };
+  p.AddListener(listener);
+  RawMessageData raw;
+  raw.userId = 0;
+  HitMessage hit;
+  hit.data.aggressor = 0x14;
+  hit.data.target = targetId;
+  hit.data.source = spell ? flames : dagger;
+  p.GetActionListener().OnHit(raw, hit);
+  REQUIRE(listener->called);
+  REQUIRE(targetLifetime.expired() == (change == "destroy-target"));
+  REQUIRE(aggressorLifetime.expired() == (change == "destroy-aggressor"));
+}
+
 TEST_CASE("Death publication retains the original killer lifetime",
           "[actor-runtime-identity][death-publication][espm]")
 {
