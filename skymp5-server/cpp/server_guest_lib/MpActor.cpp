@@ -1112,7 +1112,16 @@ void MpActor::NetSetPercentages(
   const ActorValues& actorValues, MpActor* aggressor,
   const std::optional<std::vector<espm::ActorValue>>& avFilter)
 {
+  const auto keepAlive = GetParent()->LookupFormById(GetFormId());
+  if (keepAlive.get() != this) return;
+  const auto runtimeIdentity = GetRuntimeIdentity();
+  const auto keepAggressor = aggressor
+    ? aggressor->GetParent()->LookupFormById(aggressor->GetFormId()) : nullptr;
+  if (aggressor && keepAggressor.get() != aggressor) return;
+  const auto aggressorRuntime = aggressor ? aggressor->GetRuntimeIdentity() : 0;
   NetSendChangeValues(actorValues, avFilter);
+  if (!HasRuntimeIdentity(runtimeIdentity) ||
+      (aggressor && !aggressor->HasRuntimeIdentity(aggressorRuntime))) return;
   SetPercentages(actorValues, aggressor);
 }
 
@@ -1778,9 +1787,16 @@ void MpActor::Kill(MpActor* killer, bool shouldTeleport)
 
   // Keep in sync with MpActor::SetIsDead
   const auto keepAlive = GetParent()->LookupFormById(GetFormId());
+  const auto keepKiller = killer
+    ? killer->GetParent()->LookupFormById(killer->GetFormId()) : nullptr;
+  if (killer && keepKiller.get() != killer) return;
+  const auto killerLife = killer ? killer->GetRuntimeLifeIdentity() : 0;
   if (!SendAndSetDeathState(true, shouldTeleport)) return;
 
   const auto runtimeIdentity = GetRuntimeIdentity();
+  // A removed or reassigned killer cannot attribute this death to its new life.
+  if (killer && (!killer->HasRuntimeIdentity(killer->GetRuntimeIdentity()) ||
+                 killer->GetRuntimeLifeIdentity() != killerLife)) killer = nullptr;
   DeathEvent deathEvent(this, killer, healthPercentageBeforeDeath,
                         magickaPercentageBeforeDeath,
                         staminaPercentageBeforeDeath);
