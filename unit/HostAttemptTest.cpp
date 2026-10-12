@@ -360,7 +360,7 @@ TEST_CASE("Damage publication cannot mutate a replacement runtime",
   armed = true;
   ActorValues lethal;
   lethal.healthPercentage = 0;
-  actor.NetSetPercentages(lethal);
+  actor.NetSetPercentages(lethal, nullptr, std::nullopt);
   REQUIRE(published);
   REQUIRE(listener->deaths == (change == "none" ? 1 : 0));
   if (change == "reload") REQUIRE_FALSE(actor.IsDead());
