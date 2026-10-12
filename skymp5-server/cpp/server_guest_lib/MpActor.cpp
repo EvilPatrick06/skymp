@@ -30,6 +30,7 @@
 #include <atomic>
 #include <chrono>
 #include <functional>
+#include <limits>
 #include <optional>
 #include <random>
 #include <string>
@@ -88,9 +89,25 @@ struct MpActor::Impl
 
   // THORNSWOOD. See NumberTeleportForOwnClient. 0: nothing outstanding.
   uint32_t newestTeleportSeq = 0;
+  uint64_t runtimeIdentity = 0;
+  uint64_t runtimeLifeIdentity = 0;
+  bool hostedAuthorityReleased = false;
 };
 
 namespace {
+
+uint64_t NextRuntimeIdentity() noexcept
+{
+  static std::atomic<uint64_t> next{1};
+  auto value = next.load(std::memory_order_relaxed);
+  while (value != std::numeric_limits<uint64_t>::max()) {
+    if (next.compare_exchange_weak(value, value + 1,
+                                  std::memory_order_relaxed)) return value;
+  }
+  // Zero revokes identity permanently at exhaustion, including in the
+  // noexcept disconnect path. Never wrap and reuse an earlier revision.
+  return 0;
+}
 
 void RestoreActorValuePatched(MpActor* actor, espm::ActorValue actorValue,
                               float value)
@@ -118,6 +135,98 @@ MpActor::MpActor(const LocationalData& locationalData_,
 {
   pImpl.reset(new Impl);
   asActor = this;
+  InvalidateRuntimeIdentity();
+}
+
+uint64_t MpActor::GetRuntimeIdentity() const noexcept
+{
+  return pImpl->runtimeIdentity;
+}
+
+uint64_t MpActor::GetRuntimeLifeIdentity() const noexcept
+{
+  return pImpl->runtimeLifeIdentity;
+}
+
+void MpActor::InvalidateRuntimeIdentity(bool preserveLife) noexcept
+{
+  pImpl->runtimeIdentity = NextRuntimeIdentity();
+  // A killing blow still belongs to this body. Revival, reload and ownership
+  // changes revoke it; exhaustion revokes both tokens permanently.
+  if (!preserveLife || !pImpl->runtimeIdentity)
+    pImpl->runtimeLifeIdentity = pImpl->runtimeIdentity;
+  ++pImpl->respawnTimerIndex;
+  pImpl->isRespawning = false;
+}
+
+bool MpActor::HasRuntimeIdentity(uint64_t expected) const
+{
+  return expected != 0 && GetRuntimeIdentity() == expected && GetParent() &&
+    GetParent()->LookupFormById(GetFormId()).get() == this;
+}
+
+void MpActor::ReleaseHostedActors() noexcept
+{
+  if (auto world = GetParent()) {
+    for (auto it = world->hosters.begin(); it != world->hosters.end();) {
+      if (it->second != GetFormId()) {
+        ++it;
+        continue;
+      }
+      const auto remoteId = it->first;
+      it = world->hosters.erase(it);
+      const auto& form = world->LookupFormByIdNoLoad(remoteId);
+      if (form && form->AsActor()) {
+        // Do not rearm a dead creature until a new host accepts authority.
+        auto actor = form->AsActor();
+        actor->pImpl->hostedAuthorityReleased = true;
+        actor->InvalidateRuntimeIdentity();
+      }
+    }
+  }
+}
+
+bool MpActor::CompareAndSetActorProperty(int32_t expectedProfileId,
+  const InventoryPropertyChange& property)
+{
+  constexpr uint64_t maxLife = 9007199254740991;
+  if (expectedProfileId <= 0 || GetProfileId() != expectedProfileId ||
+      blockSaving ||
+      !property.expectedRuntimeIdentity ||
+      !HasRuntimeIdentity(*property.expectedRuntimeIdentity)) return false;
+  if (property.name.empty() || property.name.size() > 128 ||
+      property.name.front() == '_' || property.expectedDump.size() > 16 * 1024 ||
+      property.replacementDump.size() > 16 * 1024)
+    throw std::runtime_error("Invalid actor metadata property");
+  const auto life = nlohmann::json::parse(
+    GetDynamicFields().GetValueDump("_skympNpcLifeGeneration"));
+  if (!life.is_null() && (!life.is_number_integer() || life < 0 || life > maxLife))
+    throw std::runtime_error("Invalid persisted actor lifeGeneration");
+  if (property.expectedLifeGeneration > maxLife ||
+      property.expectedLifeGeneration != (life.is_null() ? 0 : life.get<uint64_t>())) return false;
+  const auto expected = nlohmann::json::parse(property.expectedDump);
+  const auto replacement = nlohmann::json::parse(property.replacementDump).dump();
+  if (replacement.size() > 16 * 1024)
+    throw std::runtime_error("Invalid actor metadata property size");
+  if (nlohmann::json::parse(GetDynamicFields().GetValueDump(property.name)) != expected)
+    return false;
+  DynamicFields nextFields = GetDynamicFields();
+  nextFields.SetValueDump(property.name, replacement);
+  // No inventory or receipt edit: a later whole-character snapshot preserves
+  // the current goods while an earlier inventory save may remain in flight.
+  auto snapshot = GetChangeForm();
+  snapshot.dynamicFields = nextFields;
+  auto world = GetParent();
+  if (!world || !world->RequestPreparedSave(*this, std::move(snapshot))) return false;
+  CommitPreparedDynamicFields(std::move(nextFields));
+  return true;
+}
+
+void MpActor::AcceptClientHost()
+{
+  pImpl->hostedAuthorityReleased = false;
+  InvalidateRuntimeIdentity();
+  if (IsDead()) RespawnWithDelay();
 }
 
 void MpActor::SetServerControlled(bool controlled)
@@ -126,8 +235,10 @@ void MpActor::SetServerControlled(bool controlled)
       GetUserId() != Networking::InvalidUserId) {
     throw std::invalid_argument("Server authority requires an NPC, not a human character");
   }
-  const bool takingOwnership = controlled && !IsServerControlled();
-  if (IsServerControlled() != controlled) {
+  const bool changedOwnership = IsServerControlled() != controlled;
+  if (controlled) pImpl->hostedAuthorityReleased = false;
+  if (changedOwnership) {
+    InvalidateRuntimeIdentity();
     SetPropertyValueDump("_skympServerControlled", controlled ? "true" : "false",
                          false, false);
   }
@@ -154,9 +265,7 @@ void MpActor::SetServerControlled(bool controlled)
   }
   UpdateHoster(0);
   if (controlled) ForceSubscriptionsUpdate();
-  if (takingOwnership && IsDead()) {
-    // Invalidate a client-era timer before scheduling the configured return.
-    pImpl->isRespawning = false;
+  if (changedOwnership && IsDead()) {
     RespawnWithDelay();
   }
 }
@@ -630,12 +739,12 @@ void MpActor::SendServerStateToObservers(const IMessageBase& message,
                                         bool reliable) const
 {
   std::set<Networking::UserId> recipients;
-  for (auto listener : GetActorListeners()) {
-    const auto user = listener->GetUserId();
+  VisitCurrentActorListeners([&](MpActor& listener) {
+    const auto user = listener.GetUserId();
     if (user != Networking::InvalidUserId && recipients.insert(user).second) {
-      listener->SendToUser(message, reliable);
+      listener.SendToUser(message, reliable);
     }
-  }
+  });
 }
 
 void MpActor::SendToUser(const IMessageBase& message, bool reliable)
@@ -807,6 +916,8 @@ void MpActor::ApplyChangeForm(const MpChangeForm& newChangeForm)
     throw std::runtime_error(
       "Expected record type to be ACHR, but found REFR");
   }
+  ReleaseHostedActors();
+  InvalidateRuntimeIdentity();
 
   // Published-to-hidden only. An NPC stays published with an empty dump, so
   // an empty dump alone must not remove anyone. Do this before the assign,
@@ -1001,7 +1112,16 @@ void MpActor::NetSetPercentages(
   const ActorValues& actorValues, MpActor* aggressor,
   const std::optional<std::vector<espm::ActorValue>>& avFilter)
 {
+  const auto keepAlive = GetParent()->LookupFormById(GetFormId());
+  if (keepAlive.get() != this) return;
+  const auto runtimeIdentity = GetRuntimeIdentity();
+  const auto keepAggressor = aggressor
+    ? aggressor->GetParent()->LookupFormById(aggressor->GetFormId()) : nullptr;
+  if (aggressor && keepAggressor.get() != aggressor) return;
+  const auto aggressorRuntime = aggressor ? aggressor->GetRuntimeIdentity() : 0;
   NetSendChangeValues(actorValues, avFilter);
+  if (!HasRuntimeIdentity(runtimeIdentity) ||
+      (aggressor && !aggressor->HasRuntimeIdentity(aggressorRuntime))) return;
   SetPercentages(actorValues, aggressor);
 }
 
@@ -1286,7 +1406,7 @@ float MpActor::GetStaminaRespawnPercentage() const
   return ChangeForm().staminaRespawnPercentage;
 }
 
-void MpActor::SendAndSetDeathState(bool isDead, bool shouldTeleport)
+bool MpActor::SendAndSetDeathState(bool isDead, bool shouldTeleport)
 {
   spdlog::trace(
     "MpActor::SendAndSetDeathState {:x} - isDead: {}, shouldTeleport: {}",
@@ -1304,6 +1424,8 @@ void MpActor::SendAndSetDeathState(bool isDead, bool shouldTeleport)
     nextGeneration = saved.is_null() ? 1 : saved.get<int64_t>() + 1;
   }
 
+  if (isDead != IsDead()) InvalidateRuntimeIdentity(isDead);
+  const auto runtimeIdentity = GetRuntimeIdentity();
   auto respawnMsg = GetDeathStateMsg(position, isDead, shouldTeleport);
   if (IsServerControlled()) {
     SendServerStateToObservers(respawnMsg, true);
@@ -1313,6 +1435,7 @@ void MpActor::SendAndSetDeathState(bool isDead, bool shouldTeleport)
     }
     GetActorToSendTo().SendToUser(respawnMsg, true);
   }
+  if (!HasRuntimeIdentity(runtimeIdentity)) return false;
 
   EditChangeForm([&](MpChangeForm& changeForm) {
     if (nextGeneration) {
@@ -1332,14 +1455,18 @@ void MpActor::SendAndSetDeathState(bool isDead, bool shouldTeleport)
 
   if (shouldTeleport) {
     SetCellOrWorldObsolete(position.cellOrWorldDesc);
+    if (!HasRuntimeIdentity(runtimeIdentity)) return false;
     SetPos(position.pos);
+    if (!HasRuntimeIdentity(runtimeIdentity)) return false;
     SetAngle(position.rot);
+    if (!HasRuntimeIdentity(runtimeIdentity)) return false;
   }
   pImpl->serverCombatTarget = 0;
   pImpl->serverMovementSpeed = 0;
   if (IsServerControlled()) {
     SendServerStateToObservers(GetServerMovementMessage(), true);
   }
+  return HasRuntimeIdentity(runtimeIdentity);
 }
 
 DeathStateContainerMessage MpActor::GetDeathStateMsg(
@@ -1493,10 +1620,11 @@ void MpActor::EnsureTemplateChainEvaluated(espm::Loader& loader,
     mode);
 }
 
-void MpActor::AddDeathItem()
+void MpActor::AddDeathItem(uint64_t expectedRuntimeIdentity)
 {
   auto map = EvaluateDeathItem();
   for (auto& p : map) {
+    if (!HasRuntimeIdentity(expectedRuntimeIdentity)) return;
     AddItem(p.first, p.second);
   }
 }
@@ -1619,6 +1747,8 @@ void MpActor::ModifyActorValuePercentage(espm::ActorValue av,
 
 void MpActor::BeforeDestroy()
 {
+  ReleaseHostedActors();
+  InvalidateRuntimeIdentity();
   for (auto& sink : pImpl->destroyEventSinks) {
     sink->BeforeDestroy(*this);
   }
@@ -1656,14 +1786,23 @@ void MpActor::Kill(MpActor* killer, bool shouldTeleport)
     changeForm.actorValues.staminaPercentage;
 
   // Keep in sync with MpActor::SetIsDead
-  SendAndSetDeathState(true, shouldTeleport);
+  const auto keepAlive = GetParent()->LookupFormById(GetFormId());
+  const auto keepKiller = killer
+    ? killer->GetParent()->LookupFormById(killer->GetFormId()) : nullptr;
+  if (killer && keepKiller.get() != killer) return;
+  const auto killerLife = killer ? killer->GetRuntimeLifeIdentity() : 0;
+  if (!SendAndSetDeathState(true, shouldTeleport)) return;
 
+  const auto runtimeIdentity = GetRuntimeIdentity();
+  // A removed or reassigned killer cannot attribute this death to its new life.
+  if (killer && (!killer->HasRuntimeIdentity(killer->GetRuntimeIdentity()) ||
+                 killer->GetRuntimeLifeIdentity() != killerLife)) killer = nullptr;
   DeathEvent deathEvent(this, killer, healthPercentageBeforeDeath,
                         magickaPercentageBeforeDeath,
                         staminaPercentageBeforeDeath);
   deathEvent.Fire(GetParent());
 
-  AddDeathItem();
+  if (HasRuntimeIdentity(runtimeIdentity)) AddDeathItem(runtimeIdentity);
 }
 
 void MpActor::RespawnWithDelay(bool shouldTeleport)
@@ -1671,7 +1810,8 @@ void MpActor::RespawnWithDelay(bool shouldTeleport)
   spdlog::trace("MpActor::RespawnWithDelay {:x} - isRespawning: {}",
                 GetFormId(), pImpl->isRespawning);
 
-  if (pImpl->isRespawning) {
+  if (pImpl->isRespawning ||
+      (pImpl->hostedAuthorityReleased && !IsServerControlled())) {
     return;
   }
   uint32_t formId = GetFormId();
@@ -1701,10 +1841,14 @@ void MpActor::RespawnWithDelay(bool shouldTeleport)
     }
     pImpl->isRespawning = true;
     const auto respawnTimerIndex = ++pImpl->respawnTimerIndex;
+    const auto runtimeIdentity = GetRuntimeIdentity();
+    const std::weak_ptr<MpForm> lifetime = worldState->LookupFormById(formId);
     worldState->SetTimer(time).Then([worldState, this, formId, shouldTeleport,
-                                     respawnTimerIndex,
+                                     respawnTimerIndex, runtimeIdentity, lifetime,
                                      respawnTime](Viet::Void) {
-      if (worldState->LookupFormById(formId).get() == this) {
+      const auto keepAlive = lifetime.lock();
+      if (keepAlive.get() == this && HasRuntimeIdentity(runtimeIdentity) &&
+          IsDead() && IsRespawning()) {
         bool isLatestRespawn = respawnTimerIndex == pImpl->respawnTimerIndex;
         if (isLatestRespawn) {
           // This is implemented here, not in MpActor::Respawn because we don't
@@ -1741,6 +1885,11 @@ void MpActor::RespawnWithDelay(bool shouldTeleport)
                 },
                 Mode::NoRequestSave);
               EnsureBaseContainerAdded(worldState->GetEspm());
+              // Inventory publication can detach the host or reload this body.
+              // The old return must not revive the new authority session.
+              if (!HasRuntimeIdentity(runtimeIdentity) || !IsDead() ||
+                  !IsRespawning() || respawnTimerIndex != pImpl->respawnTimerIndex)
+                return;
               spdlog::info("MpActor::RespawnWithDelay {:x} - {} inventory "
                            "entries with keyword kept",
                            GetFormId(), inventoryToKeep.entries.size());
@@ -1885,7 +2034,9 @@ void MpActor::SetRespawnTime(float time)
 
 void MpActor::SetIsDead(bool isDead)
 {
-  spdlog::trace("MpActor::SetIsDead {:x} - isDead: {}", GetFormId(), isDead);
+  const auto formId = GetFormId();
+  const auto keepAlive = GetParent() ? GetParent()->LookupFormById(formId) : nullptr;
+  spdlog::trace("MpActor::SetIsDead {:x} - isDead: {}", formId, isDead);
 
   constexpr bool kShouldTeleport = false;
 
@@ -1900,25 +2051,26 @@ void MpActor::SetIsDead(bool isDead)
         changeForm.actorValues.staminaPercentage;
 
       // Keep in sync with MpActor::Kill
-      SendAndSetDeathState(isDead, kShouldTeleport);
+      if (!SendAndSetDeathState(isDead, kShouldTeleport)) return;
 
+      const auto runtimeIdentity = GetRuntimeIdentity();
       DeathEvent deathEvent(this, nullptr, healthPercentageBeforeDeath,
                             magickaPercentageBeforeDeath,
                             staminaPercentageBeforeDeath);
       deathEvent.Fire(GetParent());
 
-      AddDeathItem();
+      if (HasRuntimeIdentity(runtimeIdentity)) AddDeathItem(runtimeIdentity);
 
       spdlog::trace("MpActor::SetIsDead {:x} - actor is now dead",
-                    GetFormId());
+                    formId);
     } else {
       spdlog::trace("MpActor::SetIsDead {:x} - actor is already dead",
-                    GetFormId());
+                    formId);
     }
   } else {
     // same as SendAndSetDeathState but resets isRespawning flag
     Respawn(kShouldTeleport);
-    spdlog::trace("MpActor::SetIsDead {:x} - actor is now alive", GetFormId());
+    spdlog::trace("MpActor::SetIsDead {:x} - actor is now alive", formId);
   }
 }
 

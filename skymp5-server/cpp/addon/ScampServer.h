@@ -64,6 +64,7 @@ public:
   Napi::Value ValidateInventoryTransaction(const Napi::CallbackInfo& info);
   Napi::Value CompareAndSetInventory(const Napi::CallbackInfo& info);
   Napi::Value CompareAndSetInventoryAndProperty(const Napi::CallbackInfo& info);
+  Napi::Value CompareAndSetActorProperty(const Napi::CallbackInfo& info);
   Napi::Value CompareAndSetInventoryImpl(const Napi::CallbackInfo& info,
                                          bool withProperty);
   Napi::Value GetInventoryReceipt(const Napi::CallbackInfo& info);
@@ -80,6 +81,7 @@ public:
   Napi::Value StopNpcMovement(const Napi::CallbackInfo& info);
   Napi::Value GetNavmeshRecords(const Napi::CallbackInfo& info);
   Napi::Value GetNpcAIState(const Napi::CallbackInfo& info);
+  Napi::Value GetActorRuntimeIdentity(const Napi::CallbackInfo& info);
   Napi::Value GetFactionReactions(const Napi::CallbackInfo& info);
   Napi::Value ServerNpcAttack(const Napi::CallbackInfo& info);
   Napi::Value GetLoadedFormCount(const Napi::CallbackInfo& info);

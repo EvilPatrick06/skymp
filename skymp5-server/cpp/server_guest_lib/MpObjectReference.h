@@ -163,6 +163,7 @@ public:
     std::string expectedDump;
     std::string replacementDump;
     uint64_t expectedLifeGeneration = 0;
+    std::optional<uint64_t> expectedRuntimeIdentity;
   };
   bool CompareAndSetInventory(const Inventory& expected,
                                const std::string& expectedReceipt,
@@ -240,6 +241,7 @@ protected:
 
   void SendMessageToActorListeners(const IMessageBase& msg,
                                    bool reliable) const;
+  void VisitCurrentActorListeners(const std::function<void(MpActor&)>& visitor) const;
 
 private:
   void AddContainerObject(const espm::CONT::ContainerObject& containerObject,

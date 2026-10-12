@@ -361,6 +361,45 @@ void WorldState::RequestSave(MpObjectReference& ref)
   pImpl->changesByIdxEmpty = false;
 }
 
+bool WorldState::RequestPreparedSave(MpObjectReference& ref,
+                                     MpChangeForm&& snapshot)
+{
+  const auto current = forms.find(ref.GetFormId());
+  const auto idx = ref.GetIdx();
+  if (pImpl->formLoadingInProgress ||
+      idx == FormIndex::g_invalidIdx || current == forms.end() ||
+      current->second.get() != &ref) return false;
+
+  // All throwing work precedes both queue publication and the live commit.
+  if (pImpl->changesByIdx.size() <= idx) pImpl->changesByIdx.resize(idx + 1);
+  auto& queued = pImpl->changesByIdx[idx];
+  if (queued) {
+    // optional<map> can allocate when moving into an empty optional on MSVC.
+    // Prepare those destinations first, restoring absence if allocation fails.
+    // With both maps engaged their move assignments cannot throw.
+    static_assert(std::is_nothrow_move_assignable_v<std::remove_reference_t<decltype(*snapshot.setNodeTextureSet)>>);
+    static_assert(std::is_nothrow_move_assignable_v<std::remove_reference_t<decltype(*snapshot.setNodeScale)>>);
+    const bool hadTextures = queued->setNodeTextureSet.has_value();
+    const bool hadScales = queued->setNodeScale.has_value();
+    try {
+      if (snapshot.setNodeTextureSet && !hadTextures) queued->setNodeTextureSet.emplace();
+      if (snapshot.setNodeScale && !hadScales) queued->setNodeScale.emplace();
+    } catch (...) {
+      if (!hadTextures) queued->setNodeTextureSet.reset();
+      if (!hadScales) queued->setNodeScale.reset();
+      throw;
+    }
+    *queued = std::move(snapshot);
+  }
+  else {
+    // MSVC's containers may allocate when move-constructing. Construction
+    // failure leaves this previously empty slot empty and the live actor intact.
+    queued.emplace(std::move(snapshot));
+  }
+  pImpl->changesByIdxEmpty = false;
+  return true;
+}
+
 const std::shared_ptr<MpForm>& WorldState::LookupFormById(
   uint32_t formId, std::stringstream* optionalOutTrace)
 {

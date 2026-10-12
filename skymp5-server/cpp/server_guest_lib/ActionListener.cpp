@@ -901,6 +901,11 @@ void ActionListener::OnHostAttempt(const RawMessageData& rawMsgData,
     // 0" and named nobody.
     partOne.GetLogger().info("Hoster of {0:x} changed from {1:x} to {2:x}",
                              remoteId, prevHoster, me->GetFormId());
+    if (prevHoster != me->GetFormId()) {
+      if (auto actor = remote.AsActor()) {
+        actor->AcceptClientHost();
+      }
+    }
     hoster = me->GetFormId();
     remote.UpdateHoster(hoster);
 
@@ -1227,6 +1232,35 @@ bool ShouldBeBlocked(const MpActor& aggressor, const MpActor& target)
               (targetViewDirection.Length() * aggressorDirection.Length()));
   return angle < 1;
 }
+
+// A killing blow may rotate the target's runtime, but not its body identity.
+// Keep both participants alive across Papyrus and network callbacks, and stop
+// the hit if either ownership session or the target body is replaced.
+class HitActorLease
+{
+public:
+  HitActorLease(MpActor& aggressor, MpActor& target)
+    : aggressor(aggressor), target(target)
+    , heldAggressor(aggressor.GetParent()->LookupFormById(aggressor.GetFormId()))
+    , heldTarget(target.GetParent()->LookupFormById(target.GetFormId()))
+    , aggressorRuntime(aggressor.GetRuntimeIdentity())
+    , targetLife(target.GetRuntimeLifeIdentity())
+  {}
+
+  bool Current() const
+  {
+    return heldAggressor.get() == &aggressor && heldTarget.get() == &target &&
+      aggressor.HasRuntimeIdentity(aggressorRuntime) && targetLife != 0 &&
+      target.GetRuntimeLifeIdentity() == targetLife &&
+      target.GetParent()->LookupFormById(target.GetFormId()).get() == &target;
+  }
+
+private:
+  MpActor& aggressor;
+  MpActor& target;
+  std::shared_ptr<MpForm> heldAggressor, heldTarget;
+  uint64_t aggressorRuntime, targetLife;
+};
 }
 
 bool ActionListener::ServerNpcAttack(uint32_t aggressorId, uint32_t targetId)
@@ -1278,7 +1312,9 @@ bool ActionListener::ServerNpcAttack(uint32_t aggressorId, uint32_t targetId)
     std::chrono::steady_clock::now() - aggressor->GetLastHitTime(std::nullopt);
   if (!CanHit(*aggressor, hit, elapsed)) return false;
   const auto previous = aggressor->GetLastHitTime(targetId);
+  const HitActorLease lease(*aggressor, *target);
   OnWeaponHit(aggressor, target, hit, IsUnarmedAttack(hit.source));
+  if (!lease.Current()) return false;
   if (aggressor->GetLastHitTime(targetId) == previous) return false;
   UpdateAnimationMessage animation;
   animation.idx = aggressor->GetIdx();
@@ -1286,6 +1322,7 @@ bool ActionListener::ServerNpcAttack(uint32_t aggressorId, uint32_t targetId)
   const auto last = aggressor->GetLastAnimEvent();
   animation.data.numChanges = last ? last->numChanges + 1 : 1;
   partOne.animationSystem.Process(aggressor, animation.data);
+  if (!lease.Current()) return false;
   aggressor->PublishServerAttackAnimation(animation.data);
   return true;
 }
@@ -1512,12 +1549,15 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
                                 MpObjectReference* targetRef,
                                 const HitData& hitData)
 {
-  SendPapyrusOnHitEvent(aggressor, targetRef, hitData);
-
   auto* targetActorPtr = targetRef ? targetRef->AsActor() : nullptr;
   if (!targetActorPtr) {
+    SendPapyrusOnHitEvent(aggressor, targetRef, hitData);
     return; // Not an actor, damage calculation is not needed
   }
+  const HitActorLease lease(*aggressor, *targetActorPtr);
+  if (!lease.Current()) return;
+  SendPapyrusOnHitEvent(aggressor, targetRef, hitData);
+  if (!lease.Current()) return;
 
   auto targetActorValues = targetActorPtr->GetChangeForm().actorValues;
   const auto previousHealth = targetActorValues.healthPercentage;
@@ -1541,6 +1581,7 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
 
   targetActorPtr->NetSetPercentages(targetActorValues, aggressor,
                                     kHealthAvFilter);
+  if (!lease.Current()) return;
   if (damage > 0 && targetActorValues.healthPercentage < previousHealth) {
     targetActorPtr->RecordServerCombatTarget(aggressor->GetFormId());
   }
@@ -1556,13 +1597,15 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
                                  [[maybe_unused]] bool isUnarmed)
 {
   const auto currentHitTime = std::chrono::steady_clock::now();
-
-  SendPapyrusOnHitEvent(aggressor, targetRef, hitData);
-
   auto* targetActorPtr = targetRef ? targetRef->AsActor() : nullptr;
   if (!targetActorPtr) {
+    SendPapyrusOnHitEvent(aggressor, targetRef, hitData);
     return; // Not an actor, damage calculation is not needed
   }
+  const HitActorLease lease(*aggressor, *targetActorPtr);
+  if (!lease.Current()) return;
+  SendPapyrusOnHitEvent(aggressor, targetRef, hitData);
+  if (!lease.Current()) return;
 
   auto& targetActor = *targetActorPtr;
 
@@ -1702,6 +1745,7 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
   targetActor.NetSetPercentages(
     currentActorValues, aggressor,
     std::vector<espm::ActorValue>{ espm::ActorValue::Health });
+  if (!lease.Current()) return;
   if (damage > 0 && currentActorValues.healthPercentage < healthPercentage) {
     targetActor.RecordServerCombatTarget(aggressor->GetFormId());
   }
@@ -1718,6 +1762,12 @@ void ActionListener::SendPapyrusOnHitEvent(MpActor* aggressor,
                                            MpObjectReference* target,
                                            const HitData& hitData)
 {
+  if (!aggressor || !target) return;
+  // Object targets take the event-only branch, without HitActorLease. The
+  // complete synchronous Papyrus dispatch still needs both native lifetimes.
+  const auto heldAggressor = partOne.worldState.LookupFormByIdNoLoad(aggressor->GetFormId());
+  const auto heldTarget = partOne.worldState.LookupFormByIdNoLoad(target->GetFormId());
+  if (heldAggressor.get() != aggressor || heldTarget.get() != target) return;
   auto& browser = partOne.worldState.GetEspm().GetBrowser();
   std::array<VarValue, 7> args;
   args[0] = VarValue(aggressor->ToGameObject()); // akAggressor
