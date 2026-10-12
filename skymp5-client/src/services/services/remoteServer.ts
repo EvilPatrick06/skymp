@@ -400,10 +400,6 @@ export class RemoteServer extends ClientListener {
               ModelApplyUtils.applyModelInventory(refr, msg.props.inventory);
             }
             ModelApplyUtils.applyModelIsOpen(refr, !!msg.props['isOpen']);
-            ModelApplyUtils.applyModelIsHarvested(
-              refr,
-              !!msg.props['isHarvested'],
-            );
 
             ModelApplyUtils.applyModelNodeScale(refr, msg.props.setNodeScale);
 
@@ -415,7 +411,18 @@ export class RemoteServer extends ClientListener {
             // server holds disabled was never disabled here, and one a client
             // plugin had disabled was enabled again on every stream.
             // "disabled" is still read for a server that ever sends it.
-            ModelApplyUtils.applyModelIsDisabled(refr, !!(msg.props['isDisabled'] || msg.props['disabled']));
+            //
+            // THORNSWOOD PATCH (Thornswood #2328). Harvested and disabled
+            // together, after the scale and textures as the disabled flag
+            // was: applied one after the other, the harvested step enabled a
+            // reference the server holds disabled on its second stream (see
+            // ModelApplyUtils.applyModelIsHarvestedAndDisabled).
+            const flags = {
+              harvested: !!msg.props['isHarvested'],
+              disabled: !!(msg.props['isDisabled'] || msg.props['disabled']),
+            };
+            this.masterRefFlags.set(refr.getFormID(), flags);
+            ModelApplyUtils.applyModelIsHarvestedAndDisabled(refr, flags.harvested, flags.disabled);
 
             // TODO: move to a separate module
             const animation = msg.props.lastAnimation;
@@ -1083,10 +1090,17 @@ export class RemoteServer extends ClientListener {
           ModelApplyUtils.applyModelInventory(refr, msgData as Inventory);
         } else if (msg.propName === 'isOpen') {
           ModelApplyUtils.applyModelIsOpen(refr, !!msgData);
-        } else if (msg.propName === 'isHarvested') {
-          ModelApplyUtils.applyModelIsHarvested(refr, !!msgData);
-        } else if (msg.propName === 'disabled' || msg.propName === 'isDisabled') {
-          ModelApplyUtils.applyModelIsDisabled(refr, !!msgData);
+        } else if (msg.propName === 'isHarvested' || msg.propName === 'disabled' || msg.propName === 'isDisabled') {
+          // THORNSWOOD PATCH (Thornswood #2328): with the other flag as the
+          // server last sent it, so neither undoes the other.
+          const flags = this.masterRefFlags.get(refrId) ?? { harvested: false, disabled: false };
+          if (msg.propName === 'isHarvested') {
+            flags.harvested = !!msgData;
+          } else {
+            flags.disabled = !!msgData;
+          }
+          this.masterRefFlags.set(refrId, flags);
+          ModelApplyUtils.applyModelIsHarvestedAndDisabled(refr, flags.harvested, flags.disabled);
         }
       });
       return;
@@ -1410,6 +1424,9 @@ export class RemoteServer extends ClientListener {
   }
 
   private numSetInventory = 0;
+  // THORNSWOOD PATCH (Thornswood #2328): what the server last said of each
+  // master file reference's harvested and disabled flags, by form id.
+  private masterRefFlags = new Map<number, { harvested: boolean, disabled: boolean }>();
   private teleportsOnTheirWay = new Map<number, { msg: TeleportMessage | TeleportMessage2, isMyCharacter: boolean }>();
   private ownerSpawnEpoch = 0;
   private ownerSpawnReady?: Promise<boolean>;
