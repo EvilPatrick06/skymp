@@ -1762,6 +1762,12 @@ void ActionListener::SendPapyrusOnHitEvent(MpActor* aggressor,
                                            MpObjectReference* target,
                                            const HitData& hitData)
 {
+  if (!aggressor || !target) return;
+  // Object targets take the event-only branch, without HitActorLease. The
+  // complete synchronous Papyrus dispatch still needs both native lifetimes.
+  const auto heldAggressor = partOne.worldState.LookupFormByIdNoLoad(aggressor->GetFormId());
+  const auto heldTarget = partOne.worldState.LookupFormByIdNoLoad(target->GetFormId());
+  if (heldAggressor.get() != aggressor || heldTarget.get() != target) return;
   auto& browser = partOne.worldState.GetEspm().GetBrowser();
   std::array<VarValue, 7> args;
   args[0] = VarValue(aggressor->ToGameObject()); // akAggressor
