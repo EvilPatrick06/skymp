@@ -125,6 +125,8 @@ Napi::Object ScampServer::Init(Napi::Env env, Napi::Object exports)
                      &ScampServer::CompareAndSetInventory),
       InstanceMethod("compareAndSetInventoryAndProperty",
                      &ScampServer::CompareAndSetInventoryAndProperty),
+      InstanceMethod("compareAndSetActorProperty",
+                     &ScampServer::CompareAndSetActorProperty),
       InstanceMethod("getInventoryReceipt", &ScampServer::GetInventoryReceipt),
       InstanceMethod("getSavedInventoryReceipt",
                      &ScampServer::GetSavedInventoryReceipt),
@@ -143,6 +145,7 @@ Napi::Object ScampServer::Init(Napi::Env env, Napi::Object exports)
       InstanceMethod("stopNpcMovement", &ScampServer::StopNpcMovement),
       InstanceMethod("getNavmeshRecords", &ScampServer::GetNavmeshRecords),
       InstanceMethod("getNpcAIState", &ScampServer::GetNpcAIState),
+      InstanceMethod("getActorRuntimeIdentity", &ScampServer::GetActorRuntimeIdentity),
       InstanceMethod("getFactionReactions", &ScampServer::GetFactionReactions),
       InstanceMethod("serverNpcAttack", &ScampServer::ServerNpcAttack),
       InstanceMethod("getLoadedFormCount", &ScampServer::GetLoadedFormCount),
@@ -693,11 +696,71 @@ Napi::Value ScampServer::CompareAndSetInventoryAndProperty(
   return CompareAndSetInventoryImpl(info, true);
 }
 
+Napi::Value ScampServer::CompareAndSetActorProperty(const Napi::CallbackInfo& info)
+{
+  try {
+    const auto id = InventoryActorId(info[0]);
+    const auto entryRuntime = partOne->worldState.GetFormAt<MpActor>(id).GetRuntimeIdentity();
+    const auto profile = NapiHelper::ExtractDouble(info[1], "expectedProfileId");
+    if (!std::isfinite(profile) || std::floor(profile) != profile ||
+        profile <= 0 || profile > 2147483647)
+      throw std::runtime_error("Actor profile must be a positive int32 integer");
+    const auto input = NapiHelper::ExtractObject(info[2], "property");
+    const auto runtime = NapiHelper::ExtractString(
+      input.Get("expectedRuntimeIdentity"), "expectedRuntimeIdentity", std::nullopt, {1,20});
+    if (runtime.front() == '0' || !std::all_of(runtime.begin(), runtime.end(),
+        [](char c) {return c >= '0' && c <= '9';}))
+      throw std::runtime_error("Invalid actor runtime identity");
+    const auto runtimeValue = std::stoull(runtime);
+    const auto name = NapiHelper::ExtractString(input.Get("name"), "property.name",
+      GetPropertyAlphabet(), {1,128});
+    const auto life = NapiHelper::ExtractDouble(input.Get("expectedLifeGeneration"), "lifeGeneration");
+    if (!std::isfinite(life) || std::floor(life) != life || life < 0 || life > 9007199254740991.0)
+      throw std::runtime_error("Actor lifeGeneration must be a nonnegative safe integer");
+    const MpObjectReference::InventoryPropertyChange property{
+      name, NapiHelper::Stringify(info.Env(), input.Get("expected")),
+      NapiHelper::Stringify(info.Env(), input.Get("replacement")),
+      static_cast<uint64_t>(life), runtimeValue};
+    // JS getters/serialization may reload the gamemode or replace the actor.
+    static const auto standard = PropertyBindingFactory().CreateStandardPropertyBindings();
+    const auto found = gamemodeApiState.createdProperties.find(name);
+    if (name.front() == '_' || standard.count(name) ||
+        found == gamemodeApiState.createdProperties.end() ||
+        found->second.isVisibleByOwner || found->second.isVisibleByNeighbors)
+      throw std::runtime_error("Actor metadata requires a registered hidden custom property");
+    auto& actor = partOne->worldState.GetFormAt<MpActor>(id);
+    if (!actor.HasRuntimeIdentity(entryRuntime))return Napi::Boolean::New(info.Env(), false);
+    return Napi::Boolean::New(info.Env(), actor.CompareAndSetActorProperty(
+      static_cast<int32_t>(profile), property));
+  } catch (const std::exception& error) {
+    throw Napi::Error::New(info.Env(), error.what());
+  }
+}
+
 Napi::Value ScampServer::CompareAndSetInventoryImpl(
   const Napi::CallbackInfo& info, bool withProperty)
 {
   try {
     const auto id = InventoryActorId(info[0]);
+    const auto entryRuntimeIdentity =
+      partOne->worldState.GetFormAt<MpActor>(id).GetRuntimeIdentity();
+    // Snapshot the optional fence before any other getter or serialization
+    // can change its value or remove it to enter the legacy optional path.
+    std::optional<Napi::Object> propertyInput;
+    std::optional<uint64_t> expectedRuntimeIdentity;
+    if (withProperty) {
+      propertyInput = NapiHelper::ExtractObject(info[6], "property");
+      if (propertyInput->Has("expectedRuntimeIdentity")) {
+        const auto runtime = NapiHelper::ExtractString(
+          propertyInput->Get("expectedRuntimeIdentity"), "expectedRuntimeIdentity",
+          std::nullopt, {1, 20});
+        if (runtime[0] == '0' || !std::all_of(runtime.begin(), runtime.end(),
+            [](char c) { return c >= '0' && c <= '9'; })) {
+          throw std::runtime_error("Invalid inventory runtime identity");
+        }
+        expectedRuntimeIdentity = std::stoull(runtime);
+      }
+    }
     const auto sequence = NapiHelper::ExtractDouble(info[4], "sequence");
     if (!std::isfinite(sequence) || std::floor(sequence) != sequence ||
         sequence <= 0 || sequence > 9007199254740991.0) {
@@ -717,7 +780,7 @@ Napi::Value ScampServer::CompareAndSetInventoryImpl(
     }
     std::optional<MpObjectReference::InventoryPropertyChange> property;
     if (withProperty) {
-      const auto change = NapiHelper::ExtractObject(info[6], "property");
+      const auto& change = *propertyInput;
       const auto name = NapiHelper::ExtractString(
         change.Get("name"), "property.name", GetPropertyAlphabet(), { 1, 128 });
       const auto life = NapiHelper::ExtractDouble(
@@ -729,7 +792,7 @@ Napi::Value ScampServer::CompareAndSetInventoryImpl(
       property = MpObjectReference::InventoryPropertyChange{
         name, NapiHelper::Stringify(info.Env(), change.Get("expected")),
         NapiHelper::Stringify(info.Env(), change.Get("replacement")),
-        static_cast<uint64_t>(life)
+        static_cast<uint64_t>(life), expectedRuntimeIdentity
       };
       // Serialization can invoke JS getters/toJSON, including a gamemode
       // reload. Validate registration only after those callbacks finish.
@@ -762,6 +825,11 @@ Napi::Value ScampServer::CompareAndSetInventoryImpl(
       }
     }
     auto& actor = partOne->worldState.GetFormAt<MpActor>(id);
+    // Even reading fence presence/value can invoke a Proxy trap. Independently
+    // fence the actual actor at API entry, including legacy optional callers.
+    if (!actor.HasRuntimeIdentity(entryRuntimeIdentity)) {
+      return Napi::Boolean::New(info.Env(), false);
+    }
     if (actor.GetProfileId() != static_cast<int32_t>(profile)) {
       throw std::runtime_error(
         "Inventory profile does not match the expected human");
@@ -1722,6 +1790,18 @@ Napi::Value ScampServer::GetNavmeshRecords(const Napi::CallbackInfo& info)
   }
 }
 
+Napi::Value ScampServer::GetActorRuntimeIdentity(const Napi::CallbackInfo& info)
+{
+  try {
+    const auto id = NapiHelper::ExtractUInt32(info[0], "formId");
+    const auto identity = partOne->worldState.GetFormAt<MpActor>(id).GetRuntimeIdentity();
+    if (!identity) throw std::runtime_error("Actor runtime identity exhausted");
+    return Napi::String::New(info.Env(), std::to_string(identity));
+  } catch (const std::exception& error) {
+    throw Napi::Error::New(info.Env(), error.what());
+  }
+}
+
 Napi::Value ScampServer::GetNpcAIState(const Napi::CallbackInfo& info)
 {
   try {
@@ -1774,6 +1854,9 @@ Napi::Value ScampServer::GetNpcAIState(const Napi::CallbackInfo& info)
       throw std::runtime_error("Invalid persisted NPC life generation");
     const int64_t generation = savedLife.is_null() ? 0 : savedLife.get<int64_t>();
     result.Set("lifeGeneration", static_cast<double>(generation));
+    const auto runtimeLife = actor.GetRuntimeLifeIdentity();
+    if (!runtimeLife) throw std::runtime_error("Actor runtime identity exhausted");
+    result.Set("runtimeLifeIdentity", std::to_string(runtimeLife));
     result.Set("difficultyTier", actor.GetNpcDifficultyTier());
     result.Set("aggression", profile->second.second[0]);
     result.Set("confidence", profile->second.second[1]);

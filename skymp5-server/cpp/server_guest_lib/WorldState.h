@@ -86,6 +86,9 @@ public:
                      std::chrono::system_clock::duration time);
 
   void RequestSave(MpObjectReference& ref);
+  // Stages a complete snapshot before a caller's nonthrowing live commit.
+  // False means saving is suspended or the reference is no longer registered.
+  bool RequestPreparedSave(MpObjectReference& ref, MpChangeForm&& snapshot);
   std::string GetSavedInventoryReceipt(MpObjectReference& ref);
   MerchantTransferController& GetMerchantTransfers();
   bool HasEspmFile(std::string_view filename) const noexcept;

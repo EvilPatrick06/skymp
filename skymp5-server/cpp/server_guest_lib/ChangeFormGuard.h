@@ -2,6 +2,7 @@
 #include "MpChangeForms.h"
 #include <chrono>
 #include <optional>
+#include <type_traits>
 
 class MpObjectReference;
 
@@ -39,6 +40,16 @@ public:
   auto GetLastSaveRequestMoment() const { return lastSaveRequest; }
 
   bool blockSaving = false;
+
+protected:
+  // Call only after queuing the matching full snapshot. Nothing after queue
+  // publication may allocate or fail before the live state matches it.
+  void CommitPreparedDynamicFields(DynamicFields&& fields) noexcept
+  {
+    static_assert(std::is_nothrow_move_assignable_v<DynamicFields>);
+    changeForm.dynamicFields = std::move(fields);
+    lastSaveRequest = std::chrono::system_clock::now();
+  }
 
 private:
   MpChangeForm changeForm;

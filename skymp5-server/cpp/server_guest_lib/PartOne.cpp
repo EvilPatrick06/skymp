@@ -190,6 +190,13 @@ void PartOne::SetUserActor(Networking::UserId userId, uint32_t actorFormId)
       throw std::runtime_error(ss.str());
     }
 
+    // Revoke the outgoing human and its hosted NPCs before any callback from
+    // the incoming actor can observe the previous session's authority.
+    if (auto outgoing = serverState.ActorByUser(userId)) {
+      outgoing->ReleaseHostedActors();
+      outgoing->InvalidateRuntimeIdentity();
+    }
+
     // Clear actor's hoster if any.
     // HostStop message will be sent on the next attempt to update actor's
     // movement
@@ -203,6 +210,8 @@ void PartOne::SetUserActor(Networking::UserId userId, uint32_t actorFormId)
     // Both functions are required here, but it is NOT covered by unit tests
     // properly. If you do something wrong here, players will not be able to
     // interact with items in the same cell after reconnecting.
+    actor.ReleaseHostedActors();
+    actor.InvalidateRuntimeIdentity();
     actor.UnsubscribeFromAll();
     actor.RemoveFromGridAndUnsubscribeAll();
 
@@ -471,6 +480,10 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
       });
 
       this_->serverState.disconnectingUserId = userId;
+      if (auto actor = this_->serverState.ActorByUser(userId)) {
+        actor->ReleaseHostedActors();
+        actor->InvalidateRuntimeIdentity();
+      }
       for (auto& listener : this_->worldState.listeners)
         listener->OnDisconnect(userId);
       return;

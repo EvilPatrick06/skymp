@@ -32,6 +32,16 @@ public:
   const bool& IsRaceMenuOpen() const;
   const bool& IsDead() const;
   const bool& IsRespawning() const;
+  // Process-local lifetime/ownership fence. Never written into a change form.
+  uint64_t GetRuntimeIdentity() const noexcept;
+  uint64_t GetRuntimeLifeIdentity() const noexcept;
+  void InvalidateRuntimeIdentity(bool preserveLife = false) noexcept;
+  // Revoke NPC authority derived from this human's ending session.
+  void ReleaseHostedActors() noexcept;
+  void AcceptClientHost();
+  bool HasRuntimeIdentity(uint64_t expected) const;
+  bool CompareAndSetActorProperty(int32_t expectedProfileId,
+    const InventoryPropertyChange& property);
 
   bool IsServerControlled() const
   {
@@ -259,7 +269,7 @@ private:
   std::shared_ptr<Impl> pImpl;
   bool factionsLoaded = false;
 
-  void SendAndSetDeathState(bool isDead, bool shouldTeleport);
+  bool SendAndSetDeathState(bool isDead, bool shouldTeleport);
   void SendServerStateToObservers(const IMessageBase& message,
                                   bool reliable) const;
 
@@ -278,7 +288,7 @@ private:
     ChangeFormGuard::Mode mode = ChangeFormGuard::Mode::RequestSave);
 
   std::map<uint32_t, uint32_t> EvaluateDeathItem();
-  void AddDeathItem();
+  void AddDeathItem(uint64_t expectedRuntimeIdentity);
   void LoadFactions();
 
 protected:
