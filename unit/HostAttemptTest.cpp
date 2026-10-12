@@ -467,6 +467,13 @@ TEST_CASE("Server attack animation stops after stamina publication replaces a pa
   PartOne p;
   p.AttachEspm(&GetEspmLoader());
   p.SetDamageFormula(std::make_unique<TES5DamageFormula>());
+  p.worldState.npcEnabled = true;
+  p.worldState.npcAllowEssential = true;
+  p.worldState.npcAllowCrimeFaction = true;
+  const auto hulda = p.worldState.LookupFormById(0x1a66e);
+  REQUIRE(hulda);
+  REQUIRE(hulda->AsActor());
+  const auto npcBase = hulda->AsActor()->GetBaseId();
   auto files = p.worldState.espmFiles.GetFileNames();
   files.push_back("SweetPie.esp");
   p.worldState.espmFiles = espm::LoadOrder::FullPlugins(files);
@@ -496,7 +503,7 @@ TEST_CASE("Server attack animation stops after stamina publication replaces a pa
   p.worldState.GetFormAt<MpActor>(humanId).RegisterProfileId(42);
   p.SetUserActor(0, humanId);
   auto owned = std::make_unique<MpActor>(
-    LocationalData{{1, 1, 1}, {}, FormDesc::Tamriel()}, callbacks, 0x3053f);
+    LocationalData{{1, 1, 1}, {}, FormDesc::Tamriel()}, callbacks, npcBase);
   p.worldState.AddForm(std::move(owned), npcId);
   auto& npc = p.worldState.GetFormAt<MpActor>(npcId);
   npc.SetServerControlled(true);
