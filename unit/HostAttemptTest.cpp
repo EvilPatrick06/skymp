@@ -474,10 +474,6 @@ TEST_CASE("Server attack animation stops after stamina publication replaces a pa
   REQUIRE(hulda);
   REQUIRE(hulda->AsActor());
   const auto npcBase = hulda->AsActor()->GetBaseId();
-  auto files = p.worldState.espmFiles.GetFileNames();
-  files.push_back("SweetPie.esp");
-  p.worldState.espmFiles = espm::LoadOrder::FullPlugins(files);
-  p.animationSystem.Init(&p.worldState);
   constexpr uint32_t npcId = 0xff000abc, humanId = 0xff000abd;
   bool armed = false, published = false;
   uint32_t npcIdx = 0;
@@ -511,6 +507,14 @@ TEST_CASE("Server attack animation stops after stamina publication replaces a pa
   npc.SetPercentages({1, 1, 1});
   npc.SetLastAnimEvent(std::nullopt);
   npcIdx = npc.GetIdx();
+  // Enable the cached optional animation policy without leaving a nonexistent
+  // plugin in the fixture's real ESPM mappings during subscription callbacks.
+  const auto loadOrder = p.worldState.espmFiles;
+  auto files = loadOrder.GetFileNames();
+  files.push_back("SweetPie.esp");
+  p.worldState.espmFiles = espm::LoadOrder::FullPlugins(files);
+  p.animationSystem.Init(&p.worldState);
+  p.worldState.espmFiles = loadOrder;
   armed = true;
   REQUIRE(p.GetActionListener().ServerNpcAttack(npcId, humanId) == (change == "none"));
   REQUIRE(published);
