@@ -5,12 +5,14 @@
 CraftEvent::CraftEvent(MpActor* actor_, uint32_t craftedItemBaseId_,
                        uint32_t count_, uint32_t recipeId_,
                        const std::vector<Inventory::Entry>& entries_,
-                       uint32_t workbenchId_)
+                       uint32_t workbenchId_,
+                       std::optional<std::vector<uint32_t>> effects_)
   : actor(actor_)
   , craftedItemBaseId(craftedItemBaseId_)
   , count(count_)
   , recipeId(recipeId_)
   , workbenchId(workbenchId_)
+  , effects(std::move(effects_))
   , entries(entries_)
 {
 }
@@ -45,11 +47,25 @@ std::string CraftEvent::GetArgumentsJsonArray() const
     what the gamemode judges is what would be taken. A refusal runs no
     OnFireSuccess, so the gem and the piece both stay in the pack.
 
-    The sixth argument is the effects slot #1389 reserves (an array of MGEF
-    ids). The engine names none yet, so it is null, which the gamemode reads
-    as "not named". Positions are fixed so neither change moves the other.
+    The sixth argument is the effects slot #1389 reserves: an array of MGEF
+    ids when the server worked them out (a brew, CraftService::BrewEffects),
+    and null otherwise, which the gamemode reads as "not named". Positions
+    are fixed so neither change moves the other.
   */
-  result += ",null,[";
+  result += ",";
+  if (effects) {
+    result += "[";
+    for (size_t i = 0; i < effects->size(); ++i) {
+      if (i) {
+        result += ",";
+      }
+      result += std::to_string((*effects)[i]);
+    }
+    result += "]";
+  } else {
+    result += "null";
+  }
+  result += ",[";
   bool first = true;
   for (auto& entry : entries) {
     if (!first) {
