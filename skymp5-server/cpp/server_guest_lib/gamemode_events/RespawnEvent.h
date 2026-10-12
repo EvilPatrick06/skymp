@@ -1,5 +1,7 @@
 #pragma once
 #include "GameModeEvent.h"
+#include <cstdint>
+#include <memory>
 
 class MpActor;
 
@@ -16,7 +18,9 @@ public:
 
 private:
   // event arguments
-  MpActor* actor = nullptr;
+  std::shared_ptr<MpActor> actor;
+  uint32_t actorId = 0;
+  uint64_t runtimeIdentity = 0;
 
   // OnFireSuccess-specific arguments
   bool shouldTeleport = false;
