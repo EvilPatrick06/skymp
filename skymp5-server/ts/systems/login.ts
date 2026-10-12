@@ -2,6 +2,8 @@ import { System, Log, Content, SystemContext } from "./system";
 import { Settings } from "../settings";
 import * as fetchRetry from "fetch-retry";
 import { loginsCounter, loginErrorsCounter } from "./metricsSystem";
+import { ThornswoodLogin, ThornswoodLoginHook } from "./thornswoodLogin";
+import * as crypto from "crypto";
 
 const loginFailedNotInTheDiscordServer = JSON.stringify({ customPacketType: "loginFailedNotInTheDiscordServer" });
 const loginFailedBanned = JSON.stringify({ customPacketType: "loginFailedBanned" });
@@ -79,7 +81,28 @@ export class Login implements System {
   }
 
   disconnect(userId: number): void {
+    this.thornswood?.disconnect(userId);
   }
+
+  // THORNSWOOD PATCH (Thornswood #1320): see thornswoodLogin.ts.
+  private thornswoodFor(ctx: SystemContext): ThornswoodLogin {
+    if (!this.thornswood) {
+      this.thornswood = new ThornswoodLogin(
+        ctx.svr,
+        () => (ctx.svr as unknown as { onThornswoodLogin?: ThornswoodLoginHook }).onThornswoodLogin,
+        (userId: number, profileId: number) => {
+          this.emit(ctx, "spawnAllowed", userId, profileId, [], undefined);
+          loginsCounter.inc();
+          this.log(userId + " logged as " + profileId + " (the gamemode's answer)");
+        },
+        (...args: unknown[]) => this.log(...args),
+        () => crypto.randomBytes(24).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
+      );
+    }
+    return this.thornswood;
+  }
+
+  private thornswood: ThornswoodLogin | null = null;
 
   customPacket(
     userId: number,
@@ -87,6 +110,14 @@ export class Login implements System {
     content: Content,
     ctx: SystemContext,
   ): void {
+    // THORNSWOOD PATCH (Thornswood #1320): the answer to the login's challenge.
+    if (type === "thornswoodLoginProof") {
+      if (this.offlineMode === true) {
+        this.thornswoodFor(ctx).proof(userId, content);
+      }
+      return;
+    }
+
     if (type !== "loginWithSkympIo") {
       return;
     }
@@ -226,6 +257,12 @@ export class Login implements System {
         });
     } else if (this.offlineMode === true && gameData && typeof gameData.profileId === "number") {
       const profileId = gameData.profileId;
+      // THORNSWOOD PATCH (Thornswood #1320). With the gamemode's
+      // onThornswoodLogin set, it says who this is (thornswoodLogin.ts);
+      // without it, exactly as before.
+      if (this.thornswoodFor(ctx).login(userId, profileId)) {
+        return;
+      }
       this.emit(ctx, "spawnAllowed", userId, profileId, [], undefined);
       loginsCounter.inc();
       this.log(userId + " logged as " + profileId);
