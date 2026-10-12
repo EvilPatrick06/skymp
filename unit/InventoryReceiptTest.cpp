@@ -7,6 +7,27 @@
 #include <filesystem>
 #include <limits>
 
+// RequestPreparedSave prepares the two optional map destinations separately.
+// Every other nontrivial snapshot member must stay nonthrowing on assignment.
+static_assert(std::is_nothrow_move_assignable_v<decltype(MpChangeForm::formDesc)>, "formDesc");
+static_assert(std::is_nothrow_move_assignable_v<decltype(MpChangeForm::baseDesc)>, "baseDesc");
+static_assert(std::is_nothrow_move_assignable_v<decltype(MpChangeForm::position)>, "position");
+static_assert(std::is_nothrow_move_assignable_v<decltype(MpChangeForm::angle)>, "angle");
+static_assert(std::is_nothrow_move_assignable_v<decltype(MpChangeForm::worldOrCellDesc)>, "worldOrCellDesc");
+static_assert(std::is_nothrow_move_assignable_v<decltype(MpChangeForm::inv)>, "inv");
+static_assert(std::is_nothrow_move_assignable_v<decltype(MpChangeForm::learnedSpells)>, "learnedSpells");
+static_assert(std::is_nothrow_move_assignable_v<decltype(MpChangeForm::activeMagicEffects)>, "activeMagicEffects");
+static_assert(std::is_nothrow_move_assignable_v<decltype(MpChangeForm::appearanceDump)>, "appearanceDump");
+static_assert(std::is_nothrow_move_assignable_v<decltype(MpChangeForm::equipment)>, "equipment");
+static_assert(std::is_nothrow_move_assignable_v<decltype(MpChangeForm::actorValues)>, "actorValues");
+static_assert(std::is_nothrow_move_assignable_v<decltype(MpChangeForm::spawnPoint)>, "spawnPoint");
+static_assert(std::is_nothrow_move_assignable_v<decltype(MpChangeForm::templateChain)>, "templateChain");
+static_assert(std::is_nothrow_move_assignable_v<decltype(MpChangeForm::lastAnimation)>, "lastAnimation");
+static_assert(std::is_nothrow_move_assignable_v<decltype(MpChangeForm::displayName)>, "displayName");
+static_assert(std::is_nothrow_move_assignable_v<decltype(MpChangeForm::factions)>, "factions");
+static_assert(std::is_nothrow_move_assignable_v<decltype(MpChangeForm::quests)>, "quests");
+static_assert(std::is_nothrow_move_assignable_v<decltype(MpChangeForm::dynamicFields)>, "dynamicFields");
+
 extern espm::Loader& GetEspmLoader();
 
 namespace {
