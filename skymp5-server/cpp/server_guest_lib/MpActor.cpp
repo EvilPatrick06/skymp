@@ -739,12 +739,12 @@ void MpActor::SendServerStateToObservers(const IMessageBase& message,
                                         bool reliable) const
 {
   std::set<Networking::UserId> recipients;
-  for (auto listener : GetActorListeners()) {
-    const auto user = listener->GetUserId();
+  VisitCurrentActorListeners([&](MpActor& listener) {
+    const auto user = listener.GetUserId();
     if (user != Networking::InvalidUserId && recipients.insert(user).second) {
-      listener->SendToUser(message, reliable);
+      listener.SendToUser(message, reliable);
     }
-  }
+  });
 }
 
 void MpActor::SendToUser(const IMessageBase& message, bool reliable)

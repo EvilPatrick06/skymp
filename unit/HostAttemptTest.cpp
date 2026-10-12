@@ -250,6 +250,8 @@ TEST_CASE("Observer publication stops when the source runtime changes",
     using MpObjectReference::SendMessageToActorListeners;
   };
   const bool generic = GENERATE(false, true);
+  const std::string change = GENERATE("reload-source", "destroy-source", "reload-other", "destroy-other", "unsubscribe-other", "none");
+  CAPTURE(generic, change);
   PartOne p;
   p.AttachEspm(&GetEspmLoader());
   constexpr uint32_t remoteId = 0xff000abd;
@@ -258,11 +260,21 @@ TEST_CASE("Observer publication stops when the source runtime changes",
   auto callbacks = p.CreateFormCallbacks();
   const auto send = callbacks.sendToUser;
   callbacks.sendToUser = [&](auto actor, auto& message, auto reliable) {
-    if (armed) {
+    const bool relevant = generic ? dynamic_cast<const UpdatePropertyMessage*>(&message) != nullptr :
+      dynamic_cast<const DeathStateContainerMessage*>(&message) != nullptr;
+    if (armed && relevant) {
       ++deliveries;
       if (deliveries == 1) {
         auto& source = p.worldState.GetFormAt<MpActor>(remoteId);
-        source.ApplyChangeForm(source.GetChangeForm());
+        if (change == "reload-source") source.ApplyChangeForm(source.GetChangeForm());
+        else if (change == "destroy-source") p.DestroyActor(remoteId);
+        else if (change != "none") {
+          auto listeners = source.GetActorListeners();
+          auto other = *std::find_if(listeners.begin(), listeners.end(), [&](auto entry) { return entry != actor; });
+          if (change == "reload-other") other->ApplyChangeForm(other->GetChangeForm());
+          else if (change == "destroy-other") p.DestroyActor(other->GetFormId());
+          else MpObjectReference::Unsubscribe(&source, other);
+        }
       }
     }
     send(actor, message, reliable);
@@ -281,6 +293,8 @@ TEST_CASE("Observer publication stops when the source runtime changes",
   auto* published = creature.get();
   p.worldState.AddForm(std::move(creature), remoteId);
   auto& source = *published;
+  source.SetServerControlled(true);
+  REQUIRE(source.IsServerControlled());
   for (uint32_t i = 0; i < 2; ++i)
     MpObjectReference::Subscribe(&source, &p.worldState.GetFormAt<MpActor>(0xff000ac0 + i));
   REQUIRE(source.GetActorListeners().size() == 2);
@@ -291,7 +305,7 @@ TEST_CASE("Observer publication stops when the source runtime changes",
   } else {
     source.Kill();
   }
-  REQUIRE(deliveries == 1);
+  REQUIRE(deliveries == (change == "none" ? 2 : 1));
 }
 
 TEST_CASE("Hosting an actor before its first movement records the timestamp",

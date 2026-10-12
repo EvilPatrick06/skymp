@@ -241,6 +241,7 @@ protected:
 
   void SendMessageToActorListeners(const IMessageBase& msg,
                                    bool reliable) const;
+  void VisitCurrentActorListeners(const std::function<void(MpActor&)>& visitor) const;
 
 private:
   void AddContainerObject(const espm::CONT::ContainerObject& containerObject,

@@ -2197,8 +2197,39 @@ void MpObjectReference::CheckInteractionAbility(MpObjectReference& refr)
 void MpObjectReference::SendMessageToActorListeners(const IMessageBase& msg,
                                                     bool reliable) const
 {
+  VisitCurrentActorListeners([&](MpActor& listener) {
+    auto& destination = listener.GetActorToSendTo();
+    const auto keepDestination = destination.GetParent()->LookupFormById(destination.GetFormId());
+    if (keepDestination.get() == &destination)
+      destination.SendToUser(msg, reliable);
+  });
+}
+
+void MpObjectReference::VisitCurrentActorListeners(
+  const std::function<void(MpActor&)>& visitor) const
+{
+  const auto world = GetParent();
+  const auto keepSource = world ? world->LookupFormById(GetFormId()) : nullptr;
+  if (keepSource.get() != this) return;
+  const auto actor = AsActor();
+  const auto runtime = actor ? actor->GetRuntimeIdentity() : 0;
+  struct Listener {
+    std::shared_ptr<MpActor> actor;
+    uint64_t runtime;
+  };
+  std::vector<Listener> snapshot;
   for (auto listener : GetActorListeners()) {
-    listener->GetActorToSendTo().SendToUser(msg, true);
+    auto held = std::dynamic_pointer_cast<MpActor>(world->LookupFormById(listener->GetFormId()));
+    if (held.get() == listener)
+      snapshot.push_back({held, held->GetRuntimeIdentity()});
+  }
+  for (const auto& listener : snapshot) {
+    if (world->LookupFormById(GetFormId()).get() != this ||
+        (actor && !actor->HasRuntimeIdentity(runtime))) return;
+    const auto& current = GetActorListeners();
+    if (!listener.actor->HasRuntimeIdentity(listener.runtime) ||
+        std::find(current.begin(), current.end(), listener.actor.get()) == current.end()) continue;
+    visitor(*listener.actor);
   }
 }
 
