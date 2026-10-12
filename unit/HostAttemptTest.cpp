@@ -1,4 +1,6 @@
 #include "ActionListener.h"
+#include "ChangeValuesMessage.h"
+#include "GameModeEvent.h"
 #include "HostMessage.h"
 #include "HostStartMessage.h"
 #include "TestUtils.hpp"
@@ -295,6 +297,9 @@ TEST_CASE("Observer publication stops when the source runtime changes",
   auto& source = *published;
   source.SetServerControlled(true);
   REQUIRE(source.IsServerControlled());
+  // Actors also subscribe to themselves. This fixture exercises two remote
+  // recipients and must not select the source as the other observer.
+  MpObjectReference::Unsubscribe(&source, &source);
   for (uint32_t i = 0; i < 2; ++i)
     MpObjectReference::Subscribe(&source, &p.worldState.GetFormAt<MpActor>(0xff000ac0 + i));
   REQUIRE(source.GetActorListeners().size() == 2);
@@ -306,6 +311,86 @@ TEST_CASE("Observer publication stops when the source runtime changes",
     source.Kill();
   }
   REQUIRE(deliveries == (change == "none" ? 2 : 1));
+}
+
+TEST_CASE("Damage publication cannot mutate a replacement runtime",
+          "[actor-runtime-identity][death-publication][espm]")
+{
+  const std::string change = GENERATE("reload", "destroy", "none");
+  CAPTURE(change);
+  PartOne p;
+  p.AttachEspm(&GetEspmLoader());
+  constexpr uint32_t id = 0xff000abc;
+  bool armed = false, published = false;
+  std::weak_ptr<MpForm> lifetime;
+  auto callbacks = p.CreateFormCallbacks();
+  const auto send = callbacks.sendToUser;
+  callbacks.sendToUser = [&](auto actor, auto& message, auto reliable) {
+    if (armed && !published && dynamic_cast<const ChangeValuesMessage*>(&message)) {
+      published = true;
+      if (change == "reload") actor->ApplyChangeForm(actor->GetChangeForm());
+      if (change == "destroy") {
+        p.DestroyActor(id);
+        REQUIRE_FALSE(lifetime.expired());
+      }
+    }
+    send(actor, message, reliable);
+  };
+  DoConnect(p, 0);
+  auto owned = std::make_unique<MpActor>(
+    LocationalData{{1, 1, 1}, {}, FormDesc::Tamriel()}, callbacks, 0x7);
+  p.worldState.AddForm(std::move(owned), id);
+  auto& actor = p.worldState.GetFormAt<MpActor>(id);
+  actor.RegisterProfileId(42);
+  p.SetUserActor(0, id);
+  lifetime = p.worldState.LookupFormById(id);
+  auto listener = FakeListener::New();
+  p.AddListener(listener);
+  armed = true;
+  ActorValues lethal;
+  lethal.healthPercentage = 0;
+  actor.NetSetPercentages(lethal);
+  REQUIRE(published);
+  REQUIRE((listener->str().find("onDeath") != std::string::npos) == (change == "none"));
+  if (change == "reload") REQUIRE_FALSE(actor.IsDead());
+  if (change == "destroy") REQUIRE(lifetime.expired());
+}
+
+TEST_CASE("Death publication retains the original killer lifetime",
+          "[actor-runtime-identity][death-publication][espm]")
+{
+  PartOne p;
+  p.AttachEspm(&GetEspmLoader());
+  constexpr uint32_t victimId = 0xff000abc, killerId = 0xff000abd;
+  bool armed = false, published = false;
+  std::weak_ptr<MpForm> killerLifetime;
+  auto callbacks = p.CreateFormCallbacks();
+  const auto send = callbacks.sendToUser;
+  callbacks.sendToUser = [&](auto actor, auto& message, auto reliable) {
+    if (armed && !published && dynamic_cast<const DeathStateContainerMessage*>(&message)) {
+      published = true;
+      p.DestroyActor(killerId);
+      REQUIRE_FALSE(killerLifetime.expired());
+    }
+    send(actor, message, reliable);
+  };
+  DoConnect(p, 0);
+  auto owned = std::make_unique<MpActor>(
+    LocationalData{{1, 1, 1}, {}, FormDesc::Tamriel()}, callbacks, 0x7);
+  p.worldState.AddForm(std::move(owned), victimId);
+  auto& actor = p.worldState.GetFormAt<MpActor>(victimId);
+  actor.RegisterProfileId(42);
+  p.SetUserActor(0, victimId);
+  p.CreateActor(killerId, {1, 1, 1}, 0, 0x3c, 43);
+  auto& killer = p.worldState.GetFormAt<MpActor>(killerId);
+  killerLifetime = p.worldState.LookupFormById(killerId);
+  auto listener = FakeListener::New();
+  p.AddListener(listener);
+  armed = true;
+  actor.Kill(&killer);
+  REQUIRE(published);
+  REQUIRE(killerLifetime.expired());
+  REQUIRE(listener->str().find("onDeath") != std::string::npos);
 }
 
 TEST_CASE("Hosting an actor before its first movement records the timestamp",
