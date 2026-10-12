@@ -281,6 +281,8 @@ TEST_CASE("Observer publication stops when the source runtime changes",
   auto* published = creature.get();
   p.worldState.AddForm(std::move(creature), remoteId);
   auto& source = *published;
+  for (uint32_t i = 0; i < 2; ++i)
+    MpObjectReference::Subscribe(&source, &p.worldState.GetFormAt<MpActor>(0xff000ac0 + i));
   REQUIRE(source.GetActorListeners().size() == 2);
   armed = true;
   if (generic) {
