@@ -47,6 +47,51 @@ export class ModelApplyUtils {
     }
   }
 
+  /*
+    THORNSWOOD PATCH (Thornswood #2328). Harvested and disabled are decided
+    together for a reference from a master file.
+
+    A tree or flora is harvested by its own flag, so for those the two are
+    separate. Everything else is shown harvested by being disabled
+    (applyModelIsHarvested below), so for those both flags are about the same
+    one state. remoteServer.ts applied them one after the other: the harvested
+    step saw a reference the server holds disabled (and this game already had
+    disabled, from the last time it streamed) as harvested, and with
+    isHarvested false it enabled it. Enable and Disable are latent (isLatent
+    in skyrim-platform's FunctionsDump.txt, run later through the Papyrus VM,
+    VmCall), so the disabled step then still read isDisabled() true, saw
+    nothing to do, and the queued enable brought the reference back. The
+    other way round did the same to a harvested item: the harvested step left
+    it disabled and the disabled step, told false, enabled it.
+
+    So for those references it is one decision: harvested goes through the
+    harvested step, which disables it as before; otherwise the disabled flag
+    alone says whether it is on. Each reference gets at most one enable or
+    disable from here.
+  */
+  static applyModelIsHarvestedAndDisabled(refr: ObjectReference, isHarvested: boolean, isDisabled: boolean): void {
+    if (!ModelApplyUtils.showsHarvestedByDisabled(refr)) {
+      ModelApplyUtils.applyModelIsHarvested(refr, isHarvested);
+      ModelApplyUtils.applyModelIsDisabled(refr, isDisabled);
+      return;
+    }
+    if (isHarvested) {
+      ModelApplyUtils.applyModelIsHarvested(refr, true);
+      return;
+    }
+    ModelApplyUtils.applyModelIsDisabled(refr, isDisabled);
+  }
+
+  // Not a tree or flora: applyModelIsHarvested shows it harvested by disabling it.
+  private static showsHarvestedByDisabled(refr: ObjectReference): boolean {
+    const base = refr.getBaseObject();
+    if (!base) {
+      return false;
+    }
+    const t = base.getType();
+    return t != FormType.Tree && t != FormType.Flora;
+  }
+
   static applyModelIsHarvested(refr: ObjectReference, isHarvested: boolean) {
     const base = refr.getBaseObject();
     if (base) {
