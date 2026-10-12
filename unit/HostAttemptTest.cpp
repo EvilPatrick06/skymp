@@ -242,6 +242,51 @@ TEST_CASE("Kill retains the actor during synchronous removal publication",
   REQUIRE(lifetime.expired());
 }
 
+TEST_CASE("Observer publication stops when the source runtime changes",
+          "[actor-runtime-identity][observer-publication][espm]")
+{
+  const bool generic = GENERATE(false, true);
+  PartOne p;
+  p.AttachEspm(&GetEspmLoader());
+  constexpr uint32_t remoteId = 0xff000abd;
+  bool armed = false;
+  size_t deliveries = 0;
+  auto callbacks = p.CreateFormCallbacks();
+  const auto send = callbacks.sendToUser;
+  callbacks.sendToUser = [&](auto actor, auto& message, auto reliable) {
+    if (armed) {
+      ++deliveries;
+      if (deliveries == 1) {
+        auto& source = p.worldState.GetFormAt<MpActor>(remoteId);
+        source.ApplyChangeForm(source.GetChangeForm());
+      }
+    }
+    send(actor, message, reliable);
+  };
+  for (uint32_t i = 0; i < 2; ++i) {
+    DoConnect(p, i);
+    const auto id = 0xff000ac0 + i;
+    auto observer = std::make_unique<MpActor>(
+      LocationalData{{1, 1, 1}, {}, FormDesc::Tamriel()}, callbacks, 0x7);
+    p.worldState.AddForm(std::move(observer), id);
+    p.worldState.GetFormAt<MpActor>(id).RegisterProfileId(42 + i);
+    p.SetUserActor(i, id);
+  }
+  auto creature = std::make_unique<MpActor>(
+    LocationalData{{1, 1, 1}, {}, FormDesc::Tamriel()}, callbacks, 0x3053f);
+  p.worldState.AddForm(std::move(creature), remoteId);
+  auto& source = p.worldState.GetFormAt<MpActor>(remoteId);
+  REQUIRE(source.GetActorListeners().size() == 2);
+  armed = true;
+  if (generic) {
+    UpdatePropertyMessage message;
+    source.SendMessageToActorListeners(message, true);
+  } else {
+    source.Kill();
+  }
+  REQUIRE(deliveries == 1);
+}
+
 TEST_CASE("Hosting an actor before its first movement records the timestamp",
           "[HostAttempt][PartOne]")
 {
