@@ -1,6 +1,7 @@
 #include "ActionListener.h"
 #include "ChangeValuesMessage.h"
 #include "gamemode_events/GameModeEvent.h"
+#include "formulas/TES5DamageFormula.h"
 #include "HostMessage.h"
 #include "HostStartMessage.h"
 #include "HitMessage.h"
@@ -337,6 +338,7 @@ TEST_CASE("Damage publication cannot mutate a replacement runtime",
   CAPTURE(change, entry);
   PartOne p;
   p.AttachEspm(&GetEspmLoader());
+  p.SetDamageFormula(std::make_unique<TES5DamageFormula>());
   constexpr uint32_t id = 0xff000abc;
   constexpr uint32_t aggressorId = 0xff000abd;
   bool armed = false, published = false;
