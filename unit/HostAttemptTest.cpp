@@ -3,6 +3,7 @@
 #include "gamemode_events/GameModeEvent.h"
 #include "HostMessage.h"
 #include "HostStartMessage.h"
+#include "HitMessage.h"
 #include "TestUtils.hpp"
 
 PartOne& GetPartOne();
@@ -11,9 +12,13 @@ extern espm::Loader& GetEspmLoader();
 namespace {
 struct DeathPublicationListener : FakeListener {
   size_t deaths = 0;
+  std::string arguments;
   bool OnMpApiEvent(const GameModeEvent& event) override
   {
-    if (std::string(event.GetName()) == "onDeath") ++deaths;
+    if (std::string(event.GetName()) == "onDeath") {
+      ++deaths;
+      arguments = event.GetArgumentsJsonArray();
+    }
     return true;
   }
 };
@@ -327,13 +332,16 @@ TEST_CASE("Observer publication stops when the source runtime changes",
 TEST_CASE("Damage publication cannot mutate a replacement runtime",
           "[actor-runtime-identity][death-publication][espm]")
 {
-  const std::string change = GENERATE("reload", "destroy", "none");
-  CAPTURE(change);
+  const std::string change = GENERATE("reload", "destroy", "reload-aggressor", "destroy-aggressor", "none");
+  const std::string entry = GENERATE("direct", "weapon", "spell");
+  CAPTURE(change, entry);
   PartOne p;
   p.AttachEspm(&GetEspmLoader());
   constexpr uint32_t id = 0xff000abc;
+  constexpr uint32_t aggressorId = 0xff000abd;
   bool armed = false, published = false;
   std::weak_ptr<MpForm> lifetime;
+  std::weak_ptr<MpForm> aggressorLifetime;
   auto callbacks = p.CreateFormCallbacks();
   const auto send = callbacks.sendToUser;
   callbacks.sendToUser = [&](auto actor, auto& message, auto reliable) {
@@ -343,6 +351,14 @@ TEST_CASE("Damage publication cannot mutate a replacement runtime",
       if (change == "destroy") {
         p.DestroyActor(id);
         REQUIRE_FALSE(lifetime.expired());
+      }
+      if (change == "reload-aggressor") {
+        auto& aggressor = p.worldState.GetFormAt<MpActor>(aggressorId);
+        aggressor.ApplyChangeForm(aggressor.GetChangeForm());
+      }
+      if (change == "destroy-aggressor") {
+        p.DestroyActor(aggressorId);
+        REQUIRE_FALSE(aggressorLifetime.expired());
       }
     }
     send(actor, message, reliable);
@@ -355,21 +371,51 @@ TEST_CASE("Damage publication cannot mutate a replacement runtime",
   actor.RegisterProfileId(42);
   p.SetUserActor(0, id);
   lifetime = p.worldState.LookupFormById(id);
+  DoConnect(p, 1);
+  p.CreateActor(aggressorId, {1, 1, 1}, 0, 0x3c, 43);
+  p.SetUserActor(1, aggressorId);
+  auto& aggressor = p.worldState.GetFormAt<MpActor>(aggressorId);
+  aggressorLifetime = p.worldState.LookupFormById(aggressorId);
+  constexpr uint32_t dagger = 0x1397e, flames = 0x12fcd;
+  Equipment equipment;
+  if (entry == "weapon") {
+    aggressor.AddItem(dagger, 1);
+    Inventory::ExtraData worn;
+    worn.worn_ = true;
+    equipment.inv.entries.emplace_back(dagger, 1, worn);
+  } else equipment.leftSpell = flames;
+  aggressor.SetEquipment(equipment);
+  actor.SetPercentages({0.00001f, 1, 1});
+  const auto previousHit = aggressor.GetLastHitTime(id);
   auto listener = std::make_shared<DeathPublicationListener>();
   p.AddListener(listener);
   armed = true;
   ActorValues lethal;
   lethal.healthPercentage = 0;
-  actor.NetSetPercentages(lethal, nullptr, std::nullopt);
+  if (entry == "direct") actor.NetSetPercentages(lethal, &aggressor, std::nullopt);
+  else {
+    RawMessageData raw;
+    raw.userId = 1;
+    HitMessage hit;
+    hit.data.aggressor = 0x14;
+    hit.data.target = id;
+    hit.data.source = entry == "weapon" ? dagger : flames;
+    p.GetActionListener().OnHit(raw, hit);
+  }
   REQUIRE(published);
   REQUIRE(listener->deaths == (change == "none" ? 1 : 0));
   if (change == "reload") REQUIRE_FALSE(actor.IsDead());
   if (change == "destroy") REQUIRE(lifetime.expired());
+  if (change == "destroy-aggressor") REQUIRE(aggressorLifetime.expired());
+  if (entry == "weapon" && change != "none" && change != "destroy-aggressor")
+    REQUIRE(aggressor.GetLastHitTime(id) == previousHit);
 }
 
 TEST_CASE("Death publication retains the original killer lifetime",
           "[actor-runtime-identity][death-publication][espm]")
 {
+  const std::string change = GENERATE("reload", "destroy", "none");
+  CAPTURE(change);
   PartOne p;
   p.AttachEspm(&GetEspmLoader());
   constexpr uint32_t victimId = 0xff000abc, killerId = 0xff000abd;
@@ -380,8 +426,13 @@ TEST_CASE("Death publication retains the original killer lifetime",
   callbacks.sendToUser = [&](auto actor, auto& message, auto reliable) {
     if (armed && !published && dynamic_cast<const DeathStateContainerMessage*>(&message)) {
       published = true;
-      p.DestroyActor(killerId);
-      REQUIRE_FALSE(killerLifetime.expired());
+      if (change == "destroy") {
+        p.DestroyActor(killerId);
+        REQUIRE_FALSE(killerLifetime.expired());
+      } else if (change == "reload") {
+        auto& killer = p.worldState.GetFormAt<MpActor>(killerId);
+        killer.ApplyChangeForm(killer.GetChangeForm());
+      }
     }
     send(actor, message, reliable);
   };
@@ -400,8 +451,10 @@ TEST_CASE("Death publication retains the original killer lifetime",
   armed = true;
   actor.Kill(&killer);
   REQUIRE(published);
-  REQUIRE(killerLifetime.expired());
+  REQUIRE(killerLifetime.expired() == (change == "destroy"));
   REQUIRE(listener->deaths == 1);
+  const auto arguments = nlohmann::json::parse(listener->arguments);
+  REQUIRE(arguments[1] == (change == "none" ? killerId : 0));
 }
 
 TEST_CASE("Hosting an actor before its first movement records the timestamp",
