@@ -27,6 +27,7 @@ public:
   bool ready = false;
   bool fail = false;
   bool failSubmission = false;
+  bool failBeforeConsumption = false;
   uint32_t writes = 0;
 
   ~ControlledFileStorage() { std::filesystem::remove_all(root); }
@@ -38,6 +39,10 @@ public:
               const UpsertCallback& cb) override
   {
     REQUIRE_FALSE(static_cast<bool>(completion));
+    if (failBeforeConsumption) {
+      failBeforeConsumption = false;
+      throw std::runtime_error("injected failure before consuming buffer");
+    }
     if (failSubmission) {
       failSubmission = false;
       auto consumed = std::move(forms);
@@ -180,6 +185,34 @@ bool PendingHasForm(const ControlledFileStorage& storage, const FormDesc& desc)
   }
   return false;
 }
+}
+
+TEST_CASE("RetriedMetadataDoesNotSplitMerchantSettlement", "[merchant-transfer][save-pump]")
+{
+  PartOne server;
+  AttachSkyrimFiles(server);
+  auto storage = std::make_shared<ControlledFileStorage>();
+  server.AttachSaveStorage(storage);
+  auto& human = AddHuman(server, 0xff000abc);
+  auto& merchant = AddMerchant(server, 0xff000def);
+  auto& transfers = server.worldState.GetMerchantTransfers();
+  auto began = BeginTransfer(transfers, human, merchant, 10, 1, 1);
+  REQUIRE(began.ok);
+  REQUIRE(transfers.CommitHumanDebit(human, began.offerId).ok);
+  CompleteSave(server, *storage);
+  human.SetPropertyValueDump("thornswoodQuests", "1", false, false);
+  storage->failBeforeConsumption = true;
+  server.Tick();
+  REQUIRE_FALSE(static_cast<bool>(storage->completion));
+  REQUIRE(transfers.ReleaseQuarantine(human, merchant, began.offerId).ok);
+  server.Tick();
+  REQUIRE(PendingHasForm(*storage, human.GetChangeForm().formDesc));
+  REQUIRE(PendingHasForm(*storage, merchant.GetChangeForm().formDesc));
+  storage->Commit();
+  server.Tick();
+  REQUIRE(transfers.Find(began.offerId)->state == MerchantTransferController::State::Durable);
+  REQUIRE_FALSE(transfers.IsLocked(human.GetFormId()));
+  REQUIRE_FALSE(transfers.IsLocked(merchant.GetFormId()));
 }
 
 TEST_CASE("HumanChangeUsesCompareAndSetInventoryReceiptPair",
