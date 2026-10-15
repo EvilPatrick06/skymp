@@ -146,6 +146,7 @@ bool PartOne::IsConnected(Networking::UserId userId) const
 
 void PartOne::Tick()
 {
+  worldState.EnsureTickAllowed();
   TickPacketHistoryPlaybacks();
   TickDeferredMessages();
   worldState.Tick();

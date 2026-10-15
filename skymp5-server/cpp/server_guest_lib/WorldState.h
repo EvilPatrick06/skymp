@@ -81,6 +81,9 @@ public:
                       const FormCallbacks& callbacks);
 
   void Tick();
+  // Call before dispatching gameplay in tick entry points above WorldState.
+  // A storage callback must not recursively process packets or timers.
+  void EnsureTickAllowed() const;
 
   void RequestReloot(MpObjectReference& ref,
                      std::chrono::system_clock::duration time);
