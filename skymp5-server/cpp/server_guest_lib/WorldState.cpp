@@ -50,12 +50,16 @@ struct WorldState::Impl
   std::map<ReceiptKey, SavedReceipt> savedInventoryReceipts;
   std::vector<std::optional<MpChangeForm>> changesByIdx;
   bool changesByIdxEmpty = true;
+  // Unconsumed failed submissions own their snapshots independently of actor
+  // indices, which can be reused by newly queued actors before the next pump.
+  std::vector<std::optional<MpChangeForm>> retryChanges;
 
   std::shared_ptr<
     Viet::ISaveStorage<MpChangeForm, FormDesc, std::vector<FormDesc>>>
     saveStorage;
   std::shared_ptr<IScriptStorage> scriptStorage;
   bool saveStorageBusy = false;
+  bool saveStoragePumping = false;
   std::shared_ptr<VirtualMachine> vm;
   uint32_t nextId = 0xff000000;
   // The server's own forms (ff...) whose saved ChangeForm LoadChangeForm could
@@ -128,6 +132,17 @@ void WorldState::AttachSaveStorage(
     Viet::ISaveStorage<MpChangeForm, FormDesc, std::vector<FormDesc>>>
     saveStorage)
 {
+  if (pImpl->saveStoragePumping) {
+    throw std::runtime_error("Cannot attach save storage during a save pump");
+  }
+  if (pImpl->saveStorage == saveStorage) {
+    return;
+  }
+  if (pImpl->saveStorage &&
+      (pImpl->saveStorageBusy || !pImpl->changesByIdxEmpty ||
+       !pImpl->retryChanges.empty())) {
+    throw std::runtime_error("Cannot replace save storage with pending saves");
+  }
   spdlog::info("AttachSaveStorage - db fixes installed");
 
   pImpl->saveStorage = saveStorage;
@@ -194,8 +209,16 @@ void WorldState::AddForm(std::unique_ptr<MpForm> form, uint32_t formId,
   }
 }
 
+void WorldState::EnsureTickAllowed() const
+{
+  if (pImpl->saveStoragePumping) {
+    throw std::runtime_error("Cannot tick the world during a save pump");
+  }
+}
+
 void WorldState::Tick()
 {
+  EnsureTickAllowed();
   const auto now = std::chrono::system_clock::now();
   TickSaveStorage(now);
   TickTimers(now);
@@ -857,12 +880,21 @@ std::string WorldState::GetSavedInventoryReceipt(MpObjectReference& ref)
 
 void WorldState::TickSaveStorage(const std::chrono::system_clock::time_point&)
 {
-  if (!pImpl->saveStorage) {
+  if (pImpl->saveStoragePumping) {
+    throw std::runtime_error("Cannot recursively pump save storage");
+  }
+  // Storage code can call back into the world. Keep its owner alive and reject
+  // nested pumps/attachment until every storage call in this pump has returned.
+  auto storage = pImpl->saveStorage;
+  if (!storage) {
     return;
   }
+  Viet::ScopedTask<bool> pumping([](bool& value) { value = false; },
+                                pImpl->saveStoragePumping);
+  pImpl->saveStoragePumping = true;
 
   try {
-    pImpl->saveStorage->Tick();
+    storage->Tick();
   } catch (
     Viet::AsyncSaveStorage<MpChangeForm, FormDesc,
                            std::vector<FormDesc>>::UpsertFailedException& e) {
@@ -883,22 +915,20 @@ void WorldState::TickSaveStorage(const std::chrono::system_clock::time_point&)
         continue;
       }
 
-      MpForm* form = LookupFormByIdx(static_cast<int>(i));
-      MpObjectReference* refr = form ? form->AsObjectReference() : nullptr;
+      // A retry can combine retained rows with new work. Storage batch offsets
+      // are not actor indices; persistent form identity selects recovery.
+      auto live = this->forms.find(changeForm->formDesc.ToFormId(espmFiles));
+      MpObjectReference* refr = live != this->forms.end()
+        ? live->second->AsObjectReference() : nullptr;
       if (!refr) {
         continue;
       }
 
-      auto formId = changeForm->formDesc.ToFormId(espmFiles);
-
-      if (refr->GetFormId() != formId) {
-        spdlog::error("TickSaveStorage - formIds not matching {:x} <=> {:x}",
-                      refr->GetFormId(), formId);
-        continue;
+      if (refr->GetIdx() >= pImpl->changesByIdx.size() ||
+          !pImpl->changesByIdx[refr->GetIdx()]) {
+        RequestSave(*refr);
+        numRequested++;
       }
-
-      RequestSave(*refr);
-      numRequested++;
     }
 
     spdlog::info("TickSaveStorage - requested re-save for {} forms in buffer "
@@ -916,7 +946,8 @@ void WorldState::TickSaveStorage(const std::chrono::system_clock::time_point&)
     return;
   }
 
-  if (pImpl->changesByIdxEmpty) {
+  const bool retrying = !pImpl->retryChanges.empty();
+  if (pImpl->changesByIdxEmpty && !retrying) {
     return;
   }
 
@@ -924,13 +955,55 @@ void WorldState::TickSaveStorage(const std::chrono::system_clock::time_point&)
 
   auto pImpl_ = pImpl;
 
-  auto previousSize = pImpl->changesByIdx.size();
+  auto& queued = retrying ? pImpl->retryChanges : pImpl->changesByIdx;
+  auto previousSize = queued.size();
   std::vector<std::weak_ptr<MpForm>> submittedForms;
+  std::vector<std::optional<MpChangeForm>> submitted;
+  auto recoverSubmission = [&] {
+    pImpl->saveStorageBusy = false;
+    if (!submitted.empty()) {
+      pImpl->retryChanges.swap(submitted);
+    }
+    std::set<uint32_t> retainedIds;
+    for (const auto& row : pImpl->retryChanges) {
+      if (row) retainedIds.insert(row->formDesc.ToFormId(espmFiles));
+    }
+    // Preserve exact callback-queued snapshots, even if live state has since
+    // changed silently. Reconstruct consumed identities only into empty slots.
+    for (auto& weak : submittedForms) {
+      auto form = weak.lock();
+      if (!form) continue;
+      auto current = forms.find(form->GetFormId());
+      auto ref = form->AsObjectReference();
+      if (ref && current != forms.end() && current->second == form &&
+          !retainedIds.count(form->GetFormId()) &&
+          (ref->GetIdx() >= pImpl->changesByIdx.size() ||
+           !pImpl->changesByIdx[ref->GetIdx()])) {
+        RequestSave(*ref);
+      }
+    }
+  };
 
   try {
+    if (retrying) {
+      // Keep the entire new batch together, including paired merchant writes.
+      // Supersede retained rows by persistent identity, independently of idx.
+      auto combined = pImpl->changesByIdx;
+      std::set<FormDesc> pendingIdentities;
+      for (const auto& row : combined) {
+        if (row) pendingIdentities.insert(row->formDesc);
+      }
+      for (const auto& row : queued) {
+        if (row && !pendingIdentities.count(row->formDesc)) combined.push_back(row);
+      }
+      queued.swap(combined);
+      pImpl->changesByIdx.clear();
+      pImpl->changesByIdxEmpty = true;
+      previousSize = queued.size();
+    }
     // Metadata belongs to this submitted snapshot, not the actor's later state.
     std::vector<std::pair<Impl::ReceiptKey, Impl::SavedReceipt>> receipts;
-    for (const auto& changeForm : pImpl->changesByIdx) {
+    for (const auto& changeForm : queued) {
       if (!changeForm) {
         continue;
       }
@@ -946,8 +1019,12 @@ void WorldState::TickSaveStorage(const std::chrono::system_clock::time_point&)
       }
     }
     std::weak_ptr<MerchantTransferController> controller = pImpl->merchantTransfers;
-    auto transfers = pImpl->merchantTransfers->CaptureSubmittedBatch(pImpl->changesByIdx);
-    pImpl->saveStorage->Upsert(std::move(pImpl->changesByIdx),
+    auto transfers = pImpl->merchantTransfers->CaptureSubmittedBatch(queued);
+    // Publish an empty pending queue before invoking storage. Inline callbacks
+    // must enqueue into the next batch, never the buffer being submitted.
+    submitted.swap(queued);
+    if (!retrying) pImpl->changesByIdxEmpty = true;
+    storage->Upsert(std::move(submitted),
       [pImpl_, receipts = std::move(receipts), controller, transfers = std::move(transfers)] {
         pImpl_->saveStorageBusy = false;
         for (const auto& saved : receipts) {
@@ -962,31 +1039,24 @@ void WorldState::TickSaveStorage(const std::chrono::system_clock::time_point&)
         }
         if (auto current = controller.lock()) current->AcknowledgeSubmittedBatch(transfers);
       });
-    pImpl->changesByIdxEmpty = true;
   } catch (std::exception& e) {
-    pImpl->saveStorageBusy = false;
+    recoverSubmission();
     spdlog::error("TickSaveStorage - Upsert failed with {}", e.what());
-    // Upsert may consume the rvalue buffer before throwing. Reconstruct
-    // current snapshots for the submitted identities; retain any buffer
-    // contents if failure happened before the move. Do not clear retries.
-    for (auto& submitted : submittedForms) {
-      auto form = submitted.lock();
-      if (!form) continue;
-      auto current = forms.find(form->GetFormId());
-      auto ref = form->AsObjectReference();
-      if (ref && current != forms.end() && current->second == form) RequestSave(*ref);
-    }
     return;
+  } catch (...) {
+    recoverSubmission();
+    throw;
   }
 
-  pImpl->changesByIdx.clear();
-
-  bool recycleSuccess =
-    pImpl->saveStorage->GetRecycledChangeFormsBuffer(pImpl->changesByIdx);
-
-  if (!recycleSuccess) {
-    // Just resize to previous size, at least not to resize every RequestSave
-    pImpl->changesByIdx.resize(previousSize);
+  // Recycling can also call back into the world. Never pass its live pending
+  // queue to storage or replace work queued by either callback boundary.
+  std::vector<std::optional<MpChangeForm>> recycled;
+  const bool recycleSuccess = storage->GetRecycledChangeFormsBuffer(recycled);
+  if (pImpl->changesByIdxEmpty) {
+    if (!recycleSuccess) {
+      recycled.resize(previousSize);
+    }
+    pImpl->changesByIdx = std::move(recycled);
   }
 }
 
