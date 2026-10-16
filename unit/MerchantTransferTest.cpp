@@ -459,10 +459,18 @@ TEST_CASE("MerchantChangeJoinsSameFileDatabaseBatchUpsertAsHuman",
   auto offer = transfers.Find(began.offerId);
   REQUIRE(offer);
   REQUIRE(offer->state == MerchantTransferController::State::AwaitingSave);
+  bool profileChanged = false;
+  SECTION("same submitted profiles") {}
+  SECTION("merchant profile changes before acknowledgement") {
+    REQUIRE(merchant.GetProfileId() == -1);
+    merchant.RegisterProfileId(0);
+    profileChanged = true;
+  }
   storage->Commit();
   server.Tick();
   offer = transfers.Find(began.offerId);
-  REQUIRE(offer->state == MerchantTransferController::State::Durable);
+  REQUIRE(offer->state == (profileChanged ? MerchantTransferController::State::AwaitingSave
+                                        : MerchantTransferController::State::Durable));
 }
 
 TEST_CASE("MerchantDurabilityAckIsBatchUpsertCompletionNotInventoryReceipt",
