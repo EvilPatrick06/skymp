@@ -308,6 +308,14 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
                    v ? "allowed" : "skipped");
     }
 
+    if (serverSettings.find("equipItemAttemptEnabled") !=
+        serverSettings.end()) {
+      bool v = serverSettings.at("equipItemAttemptEnabled").get<bool>();
+      partOne->worldState.equipItemAttemptEnabled = v;
+      spdlog::info("the gamemode's per-item equip check is {}",
+                   v ? "on" : "off");
+    }
+
     if (serverSettings.find("equipmentSlotCheckEnabled") !=
         serverSettings.end()) {
       bool v = serverSettings.at("equipmentSlotCheckEnabled").get<bool>();
