@@ -404,7 +404,7 @@ private:
     {
       auto count = state.publicOperations.load();
       for (;;) {
-        if (count == std::numeric_limits<uint64_t>::max()) {
+        if (count == (std::numeric_limits<uint64_t>::max)()) {
           state.failed = true;
           throw std::overflow_error("Too many active save operations");
         }
