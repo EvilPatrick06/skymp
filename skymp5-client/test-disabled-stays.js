@@ -33,6 +33,8 @@
 //
 // Against the code before the change (MODEL=<that copy>), 2, 3, 4 and 6 fail:
 // the second streams come back on, and a reference turned on gets two enables.
+// Against the code before #2382, 5c, 5d, 5e, 5f and 5g fail: the flora redraw
+// disables and enables, and a harvest asks a random NPC to activate it.
 'use strict';
 
 const fs = require('fs');
@@ -170,10 +172,41 @@ yes('5a. a flora\'s harvested flag is its own', flower.harvested === true && flo
 const bush = makeRef(0x3001, FormType.Flora);
 stream(bush, false, true);
 yes('5b. and its disabled flag is its own', bush.harvested === false && bush.disabled === true);
-// Not checked: a flora made unharvested is disabled and enabled again to be
-// drawn again (applyModelIsHarvested, upstream), so a flora the server holds
-// disabled while it is made unharvested in the same stream ends enabled. That
-// redraw is upstream's, untouched here, and written on #2328.
+// 5c to 5h, Thornswood #2382: a tree or flora is shown harvested or not by its
+// flag alone. SKSE's SetHarvested queues the engine's harvest model update, so
+// nothing is disabled and enabled again to draw it, and no NPC is asked to pick it.
+const held = makeRef(0x3002, FormType.Flora);
+held.harvested = true;
+stream(held, true, true);
+const held0 = held.calls.length;
+stream(held, false, true);
+yes('5c. a flora the server holds disabled, made unharvested in the same stream, stays disabled',
+  held.disabled === true && held.harvested === false);
+yes('5d. ...and that queued no enable', held.calls.slice(held0).indexOf('enable') === -1);
+const pick = makeRef(0x3003, FormType.Flora);
+const pick0 = pick.calls.length;
+stream(pick, true, false);
+yes('5e. a flora made harvested has its flag set, stays enabled, and queues no enable or disable',
+  pick.harvested === true && pick.disabled === false && pick.calls.length === pick0);
+const pick1 = pick.calls.length;
+stream(pick, false, false);
+yes('5f. made unharvested again: the flag is cleared, with no enable or disable',
+  pick.harvested === false && pick.disabled === false && pick.calls.length === pick1);
+let activated = 0, searched = 0;
+const tree = makeRef(0x3004, FormType.Tree);
+tree.activate = function () { activated++; };
+const findWas = Game.findRandomActor;
+Game.findRandomActor = function () { searched++; return { getFormID: function () { return 0x5000; } }; };
+const tree0 = tree.calls.length;
+M.applyModelIsHarvested(tree, true);
+runVm();
+Game.findRandomActor = findWas;
+yes('5g. formView\'s path (applyModelIsHarvested alone) on a tree: harvested by its flag, no NPC asked, nothing activated',
+  tree.harvested === true && activated === 0 && searched === 0 && tree.calls.length === tree0);
+const again = tree.calls.length;
+M.applyModelIsHarvested(tree, true);
+runVm();
+yes('5h. and asked again with the same flag, nothing at all', tree.calls.length === again && tree.harvested === true);
 
 // 6.
 yes('6. no stream of anything but a tree or flora queued more than one enable or disable (' + most + ' at most)', most <= 1);
