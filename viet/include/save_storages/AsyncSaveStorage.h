@@ -1,8 +1,11 @@
 #pragma once
 #include "ISaveStorage.h"
+#include "SettlementObservation.h"
 #include "database_drivers/IDatabase.h"
 #include <atomic>
 #include <chrono>
+#include <exception>
+#include <limits>
 #include <list>
 #include <mutex>
 #include <spdlog/logger.h>
@@ -10,6 +13,8 @@
 #include <thread>
 
 namespace Viet {
+
+struct AsyncSaveStorageTestPeer;
 
 template <typename T, typename FormDescType, typename FilterType>
 class AsyncSaveStorage : public ISaveStorage<T, FormDescType, FilterType>
@@ -66,6 +71,7 @@ public:
     std::shared_ptr<spdlog::logger> logger = nullptr, std::string name = "",
     std::optional<uint32_t> sleepTimeMs = std::nullopt)
     : durableUpsert(dbImpl && dbImpl->SupportsDurableUpsert())
+    , ownerThread(std::this_thread::get_id())
     , pImpl(std::make_shared<Impl>())
   {
     pImpl->name = std::move(name);
@@ -83,29 +89,100 @@ public:
   ~AsyncSaveStorage()
   {
     pImpl->destroyed = true;
-    pImpl->thr->join();
+    if (pImpl->thr->joinable()) {
+      pImpl->thr->join();
+    }
   }
 
   bool SupportsDurableUpsert() const noexcept override { return durableUpsert; }
 
+  bool IsSettled() const override
+  {
+    if (std::this_thread::get_id() != ownerThread) {
+      return false;
+    }
+    auto& state = *pImpl;
+    if (state.publicOperations || state.ticking || state.workerActive ||
+        state.failed) {
+      return false;
+    }
+    try {
+      std::unique_lock errors(state.share2.m, std::try_to_lock);
+      if (!errors.owns_lock()) return false;
+      std::unique_lock upserts(state.share3.m, std::try_to_lock);
+      if (!upserts.owns_lock()) return false;
+      std::unique_lock upsertCallbacks(state.share4.m, std::try_to_lock);
+      if (!upsertCallbacks.owns_lock()) return false;
+      std::unique_lock iterateCallbacks(state.share5.m, std::try_to_lock);
+      if (!iterateCallbacks.owns_lock()) return false;
+      std::unique_lock iterates(state.share6.m, std::try_to_lock);
+      if (!iterates.owns_lock()) return false;
+      // Failure is read last: a queued operation can become active and fail
+      // between the initial observation and acquiring the queue locks.
+      return state.share2.exceptions.empty() &&
+        state.share3.upsertTasks.empty() &&
+        state.share4.upsertCallbacksToFire.empty() &&
+        state.share5.iterateCallbacksToFire.empty() &&
+        state.share6.iterateTasks.empty() &&
+        state.tickStore.preparedUpsertCallbacksToFire.empty() &&
+        state.tickStore.preparedIterateCallbacksToFire.empty() &&
+        SaveStorageDetail::NoActiveOrFailedOperations(
+          [&] { return state.publicOperations.load(); },
+          [&] { return state.workerActive.load(); },
+          [&] { return state.failed.load(); });
+    } catch (...) {
+      state.failed = true;
+      throw;
+    }
+  }
+
   void IterateSync(const IterateSyncCallback& cb) override
   {
-    std::lock_guard l(pImpl->share.m);
-    pImpl->share.dbImpl->Iterate(cb, std::nullopt);
+    OperationGuard operation(*pImpl);
+    try {
+      std::lock_guard l(pImpl->share.m);
+      std::exception_ptr callbackFailure;
+      pImpl->share.dbImpl->Iterate([&](const T& value) {
+        if (callbackFailure) std::rethrow_exception(callbackFailure);
+        try {
+          cb(value);
+        } catch (...) {
+          pImpl->failed = true;
+          callbackFailure = std::current_exception();
+          throw;
+        }
+      }, std::nullopt);
+      if (callbackFailure) std::rethrow_exception(callbackFailure);
+    } catch (...) {
+      pImpl->failed = true;
+      throw;
+    }
   }
 
   void Upsert(std::vector<std::optional<T>>&& changeForms,
               const UpsertCallback& cb) override
   {
-    std::lock_guard l(pImpl->share3.m);
-    pImpl->share3.upsertTasks.push_back({ std::move(changeForms), cb });
+    OperationGuard operation(*pImpl);
+    try {
+      std::lock_guard l(pImpl->share3.m);
+      pImpl->share3.upsertTasks.push_back({ std::move(changeForms), cb });
+    } catch (...) {
+      pImpl->failed = true;
+      throw;
+    }
   }
 
   void Iterate(const IterateCallback& cb,
                const std::optional<FilterType>& filter) override
   {
-    std::lock_guard l(pImpl->share6.m);
-    pImpl->share6.iterateTasks.push_back({ filter, cb });
+    OperationGuard operation(*pImpl);
+    try {
+      std::lock_guard l(pImpl->share6.m);
+      pImpl->share6.iterateTasks.push_back({ filter, cb });
+    } catch (...) {
+      pImpl->failed = true;
+      throw;
+    }
   }
 
   uint32_t GetNumFinishedUpserts() const override
@@ -120,35 +197,51 @@ public:
 
   void Tick() override
   {
-    {
-      std::lock_guard l(pImpl->share2.m);
-      if (!pImpl->share2.exceptions.empty()) {
-        auto exceptionPtr = std::move(pImpl->share2.exceptions.front());
-        pImpl->share2.exceptions.pop_front();
-        std::rethrow_exception(exceptionPtr);
-      }
+    if (std::this_thread::get_id() != ownerThread || pImpl->ticking) {
+      pImpl->failed = true;
+      throw std::runtime_error("Save callbacks require a nonrecursive owner tick");
     }
-
-    TickUpsertCallbacks();
-    TickIterateCallbacks();
+    OperationGuard operation(*pImpl);
+    TickGuard ticking(*pImpl);
+    try {
+      {
+        std::lock_guard l(pImpl->share2.m);
+        if (!pImpl->share2.exceptions.empty()) {
+          auto exceptionPtr = std::move(pImpl->share2.exceptions.front());
+          pImpl->share2.exceptions.pop_front();
+          std::rethrow_exception(exceptionPtr);
+        }
+      }
+      TickUpsertCallbacks();
+      TickIterateCallbacks();
+    } catch (...) {
+      pImpl->failed = true;
+      throw;
+    }
   }
 
   bool GetRecycledChangeFormsBuffer(
     std::vector<std::optional<T>>& changeForms) override
   {
-    std::lock_guard l(pImpl->share4.m);
-    if (pImpl->share4.recycledChangeFormsBuffers.empty()) {
-      return false;
+    OperationGuard operation(*pImpl);
+    try {
+      std::lock_guard l(pImpl->share4.m);
+      if (pImpl->share4.recycledChangeFormsBuffers.empty()) {
+        return false;
+      }
+      changeForms = std::move(pImpl->share4.recycledChangeFormsBuffers.front());
+      pImpl->share4.recycledChangeFormsBuffers.pop_front();
+      return true;
+    } catch (...) {
+      pImpl->failed = true;
+      throw;
     }
-
-    changeForms = std::move(pImpl->share4.recycledChangeFormsBuffers.front());
-    pImpl->share4.recycledChangeFormsBuffers.pop_front();
-    return true;
   }
 
   const std::string& GetName() const override { return pImpl->name; }
 
 private:
+  friend struct AsyncSaveStorageTestPeer;
   enum class CallbackGarbageMark
   {
     None,
@@ -297,11 +390,46 @@ private:
 
     std::unique_ptr<std::thread> thr;
     std::atomic<bool> destroyed = false;
+    std::atomic<bool> workerActive = false;
+    std::atomic<bool> failed = false;
+    std::atomic<uint64_t> publicOperations = 0;
+    bool ticking = false;
     uint32_t sleepTimeMs = 100;
+  };
+
+  struct OperationGuard
+  {
+    Impl& state;
+    explicit OperationGuard(Impl& value) : state(value)
+    {
+      auto count = state.publicOperations.load();
+      for (;;) {
+        if (count == (std::numeric_limits<uint64_t>::max)()) {
+          state.failed = true;
+          throw std::overflow_error("Too many active save operations");
+        }
+        if (state.publicOperations.compare_exchange_weak(count, count + 1)) {
+          break;
+        }
+      }
+    }
+    ~OperationGuard() { --state.publicOperations; }
+    OperationGuard(const OperationGuard&) = delete;
+    OperationGuard& operator=(const OperationGuard&) = delete;
+  };
+
+  struct TickGuard
+  {
+    Impl& state;
+    explicit TickGuard(Impl& value) : state(value) { state.ticking = true; }
+    ~TickGuard() { state.ticking = false; }
+    TickGuard(const TickGuard&) = delete;
+    TickGuard& operator=(const TickGuard&) = delete;
   };
 
   // Initialized before the constructor body can publish the worker thread.
   const bool durableUpsert;
+  const std::thread::id ownerThread;
   std::shared_ptr<Impl> pImpl;
 
   static void ProcessUpserts(Impl* pImpl)
@@ -341,6 +469,7 @@ private:
             a.optionalRecycledChangeFormsBuffer = std::move(tmp);
           }
         } catch (...) {
+          pImpl->failed = true;
           a.optionalExceptionToFire = std::current_exception();
         }
       }
@@ -400,13 +529,27 @@ private:
       for (auto& t : tasks) {
         try {
           std::vector<T> buffer;
+          std::exception_ptr collectionFailure;
           pImpl->share.dbImpl->Iterate(
-            [&](const T& changeForm) { buffer.push_back(changeForm); },
+            [&](const T& changeForm) {
+              if (collectionFailure) {
+                std::rethrow_exception(collectionFailure);
+              }
+              try {
+                buffer.push_back(changeForm);
+              } catch (...) {
+                pImpl->failed = true;
+                collectionFailure = std::current_exception();
+                throw;
+              }
+            },
             t.filter);
+          if (collectionFailure) std::rethrow_exception(collectionFailure);
           std::function<void()> callback =
             [cb = t.callback, buf = std::move(buffer)]() { cb(buf); };
           callbacksToFire.push_back(callback);
         } catch (...) {
+          pImpl->failed = true;
           exceptionsToFire.push_back(std::current_exception());
         }
       }
@@ -433,8 +576,12 @@ private:
     while (!pImpl->destroyed) {
       std::this_thread::sleep_for(
         std::chrono::milliseconds(pImpl->sleepTimeMs));
+      pImpl->workerActive = true;
       ProcessUpserts(pImpl);
       ProcessIterates(pImpl);
+      // Processing returns after destroying its local callback copies. An
+      // unexpected escaping worker exception remains fatal, never settled.
+      pImpl->workerActive = false;
     }
   }
 

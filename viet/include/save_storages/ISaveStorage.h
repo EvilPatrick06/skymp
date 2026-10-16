@@ -23,6 +23,10 @@ public:
   // This does not certify current queue health or a stopped process.
   virtual bool SupportsDurableUpsert() const noexcept { return false; }
 
+  // Instantaneous owner-thread observation; the caller excludes new producers.
+  // This does not certify durability, restoration or a stopped process.
+  virtual bool IsSettled() const { return false; }
+
   virtual void IterateSync(const IterateSyncCallback& cb) = 0;
   virtual void Upsert(std::vector<std::optional<T>>&& changeForms,
                       const UpsertCallback& cb) = 0;
