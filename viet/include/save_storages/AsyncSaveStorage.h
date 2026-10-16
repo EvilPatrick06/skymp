@@ -65,7 +65,8 @@ public:
     const std::shared_ptr<IDatabase<T, FormDescType, FilterType>>& dbImpl,
     std::shared_ptr<spdlog::logger> logger = nullptr, std::string name = "",
     std::optional<uint32_t> sleepTimeMs = std::nullopt)
-    : pImpl(std::make_shared<Impl>())
+    : durableUpsert(dbImpl && dbImpl->SupportsDurableUpsert())
+    , pImpl(std::make_shared<Impl>())
   {
     pImpl->name = std::move(name);
     pImpl->logger = logger;
@@ -84,6 +85,8 @@ public:
     pImpl->destroyed = true;
     pImpl->thr->join();
   }
+
+  bool SupportsDurableUpsert() const noexcept override { return durableUpsert; }
 
   void IterateSync(const IterateSyncCallback& cb) override
   {
@@ -297,6 +300,8 @@ private:
     uint32_t sleepTimeMs = 100;
   };
 
+  // Initialized before the constructor body can publish the worker thread.
+  const bool durableUpsert;
   std::shared_ptr<Impl> pImpl;
 
   static void ProcessUpserts(Impl* pImpl)

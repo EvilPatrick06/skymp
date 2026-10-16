@@ -67,6 +67,12 @@ if(BUILD_UNIT_TESTS AND NOT EMSCRIPTEN)
   apply_default_settings(TARGETS private-ledger-test)
   add_test(NAME private_ledger COMMAND private-ledger-test "${CMAKE_BINARY_DIR}/private-ledger-tests")
 
+  # This contract runner must not use unit/main.cpp, which loads game plugins.
+  add_executable(save-capability-test "${CMAKE_SOURCE_DIR}/misc/tests/save_capability_test.cpp")
+  target_link_libraries(save-capability-test PRIVATE viet)
+  apply_default_settings(TARGETS save-capability-test)
+  add_test(NAME save_capability COMMAND save-capability-test)
+
   #
   # ctest tests
   #
