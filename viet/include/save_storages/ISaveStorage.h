@@ -18,6 +18,11 @@ public:
 
   virtual ~ISaveStorage() = default;
 
+  // Static, side-effect-free opt-in: a successful whole-batch acknowledgement
+  // follows checked persistence barriers. Failures must not be acknowledged.
+  // This does not certify current queue health or a stopped process.
+  virtual bool SupportsDurableUpsert() const noexcept { return false; }
+
   virtual void IterateSync(const IterateSyncCallback& cb) = 0;
   virtual void Upsert(std::vector<std::optional<T>>&& changeForms,
                       const UpsertCallback& cb) = 0;
