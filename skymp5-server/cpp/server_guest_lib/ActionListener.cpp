@@ -15,6 +15,7 @@
 #include "gamemode_events/CustomEvent.h"
 #include "gamemode_events/EatItemEvent.h"
 #include "gamemode_events/UpdateAppearanceAttemptEvent.h"
+#include "gamemode_events/EquipItemAttemptEvent.h"
 #include "gamemode_events/UpdateEquipmentAttemptEvent.h"
 #include "script_objects/EspmGameObject.h"
 #include <algorithm>
@@ -540,9 +541,76 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
     }
   }
 
+  // THORNSWOOD #2262. The gamemode's say over single items. Each item this
+  // update puts on that the server's record does not already have on is
+  // asked about once, as onEquipItemAttempt, before anything is stored. A
+  // refused item is kept in the record as in the pack, not worn, and the rest
+  // of the update goes through; the owner's game is told to take it off and
+  // keeps it. A login is the same path: the first update after spawning names
+  // what the game put back on, and the server's record of a refused item says
+  // not worn. Off unless the server setting equipItemAttemptEnabled is on.
+  std::vector<uint32_t> refusedItemIds;
+  if (isAllowed && actor->GetParent() &&
+      actor->GetParent()->equipItemAttemptEnabled) {
+    std::unordered_set<uint32_t> alreadyWornIds;
+    for (const auto& entry : actor->GetEquipment().inv.entries) {
+      if (entry.GetWorn() != Inventory::Worn::None) {
+        alreadyWornIds.insert(entry.baseId);
+      }
+    }
+    std::unordered_set<uint32_t> asked;
+    std::unordered_set<uint32_t> refused;
+    for (const auto& entry : equipmentInv.entries) {
+      if (entry.GetWorn() == Inventory::Worn::None ||
+          alreadyWornIds.count(entry.baseId) ||
+          !asked.insert(entry.baseId).second) {
+        continue;
+      }
+      EquipItemAttemptEvent equipItemAttemptEvent(actor, entry.baseId);
+      if (!equipItemAttemptEvent.Fire(actor->GetParent())) {
+        refused.insert(entry.baseId);
+        refusedItemIds.push_back(entry.baseId);
+      }
+    }
+    if (!refused.empty()) {
+      for (auto& entry : equipmentInv.entries) {
+        if (refused.count(entry.baseId)) {
+          entry.SetWorn(Inventory::Worn::None);
+        }
+      }
+      for (uint32_t id : refusedItemIds) {
+        spdlog::info("ActionListener::OnUpdateEquipment {:x} - the gamemode "
+                     "refused item {:x}; kept the rest of the update",
+                     actorFormId, id);
+      }
+    }
+  }
+
   if (isAllowed) {
-    SendToNeighbours(msg.idx, rawMsgData, true);
+    if (refusedItemIds.empty()) {
+      SendToNeighbours(msg.idx, rawMsgData, true);
+    } else {
+      // The neighbours get what was stored, not the client's bytes, so
+      // nobody sees the refused item in hand.
+      UpdateEquipmentMessage stored;
+      stored.idx = msg.idx;
+      stored.data = data;
+      SendToNeighbours(msg.idx, rawMsgData.userId, stored, true);
+    }
     actor->SetEquipment(data);
+    for (uint32_t itemId : refusedItemIds) {
+      SpSnippetObjectArgument itemArg;
+      itemArg.formId = itemId;
+      itemArg.type = "Form";
+      std::vector<std::optional<
+        std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+        args;
+      args.push_back(itemArg);
+      args.push_back(false);
+      args.push_back(true);
+      SpSnippet("Actor", "UnequipItem", args, actor->GetFormId())
+        .Execute(actor, SpSnippetMode::kNoReturnResult);
+    }
   } else {
     actor->SendInventoryUpdate();
 
