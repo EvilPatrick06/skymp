@@ -7,6 +7,7 @@
 #include "MerchantTransferController.h"
 #include "MpChangeForms.h"
 #include "MpObjectReference.h"
+#include "PendingSaveBatch.h"
 #include "libespm/GroupUtils.h"
 #include "papyrus-vm/Reader.h"
 #include "papyrus-vm/Utils.h"
@@ -30,6 +31,51 @@
 
 namespace {
 
+using SaveOrigin = std::weak_ptr<MpForm>;
+using PendingSave = PendingSaveDetail::Entry<MpChangeForm, SaveOrigin>;
+using PendingChanges = std::map<FormDesc, PendingSave>;
+using SaveBatch = PendingSaveDetail::Batch<MpChangeForm, FormDesc, SaveOrigin>;
+
+class SavingSuspension
+{
+public:
+  SavingSuspension(bool& flag, bool suspend) : flag(flag), previous(flag)
+  { flag = flag || suspend; }
+  ~SavingSuspension() { flag = previous; }
+  SavingSuspension(const SavingSuspension&) = delete;
+  SavingSuspension& operator=(const SavingSuspension&) = delete;
+private:
+  bool& flag;
+  const bool previous;
+};
+
+void QueueChangeForm(PendingChanges& pending, MpChangeForm&& snapshot,
+                     SaveOrigin origin)
+{
+  auto found = pending.find(snapshot.formDesc);
+  if (found == pending.end()) {
+    const auto identity = snapshot.formDesc;
+    pending.emplace(identity, PendingSave{std::move(snapshot), std::move(origin)});
+    return;
+  }
+  auto& queued = found->second.snapshot;
+  // Prepare optional maps before replacing the accepted snapshot on MSVC.
+  static_assert(std::is_nothrow_move_assignable_v<std::remove_reference_t<decltype(*snapshot.setNodeTextureSet)>>);
+  static_assert(std::is_nothrow_move_assignable_v<std::remove_reference_t<decltype(*snapshot.setNodeScale)>>);
+  const bool hadTextures = queued.setNodeTextureSet.has_value();
+  const bool hadScales = queued.setNodeScale.has_value();
+  try {
+    if (snapshot.setNodeTextureSet && !hadTextures) queued.setNodeTextureSet.emplace();
+    if (snapshot.setNodeScale && !hadScales) queued.setNodeScale.emplace();
+  } catch (...) {
+    if (!hadTextures) queued.setNodeTextureSet.reset();
+    if (!hadScales) queued.setNodeScale.reset();
+    throw;
+  }
+  queued = std::move(snapshot);
+  found->second.origin = std::move(origin);
+}
+
 struct RelootTimeForTypesEntry
 {
   std::string recordType;
@@ -49,11 +95,11 @@ struct WorldState::Impl
     std::weak_ptr<MpForm> form;
   };
   std::map<ReceiptKey, SavedReceipt> savedInventoryReceipts;
-  std::vector<std::optional<MpChangeForm>> changesByIdx;
-  bool changesByIdxEmpty = true;
+  PendingChanges pendingChanges;
+  std::vector<SaveOrigin> initializingForms;
   // Unconsumed failed submissions own their snapshots independently of actor
   // indices, which can be reused by newly queued actors before the next pump.
-  std::vector<std::optional<MpChangeForm>> retryChanges;
+  SaveBatch retryBatch;
 
   std::shared_ptr<
     Viet::ISaveStorage<MpChangeForm, FormDesc, std::vector<FormDesc>>>
@@ -146,8 +192,8 @@ void WorldState::AttachSaveStorage(
     return;
   }
   if (pImpl->saveStorage &&
-      (pImpl->saveStorageBusy || !pImpl->changesByIdxEmpty ||
-       !pImpl->retryChanges.empty())) {
+      (pImpl->saveStorageBusy || !pImpl->pendingChanges.empty() ||
+       !pImpl->retryBatch.rows.empty())) {
     throw std::runtime_error("Cannot replace save storage with pending saves");
   }
   spdlog::info("AttachSaveStorage - db fixes installed");
@@ -170,8 +216,16 @@ void WorldState::AddForm(std::unique_ptr<MpForm> form, uint32_t formId,
       fmt::format("Form with id {:x} already exists", formId));
   }
 
+  // Bind Init saves without publishing a partially initialized form. Keep all
+  // nested owners available when an inner Init requests a save of its parent.
+  auto ownedForm = std::shared_ptr<MpForm>(std::move(form));
+  auto& initializing = pImpl->initializingForms;
+  initializing.push_back(ownedForm);
+  Viet::ScopedTask<std::vector<SaveOrigin>> restoreInitializing(
+    [](auto& owners) { owners.pop_back(); }, initializing);
+
   // Assign formIndex before Init
-  if (auto refr = form->AsObjectReference()) {
+  if (auto refr = ownedForm->AsObjectReference()) {
     if (!formIdxManager) {
       formIdxManager.reset(new MakeID(FormIndex::g_invalidIdx - 1));
     }
@@ -192,9 +246,9 @@ void WorldState::AddForm(std::unique_ptr<MpForm> form, uint32_t formId,
   // inserted and is freed on the way out, so its lookup entry and its index
   // are given back here rather than left pointing at it.
   try {
-    form->Init(this, formId, optionalChangeFormToApply != nullptr);
+    ownedForm->Init(this, formId, optionalChangeFormToApply != nullptr);
   } catch (...) {
-    if (auto refr = form->AsObjectReference()) {
+    if (auto refr = ownedForm->AsObjectReference()) {
       ForgetRefrByIdx(refr);
       if (formIdxManager) {
         formIdxManager->DestroyID(refr->idx);
@@ -203,7 +257,7 @@ void WorldState::AddForm(std::unique_ptr<MpForm> form, uint32_t formId,
     throw;
   }
 
-  auto it = forms.insert({ formId, std::move(form) }).first;
+  auto it = forms.insert({ formId, std::move(ownedForm) }).first;
 
   if (optionalChangeFormToApply) {
     auto refr = it->second->AsObjectReference();
@@ -235,9 +289,7 @@ void WorldState::Tick()
 void WorldState::LoadChangeForm(const MpChangeForm& changeForm,
                                 const FormCallbacks& callbacks)
 {
-  Viet::ScopedTask<bool> task([](bool& st) { st = false; },
-                              pImpl->formLoadingInProgress);
-  pImpl->formLoadingInProgress = true;
+  SavingSuspension loading(pImpl->formLoadingInProgress, true);
 
   std::unique_ptr<MpObjectReference> form;
 
@@ -320,24 +372,7 @@ void WorldState::LoadChangeForm(const MpChangeForm& changeForm,
                                std::to_string(changeForm.recType));
   }
 
-  auto formRawPtr = reinterpret_cast<MpObjectReference*>(form.get());
   AddForm(std::move(form), formId, false, &changeForm);
-  auto idx = formRawPtr->GetIdx();
-
-  // EnsureBaseContainerAdded forces saving here.
-  // We do not want characters to save when they are load partially
-  // This behaviour results in
-  // https://github.com/skyrim-multiplayer/issue-tracker/issues/64
-
-  // So we expect that RequestSave does nothing in this case:
-
-  if (pImpl->changesByIdx.size() > idx &&
-      pImpl->changesByIdx[idx] != std::nullopt) {
-    assert(false);
-
-    // For Release configuration we just manually remove formId from changes
-    pImpl->changesByIdx[idx] = std::nullopt;
-  }
 }
 
 void WorldState::RequestReloot(MpObjectReference& ref,
@@ -384,12 +419,15 @@ void WorldState::RequestSave(MpObjectReference& ref)
     return spdlog::error("RequestSave {:x} - Invalid index", ref.GetFormId());
   }
 
-  if (pImpl->changesByIdx.size() <= idx) {
-    pImpl->changesByIdx.resize(idx + 1);
+  auto current = forms.find(ref.GetFormId());
+  SaveOrigin origin;
+  if (current != forms.end() && current->second.get() == &ref) origin = current->second;
+  else {
+    for (auto it = pImpl->initializingForms.rbegin(); it != pImpl->initializingForms.rend(); ++it) {
+      if (it->lock().get() == &ref) { origin = *it; break; }
+    }
   }
-
-  pImpl->changesByIdx[idx] = ref.GetChangeForm();
-  pImpl->changesByIdxEmpty = false;
+  QueueChangeForm(pImpl->pendingChanges, ref.GetChangeForm(), std::move(origin));
 }
 
 bool WorldState::RequestPreparedSave(MpObjectReference& ref,
@@ -399,35 +437,10 @@ bool WorldState::RequestPreparedSave(MpObjectReference& ref,
   const auto idx = ref.GetIdx();
   if (pImpl->formLoadingInProgress ||
       idx == FormIndex::g_invalidIdx || current == forms.end() ||
-      current->second.get() != &ref) return false;
+      current->second.get() != &ref ||
+      snapshot.formDesc != FormDesc::FromFormId(ref.GetFormId(), espmFiles)) return false;
 
-  // All throwing work precedes both queue publication and the live commit.
-  if (pImpl->changesByIdx.size() <= idx) pImpl->changesByIdx.resize(idx + 1);
-  auto& queued = pImpl->changesByIdx[idx];
-  if (queued) {
-    // optional<map> can allocate when moving into an empty optional on MSVC.
-    // Prepare those destinations first, restoring absence if allocation fails.
-    // With both maps engaged their move assignments cannot throw.
-    static_assert(std::is_nothrow_move_assignable_v<std::remove_reference_t<decltype(*snapshot.setNodeTextureSet)>>);
-    static_assert(std::is_nothrow_move_assignable_v<std::remove_reference_t<decltype(*snapshot.setNodeScale)>>);
-    const bool hadTextures = queued->setNodeTextureSet.has_value();
-    const bool hadScales = queued->setNodeScale.has_value();
-    try {
-      if (snapshot.setNodeTextureSet && !hadTextures) queued->setNodeTextureSet.emplace();
-      if (snapshot.setNodeScale && !hadScales) queued->setNodeScale.emplace();
-    } catch (...) {
-      if (!hadTextures) queued->setNodeTextureSet.reset();
-      if (!hadScales) queued->setNodeScale.reset();
-      throw;
-    }
-    *queued = std::move(snapshot);
-  }
-  else {
-    // MSVC's containers may allocate when move-constructing. Construction
-    // failure leaves this previously empty slot empty and the live actor intact.
-    queued.emplace(std::move(snapshot));
-  }
-  pImpl->changesByIdxEmpty = false;
+  QueueChangeForm(pImpl->pendingChanges, std::move(snapshot), current->second);
   return true;
 }
 
@@ -810,6 +823,9 @@ bool WorldState::LoadForm(uint32_t formId, std::stringstream* optionalOutTrace)
 
   auto mapping = br.GetCombMapping(lookupRes.fileIdx);
 
+  SavingSuspension loading(pImpl->formLoadingInProgress,
+                           pImpl->changeFormsForDeferredLoad.count(formId) != 0);
+
   bool attached =
     AttachEspmRecord(br, lookupRes.rec, *mapping, optionalOutTrace);
   if (optionalOutTrace) {
@@ -943,8 +959,7 @@ void WorldState::TickSaveStorageImpl(const std::chrono::system_clock::time_point
         continue;
       }
 
-      if (refr->GetIdx() >= pImpl->changesByIdx.size() ||
-          !pImpl->changesByIdx[refr->GetIdx()]) {
+      if (!pImpl->pendingChanges.count(changeForm->formDesc)) {
         RequestSave(*refr);
         numRequested++;
       }
@@ -966,85 +981,72 @@ void WorldState::TickSaveStorageImpl(const std::chrono::system_clock::time_point
     return;
   }
 
-  const bool retrying = !pImpl->retryChanges.empty();
-  if (pImpl->changesByIdxEmpty && !retrying) {
+  if (pImpl->pendingChanges.empty() && pImpl->retryBatch.rows.empty()) {
     return;
   }
 
-  pImpl->saveStorageBusy = true;
-
   auto pImpl_ = pImpl;
 
-  auto& queued = retrying ? pImpl->retryChanges : pImpl->changesByIdx;
-  auto previousSize = queued.size();
-  std::vector<std::weak_ptr<MpForm>> submittedForms;
-  std::vector<std::optional<MpChangeForm>> submitted;
+  std::vector<std::pair<FormDesc, SaveOrigin>> submittedForms;
+  SaveBatch submitted;
+  bool published = false;
   auto recoverSubmission = [&] {
     pImpl->saveStorageBusy = false;
-    if (!submitted.empty()) {
-      pImpl->retryChanges.swap(submitted);
-    }
-    std::set<uint32_t> retainedIds;
-    for (const auto& row : pImpl->retryChanges) {
-      if (row) retainedIds.insert(row->formDesc.ToFormId(espmFiles));
+    if (!published) return;
+    if (!submitted.rows.empty()) {
+      pImpl->retryBatch.Swap(submitted);
+      return;
     }
     // Preserve exact callback-queued snapshots, even if live state has since
     // changed silently. Reconstruct consumed identities only into empty slots.
-    for (auto& weak : submittedForms) {
+    for (auto& [identity, weak] : submittedForms) {
       auto form = weak.lock();
       if (!form) continue;
       auto current = forms.find(form->GetFormId());
       auto ref = form->AsObjectReference();
       if (ref && current != forms.end() && current->second == form &&
-          !retainedIds.count(form->GetFormId()) &&
-          (ref->GetIdx() >= pImpl->changesByIdx.size() ||
-           !pImpl->changesByIdx[ref->GetIdx()])) {
+          !pImpl->pendingChanges.count(identity)) {
         RequestSave(*ref);
       }
     }
   };
 
+  // Batch/map construction may allocate on MSVC. No callback can release busy
+  // if construction fails, so acquire it only after all recovery state exists.
+  pImpl->saveStorageBusy = true;
   try {
-    if (retrying) {
-      // Keep the entire new batch together, including paired merchant writes.
-      // Supersede retained rows by persistent identity, independently of idx.
-      auto combined = pImpl->changesByIdx;
-      std::set<FormDesc> pendingIdentities;
-      for (const auto& row : combined) {
-        if (row) pendingIdentities.insert(row->formDesc);
-      }
-      for (const auto& row : queued) {
-        if (row && !pendingIdentities.count(row->formDesc)) combined.push_back(row);
-      }
-      queued.swap(combined);
-      pImpl->changesByIdx.clear();
-      pImpl->changesByIdxEmpty = true;
-      previousSize = queued.size();
-    }
+    auto candidate = PendingSaveDetail::Prepare(pImpl->pendingChanges, pImpl->retryBatch);
+    submitted.Swap(candidate);
     // Metadata belongs to this submitted snapshot, not the actor's later state.
     std::vector<std::pair<Impl::ReceiptKey, Impl::SavedReceipt>> receipts;
-    for (const auto& changeForm : queued) {
+    std::vector<std::optional<MpChangeForm>> eligibleTransferRows;
+    for (const auto& changeForm : submitted.rows) {
       if (!changeForm) {
         continue;
       }
-      auto live = forms.find(changeForm->formDesc.ToFormId(espmFiles));
-      if (live != forms.end()) submittedForms.push_back(live->second);
+      const auto& binding = submitted.origins.at(changeForm->formDesc);
+      submittedForms.push_back({changeForm->formDesc, binding});
+      auto origin = binding.lock();
+      if (!origin) continue;
+      auto live = forms.find(origin->GetFormId());
+      auto actor = origin->AsActor();
+      if (live == forms.end() || live->second != origin || !actor ||
+          actor->GetProfileId() != changeForm->profileId) continue;
+      eligibleTransferRows.push_back(changeForm);
       if (changeForm->profileId <= 0) continue;
       auto key = Impl::ReceiptKey{changeForm->formDesc, changeForm->profileId};
       auto cached = pImpl->savedInventoryReceipts.find(key);
-      if (cached != pImpl->savedInventoryReceipts.end()) {
+      if (cached != pImpl->savedInventoryReceipts.end() &&
+          cached->second.form.lock() == origin) {
         auto dump = changeForm->dynamicFields.GetValueDump(
           MpObjectReference::kInventoryReceiptProperty);
-        receipts.push_back({key, {dump, cached->second.form}});
+        receipts.push_back({key, {dump, binding}});
       }
     }
     std::weak_ptr<MerchantTransferController> controller = pImpl->merchantTransfers;
-    auto transfers = pImpl->merchantTransfers->CaptureSubmittedBatch(queued);
-    // Publish an empty pending queue before invoking storage. Inline callbacks
-    // must enqueue into the next batch, never the buffer being submitted.
-    submitted.swap(queued);
-    if (!retrying) pImpl->changesByIdxEmpty = true;
-    storage->Upsert(std::move(submitted),
+    auto transfers = pImpl->merchantTransfers->CaptureSubmittedBatch(eligibleTransferRows);
+    // std::function construction may allocate, so finish it before publication.
+    decltype(storage)::element_type::UpsertCallback completion =
       [pImpl_, receipts = std::move(receipts), controller, transfers = std::move(transfers)] {
         pImpl_->saveStorageBusy = false;
         for (const auto& saved : receipts) {
@@ -1058,7 +1060,12 @@ void WorldState::TickSaveStorageImpl(const std::chrono::system_clock::time_point
           }
         }
         if (auto current = controller.lock()) current->AcknowledgeSubmittedBatch(transfers);
-      });
+      };
+    // Inline callbacks enqueue into the next batch, not the submitted buffer.
+    pImpl->pendingChanges.clear();
+    pImpl->retryBatch.Clear();
+    published = true;
+    storage->Upsert(std::move(submitted.rows), completion);
   } catch (std::exception& e) {
     pImpl->saveStorageFailed = true;
     recoverSubmission();
@@ -1073,13 +1080,7 @@ void WorldState::TickSaveStorageImpl(const std::chrono::system_clock::time_point
   // Recycling can also call back into the world. Never pass its live pending
   // queue to storage or replace work queued by either callback boundary.
   std::vector<std::optional<MpChangeForm>> recycled;
-  const bool recycleSuccess = storage->GetRecycledChangeFormsBuffer(recycled);
-  if (pImpl->changesByIdxEmpty) {
-    if (!recycleSuccess) {
-      recycled.resize(previousSize);
-    }
-    pImpl->changesByIdx = std::move(recycled);
-  }
+  storage->GetRecycledChangeFormsBuffer(recycled);
 }
 
 void WorldState::TickTimers(const std::chrono::system_clock::time_point&)
