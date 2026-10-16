@@ -6,6 +6,7 @@
 #include <chrono>
 #include <filesystem>
 #include <functional>
+#include <thread>
 
 extern espm::Loader& GetEspmLoader();
 
@@ -370,4 +371,130 @@ TEST_CASE("Failed storage batches recover by form identity", "[save-pump]")
   };
   server.worldState.Tick();
   REQUIRE(storage->Read(actor).position == NiPoint3{9, 9, 9});
+}
+
+TEST_CASE("Save failure observation starts clear", "[save-failure]")
+{
+  WorldState empty;
+  REQUIRE_FALSE(empty.HasSaveStorageFailure());
+  empty.Tick();
+  REQUIRE_FALSE(empty.HasSaveStorageFailure());
+  PartOne server;
+  server.AttachEspm(&GetEspmLoader());
+  auto storage = std::make_shared<CallbackFileStorage>();
+  server.AttachSaveStorage(storage);
+  AddHuman(server);
+  server.worldState.Tick();
+  REQUIRE(storage->writes == 1);
+  REQUIRE_FALSE(server.worldState.HasSaveStorageFailure());
+}
+
+TEST_CASE("Every observed pump failure stays latched", "[save-failure]")
+{
+  PartOne server;
+  server.AttachEspm(&GetEspmLoader());
+  auto storage = std::make_shared<CallbackFileStorage>();
+  server.AttachSaveStorage(storage);
+  AddHuman(server);
+  bool escapes = false, nonstandard = false;
+  bool checkBeforeResubmission = false, sawFailureBeforeSubmission = false;
+  SECTION("handled generic tick error") {
+    storage->onTick = [] { throw std::runtime_error("injected tick failure"); };
+    checkBeforeResubmission = true;
+  }
+  SECTION("handled failed batch") {
+    storage->onTick = [] {
+      throw Viet::AsyncSaveStorage<MpChangeForm, FormDesc,
+        std::vector<FormDesc>>::UpsertFailedException({}, "injected batch failure");
+    };
+    checkBeforeResubmission = true;
+  }
+  SECTION("unconsumed standard submission") {
+    storage->failBeforeConsumption = true;
+  }
+  SECTION("consumed standard submission") {
+    storage->failSubmission = true;
+  }
+  SECTION("nonstandard submission") {
+    storage->failBeforeConsumption = true;
+    storage->throwNonstandard = true;
+    escapes = nonstandard = true;
+  }
+  SECTION("nonstandard tick") {
+    storage->onTick = [] { throw 17; };
+    escapes = nonstandard = true;
+  }
+  SECTION("standard recycle error") {
+    storage->onRecycle = [] { throw std::runtime_error("injected recycle failure"); };
+    escapes = true;
+  }
+  SECTION("nonstandard recycle error") {
+    storage->onRecycle = [] { throw 17; };
+    escapes = nonstandard = true;
+  }
+  SECTION("caught recursive public tick") {
+    storage->onTick = [&] {
+      REQUIRE_THROWS_AS(server.worldState.Tick(), std::runtime_error);
+    };
+  }
+  if (checkBeforeResubmission) {
+    storage->onSubmit = [&] {
+      sawFailureBeforeSubmission = server.worldState.HasSaveStorageFailure();
+    };
+  }
+  if (nonstandard) {
+    try {
+      server.worldState.Tick();
+      FAIL("Nonstandard save failure was swallowed");
+    } catch (int value) {
+      REQUIRE(value == 17);
+    }
+  } else if (escapes) {
+    REQUIRE_THROWS_AS(server.worldState.Tick(), std::runtime_error);
+  } else {
+    REQUIRE_NOTHROW(server.worldState.Tick());
+  }
+  REQUIRE(server.worldState.HasSaveStorageFailure());
+  if (checkBeforeResubmission) REQUIRE(sawFailureBeforeSubmission);
+  server.worldState.Tick();
+  server.worldState.Tick();
+  REQUIRE(storage->writes >= 1);
+  REQUIRE(server.worldState.HasSaveStorageFailure());
+  bool crossThreadObservation = false;
+  std::thread observer([&] {
+    crossThreadObservation = server.worldState.HasSaveStorageFailure();
+  });
+  observer.join();
+  REQUIRE(crossThreadObservation);
+  server.worldState.Clear();
+  REQUIRE(server.worldState.HasSaveStorageFailure());
+  server.worldState.AttachSaveStorage(nullptr);
+  server.worldState.AttachSaveStorage(storage);
+  REQUIRE(server.worldState.HasSaveStorageFailure());
+  WorldState fresh;
+  REQUIRE_FALSE(fresh.HasSaveStorageFailure());
+}
+
+TEST_CASE("Stale acknowledgements cannot erase an observed failure", "[save-failure]")
+{
+  PartOne server;
+  server.AttachEspm(&GetEspmLoader());
+  auto storage = std::make_shared<CallbackFileStorage>();
+  server.AttachSaveStorage(storage);
+  auto& actor = AddHuman(server);
+  storage->defer = true;
+  server.worldState.Tick();
+  auto staleAcknowledgement = std::move(storage->deferred);
+  REQUIRE(staleAcknowledgement);
+  REQUIRE_FALSE(server.worldState.HasSaveStorageFailure());
+  storage->onTick = [] { throw std::runtime_error("injected tick failure"); };
+  server.worldState.Tick();
+  REQUIRE(server.worldState.HasSaveStorageFailure());
+  staleAcknowledgement();
+  REQUIRE(server.worldState.HasSaveStorageFailure());
+  storage->defer = false;
+  SetProgress(actor, "3");
+  server.worldState.Tick();
+  REQUIRE(storage->Read(actor).dynamicFields.GetValueDump("thornswoodQuests") == "3");
+  REQUIRE(server.worldState.HasSaveStorageFailure());
 }
