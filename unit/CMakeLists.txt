@@ -73,6 +73,17 @@ if(BUILD_UNIT_TESTS AND NOT EMSCRIPTEN)
   apply_default_settings(TARGETS save-capability-test)
   add_test(NAME save_capability COMMAND save-capability-test)
 
+  add_executable(save-directory-test "${CMAKE_SOURCE_DIR}/misc/tests/save_directory_test.cpp")
+  target_include_directories(save-directory-test PRIVATE "${CMAKE_SOURCE_DIR}/skymp5-server/cpp/server_guest_lib")
+  apply_default_settings(TARGETS save-directory-test)
+  add_test(NAME save_directory COMMAND save-directory-test "${CMAKE_BINARY_DIR}/save-directory-tests")
+
+  # Its own process isolates CWD changes from the unit runner's worker threads.
+  add_executable(file-database-path-test "${CMAKE_SOURCE_DIR}/misc/tests/file_database_path_test.cpp")
+  target_link_libraries(file-database-path-test PRIVATE server_guest_lib)
+  apply_default_settings(TARGETS file-database-path-test)
+  add_test(NAME file_database_path COMMAND file-database-path-test "${CMAKE_BINARY_DIR}/file-database-path-tests")
+
   #
   # ctest tests
   #
