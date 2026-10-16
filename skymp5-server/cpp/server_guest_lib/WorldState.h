@@ -84,6 +84,9 @@ public:
   // Call before dispatching gameplay in tick entry points above WorldState.
   // A storage callback must not recursively process packets or timers.
   void EnsureTickAllowed() const;
+  // Observed save-pump failure, retained for this world's lifetime. This query
+  // is thread-safe; it does not make world mutation or pumping thread-safe.
+  bool HasSaveStorageFailure() const noexcept;
 
   void RequestReloot(MpObjectReference& ref,
                      std::chrono::system_clock::duration time);
@@ -384,6 +387,7 @@ private:
   bool LoadForm(uint32_t formId,
                 std::stringstream* optionalOutTrace = nullptr);
   void TickSaveStorage(const std::chrono::system_clock::time_point& now);
+  void TickSaveStorageImpl(const std::chrono::system_clock::time_point& now);
   void TickTimers(const std::chrono::system_clock::time_point& now);
   [[nodiscard]] bool NpcSourceFilesOverriden() const noexcept;
   [[nodiscard]] bool IsNpcAllowed(uint32_t refrId) const noexcept;

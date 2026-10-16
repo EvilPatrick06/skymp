@@ -16,6 +16,7 @@
 #include <ScopedTask.h>
 #include <Timer.h>
 #include <algorithm>
+#include <atomic>
 #include <antigo/Context.h>
 #include <deque>
 #include <fmt/format.h>
@@ -60,6 +61,7 @@ struct WorldState::Impl
   std::shared_ptr<IScriptStorage> scriptStorage;
   bool saveStorageBusy = false;
   bool saveStoragePumping = false;
+  std::atomic<bool> saveStorageFailed = false;
   std::shared_ptr<VirtualMachine> vm;
   uint32_t nextId = 0xff000000;
   // The server's own forms (ff...) whose saved ChangeForm LoadChangeForm could
@@ -115,6 +117,11 @@ void WorldState::Clear()
 const std::chrono::steady_clock::time_point& WorldState::GetStartPoint() const
 {
   return worldStartTime;
+}
+
+bool WorldState::HasSaveStorageFailure() const noexcept
+{
+  return pImpl->saveStorageFailed.load();
 }
 
 void WorldState::AttachEspm(espm::Loader* espm_,
@@ -212,6 +219,7 @@ void WorldState::AddForm(std::unique_ptr<MpForm> form, uint32_t formId,
 void WorldState::EnsureTickAllowed() const
 {
   if (pImpl->saveStoragePumping) {
+    pImpl->saveStorageFailed = true;
     throw std::runtime_error("Cannot tick the world during a save pump");
   }
 }
@@ -878,7 +886,17 @@ std::string WorldState::GetSavedInventoryReceipt(MpObjectReference& ref)
   return pImpl->savedInventoryReceipts.at(key).dump;
 }
 
-void WorldState::TickSaveStorage(const std::chrono::system_clock::time_point&)
+void WorldState::TickSaveStorage(const std::chrono::system_clock::time_point& now)
+{
+  try {
+    TickSaveStorageImpl(now);
+  } catch (...) {
+    pImpl->saveStorageFailed = true;
+    throw;
+  }
+}
+
+void WorldState::TickSaveStorageImpl(const std::chrono::system_clock::time_point&)
 {
   if (pImpl->saveStoragePumping) {
     throw std::runtime_error("Cannot recursively pump save storage");
@@ -898,6 +916,7 @@ void WorldState::TickSaveStorage(const std::chrono::system_clock::time_point&)
   } catch (
     Viet::AsyncSaveStorage<MpChangeForm, FormDesc,
                            std::vector<FormDesc>>::UpsertFailedException& e) {
+    pImpl->saveStorageFailed = true;
     spdlog::error(
       "TickSaveStorage - received UpsertFailedException {}, re-saving",
       e.what());
@@ -936,6 +955,7 @@ void WorldState::TickSaveStorage(const std::chrono::system_clock::time_point&)
                  numRequested, forms.size());
 
   } catch (std::exception& e) {
+    pImpl->saveStorageFailed = true;
     spdlog::error(
       "TickSaveStorage - received std::exception {}, can't request re-save",
       e.what());
@@ -1040,10 +1060,12 @@ void WorldState::TickSaveStorage(const std::chrono::system_clock::time_point&)
         if (auto current = controller.lock()) current->AcknowledgeSubmittedBatch(transfers);
       });
   } catch (std::exception& e) {
+    pImpl->saveStorageFailed = true;
     recoverSubmission();
     spdlog::error("TickSaveStorage - Upsert failed with {}", e.what());
     return;
   } catch (...) {
+    pImpl->saveStorageFailed = true;
     recoverSubmission();
     throw;
   }
