@@ -62,6 +62,13 @@ public:
 
   bool IsSpellLearned(uint32_t spellId) const; // including from base
   bool IsSpellLearnedFromBase(uint32_t spellId) const;
+  // THORNSWOOD (#1688). Whether an entry of type `spellType` on the base
+  // record `baseId` is one an actor on that base holds from the start. True
+  // for every base but the Player record (0x7), which every person is created
+  // on: from that record a person keeps only its abilities, never the
+  // starting spells a new game hands the player (Flames and Healing).
+  static bool InheritsBaseSpell(uint32_t baseId,
+                                espm::SPEL::SpellType spellType);
   std::vector<uint32_t> GetSpellList() const;
 
   std::unique_ptr<const Appearance> GetAppearance() const;

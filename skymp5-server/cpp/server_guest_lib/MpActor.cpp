@@ -109,6 +109,25 @@ uint64_t NextRuntimeIdentity() noexcept
   return 0;
 }
 
+// THORNSWOOD (#1688). The SPIT type of a spell list entry. A leveled spell
+// list (LVSP) or a missing record is answered as a castable spell, so it is
+// never taken for one of the Player record's abilities.
+espm::SPEL::SpellType SpellTypeOf(WorldState* worldState,
+                                  uint32_t spellId)
+{
+  if (!worldState) {
+    return espm::SPEL::SpellType::Spell;
+  }
+  const auto lookupRes =
+    worldState->GetEspm().GetBrowser().LookupById(spellId);
+  const auto spel = espm::Convert<espm::SPEL>(lookupRes.rec);
+  if (!spel) {
+    return espm::SPEL::SpellType::Spell;
+  }
+  const auto data = spel->GetData(worldState->GetEspmCache());
+  return data.spellItem ? data.spellItem->type : espm::SPEL::SpellType::Spell;
+}
+
 void RestoreActorValuePatched(MpActor* actor, espm::ActorValue actorValue,
                               float value)
 {
@@ -1238,9 +1257,17 @@ bool MpActor::IsSpellLearnedFromBase(const uint32_t spellId) const
 
   for (auto npcSpellRaw : npcData.spells) {
     const auto npcSpell = npc.ToGlobalId(npcSpellRaw);
-    if (npcSpell == spellId) {
+    if (npcSpell != spellId) {
+      continue;
+    }
+    // THORNSWOOD (#1688). A person is created on the Player record, and the
+    // Player record's spell list is what a new game starts the player with:
+    // Flames and Healing, plus the PCHealRateCombat ability. A person holds
+    // the ability and none of the spells; those come from the server.
+    if (InheritsBaseSpell(GetBaseId(), SpellTypeOf(GetParent(), npcSpell))) {
       return true;
     }
+    break;
   }
 
   for (auto raceSpellRaw : raceData.spells) {
@@ -1251,6 +1278,16 @@ bool MpActor::IsSpellLearnedFromBase(const uint32_t spellId) const
   }
 
   return false;
+}
+
+bool MpActor::InheritsBaseSpell(uint32_t baseId,
+                                espm::SPEL::SpellType spellType)
+{
+  constexpr uint32_t kPlayerRecordId = 0x7;
+  if (baseId != kPlayerRecordId) {
+    return true;
+  }
+  return spellType == espm::SPEL::SpellType::Ability;
 }
 
 std::vector<uint32_t> MpActor::GetSpellList() const
