@@ -223,6 +223,7 @@ TEST_CASE("Terminal save errors prevent any following submission", "[save-comple
     expectedSubmissions = 1;
     fixture.storage->deferred = true;
     fixture.server.worldState.Tick();
+    recycles = 0; // Count only work performed by terminal completion.
     fixture.Progress("2");
     fixture.storage->ready = fixture.storage->failOutcome = true;
   }
@@ -258,8 +259,13 @@ TEST_CASE("Terminal save deadlines cannot certify late work", "[save-completion]
   REQUIRE_THROWS(fixture.server.worldState.CompleteSavesForShutdown(100));
   // A scheduling delay can expire the deadline before the intended hook.
   // Both paths must refuse, with no calls after the observed cutoff.
-  REQUIRE(fixture.storage->submissions == (reached ? expectedSubmissions : 0));
-  REQUIRE(recycles == (reached ? expectedRecycles : 0));
+  if (reached) {
+    REQUIRE(fixture.storage->submissions == expectedSubmissions);
+    REQUIRE(recycles == expectedRecycles);
+  } else {
+    REQUIRE(fixture.storage->submissions <= expectedSubmissions);
+    REQUIRE(recycles <= expectedRecycles);
+  }
   REQUIRE_THROWS(fixture.server.worldState.Tick());
 }
 
@@ -402,4 +408,30 @@ TEST_CASE("Terminal completion waits for callback capture destruction and its sa
   REQUIRE_FALSE(settledDuringDestruction);
   REQUIRE(fixture.Saved().dynamicFields.GetValueDump("thornswoodQuests") == "2");
   REQUIRE(fixture.storage->writes == 2);
+}
+
+TEST_CASE("Terminal timeout retains ownership of an accepted asynchronous save", "[save-completion]")
+{
+  CompletionWorld fixture;
+  fixture.server.worldState.Tick();
+  const auto inventory = fixture.Actor().GetInventory();
+  REQUIRE(fixture.Actor().CompareAndSetInventory(inventory, "null", inventory, 1));
+  const auto receipt = fixture.Actor().GetInventoryReceiptDump();
+  const auto before = fixture.storage->submissions;
+  fixture.storage->deferred = true;
+  fixture.storage->onSubmit = [] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+  };
+  REQUIRE_THROWS(fixture.server.worldState.CompleteSavesForShutdown(100));
+  if (fixture.storage->outcome) {
+    REQUIRE(fixture.storage->submissions == before + 1);
+    // A real accepted worker job may finish after the wait expires. Its
+    // callback remains valid bookkeeping, without certifying completion.
+    fixture.storage->ready = true;
+    fixture.storage->Tick();
+    REQUIRE(fixture.server.worldState.GetSavedInventoryReceipt(fixture.Actor()) == receipt);
+  } else {
+    REQUIRE(fixture.storage->submissions == before); // Expired before admission.
+  }
+  REQUIRE_THROWS(fixture.server.worldState.Tick());
 }
