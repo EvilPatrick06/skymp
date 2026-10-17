@@ -1,6 +1,9 @@
 #include "TestUtils.hpp"
 #include "WorldState.h"
+#include "database_drivers/FileDatabase.h"
+#include "save_storages/AsyncSaveStorage.h"
 #include "save_storages/ISaveStorage.h"
+#include <filesystem>
 #include <functional>
 #include <thread>
 
@@ -14,10 +17,13 @@ public:
   std::map<FormDesc, MpChangeForm> saved;
   std::vector<std::optional<MpChangeForm>> pending;
   UpsertOutcomeCallback outcome;
+  std::shared_ptr<void> capture;
   std::function<void()> onTick, onSubmit, onRecycle;
   mutable std::function<void()> onSettlement;
   bool deferred = false, ready = false, failOutcome = false;
+  bool failInline = false;
   bool settled = true;
+  bool executingOutcome = false;
   uint32_t submissions = 0, writes = 0;
 
   static void Once(std::function<void()>& hook)
@@ -37,9 +43,13 @@ public:
   {
     ++submissions;
     Once(onSubmit);
+    if (failInline) {
+      callback(std::make_exception_ptr(std::runtime_error("inline failed save")));
+      return;
+    }
     if (deferred) {
       pending = std::move(rows);
-      outcome = callback;
+      outcome = [callback, retained = std::move(capture)](std::exception_ptr error) { callback(error); };
     } else {
       Commit(std::move(rows));
       callback(nullptr);
@@ -58,7 +68,13 @@ public:
     Once(onTick);
     if (!outcome || !ready) return;
     ready = false;
+    struct Executing {
+      bool& value;
+      explicit Executing(bool& value) : value(value) { value = true; }
+      ~Executing() { value = false; }
+    } executing(executingOutcome);
     auto callback = std::move(outcome);
+    outcome = {};
     if (failOutcome) {
       pending.clear();
       callback(std::make_exception_ptr(std::runtime_error("controlled failed save")));
@@ -70,7 +86,7 @@ public:
   bool IsSettled() const override
   {
     Once(onSettlement);
-    return settled && !outcome;
+    return settled && !outcome && !executingOutcome;
   }
   void IterateSync(const IterateSyncCallback& callback) override
   { for (const auto& row : saved) callback(row.second); }
@@ -109,8 +125,12 @@ struct CompletionWorld
 TEST_CASE("Terminal completion drains accepted metadata without inventing live state", "[save-completion]")
 {
   CompletionWorld fixture;
-  fixture.Progress("1");
+  const auto inventory = fixture.Actor().GetInventory();
+  REQUIRE(fixture.Actor().CompareAndSetInventory(inventory, "null", inventory, 1));
+  fixture.server.worldState.Tick();
   const auto receipt = fixture.Actor().GetInventoryReceiptDump();
+  REQUIRE(fixture.server.worldState.GetSavedInventoryReceipt(fixture.Actor()) == receipt);
+  fixture.Progress("1");
   fixture.Actor().SetPosAndAngleSilent({9, 9, 9}, {});
   bool timerFired = false;
   fixture.server.worldState.SetTimer(std::chrono::milliseconds(0)).Then(
@@ -171,6 +191,8 @@ TEST_CASE("Terminal save errors prevent any following submission", "[save-comple
 {
   CompletionWorld fixture;
   uint32_t expectedSubmissions = 0;
+  uint32_t expectedRecycles = 0, recycles = 0;
+  fixture.storage->onRecycle = [&] { ++recycles; };
   SECTION("uncorrelated tick error") {
     fixture.storage->onTick = [] { throw std::runtime_error("tick error"); };
   }
@@ -185,11 +207,17 @@ TEST_CASE("Terminal save errors prevent any following submission", "[save-comple
   }
   SECTION("recycling error") {
     expectedSubmissions = 1;
-    fixture.storage->onRecycle = [] { throw std::runtime_error("recycling error"); };
+    expectedRecycles = 1;
+    fixture.storage->onRecycle = [&] { ++recycles; throw std::runtime_error("recycling error"); };
   }
   SECTION("settlement error") {
     expectedSubmissions = 1;
+    expectedRecycles = 1;
     fixture.storage->onSettlement = [] { throw std::runtime_error("settlement error"); };
+  }
+  SECTION("inline failed outcome") {
+    expectedSubmissions = 1;
+    fixture.storage->failInline = true;
   }
   SECTION("failed existing outcome") {
     expectedSubmissions = 1;
@@ -200,6 +228,7 @@ TEST_CASE("Terminal save errors prevent any following submission", "[save-comple
   }
   REQUIRE_THROWS(fixture.server.worldState.CompleteSavesForShutdown(1000));
   REQUIRE(fixture.storage->submissions == expectedSubmissions);
+  REQUIRE(recycles == expectedRecycles);
   REQUIRE(fixture.server.worldState.HasSaveStorageFailure());
   REQUIRE_THROWS(fixture.server.worldState.Tick());
   REQUIRE_THROWS(fixture.server.worldState.AttachSaveStorage(nullptr));
@@ -209,7 +238,13 @@ TEST_CASE("Terminal save deadlines cannot certify late work", "[save-completion]
 {
   CompletionWorld fixture;
   uint32_t expectedSubmissions = 0;
-  auto slow = [] { std::this_thread::sleep_for(std::chrono::milliseconds(150)); };
+  uint32_t expectedRecycles = 0, recycles = 0;
+  bool reached = false;
+  fixture.storage->onRecycle = [&] { ++recycles; };
+  auto slow = [&] {
+    reached = true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+  };
   SECTION("before submission") { fixture.storage->onTick = slow; }
   SECTION("after submission") {
     expectedSubmissions = 1;
@@ -217,10 +252,14 @@ TEST_CASE("Terminal save deadlines cannot certify late work", "[save-completion]
   }
   SECTION("settlement observation") {
     expectedSubmissions = 1;
+    expectedRecycles = 1;
     fixture.storage->onSettlement = slow;
   }
   REQUIRE_THROWS(fixture.server.worldState.CompleteSavesForShutdown(100));
-  REQUIRE(fixture.storage->submissions == expectedSubmissions);
+  // A scheduling delay can expire the deadline before the intended hook.
+  // Both paths must refuse, with no calls after the observed cutoff.
+  REQUIRE(fixture.storage->submissions == (reached ? expectedSubmissions : 0));
+  REQUIRE(recycles == (reached ? expectedRecycles : 0));
   REQUIRE_THROWS(fixture.server.worldState.Tick());
 }
 
@@ -302,4 +341,65 @@ TEST_CASE("Terminal completion refuses active deferred-form loading", "[save-com
   REQUIRE(checked);
   world.Tick();
   REQUIRE(fixture.storage->writes == 1);
+}
+
+TEST_CASE("Terminal completion drains the real asynchronous file backend", "[save-completion]")
+{
+  struct Directory {
+    std::filesystem::path path = std::filesystem::temp_directory_path() /
+      ("thornswood-terminal-save-" + std::to_string(
+        std::chrono::steady_clock::now().time_since_epoch().count()));
+    ~Directory() { std::filesystem::remove_all(path); }
+  } directory;
+  auto database = std::make_shared<FileDatabase>(directory.path.string(), spdlog::default_logger());
+  auto storage = std::make_shared<Viet::AsyncSaveStorage<MpChangeForm,
+    FormDesc, std::vector<FormDesc>>>(database, spdlog::default_logger(), "terminal-file", 1);
+  PartOne server;
+  server.AttachEspm(&GetEspmLoader());
+  server.AttachSaveStorage(storage);
+  server.CreateActor(0xff000abc, {1, 1, 1}, 0, 0x3c, 42);
+  auto& actor = server.worldState.GetFormAt<MpActor>(0xff000abc);
+  const auto inventory = actor.GetInventory();
+  REQUIRE(actor.CompareAndSetInventory(inventory, "null", inventory, 1));
+  const auto receipt = actor.GetInventoryReceiptDump();
+  const auto result = server.worldState.CompleteSavesForShutdown(5000);
+  REQUIRE_FALSE(result.supportsDurableUpsert);
+  REQUIRE(storage->IsSettled());
+  REQUIRE(server.worldState.GetSavedInventoryReceipt(actor) == receipt);
+  auto saved = Viet::ISaveStorageUtils::FindSync(*storage, actor.GetChangeForm().formDesc);
+  REQUIRE(saved);
+  REQUIRE(saved->dynamicFields.GetValueDump(MpObjectReference::kInventoryReceiptProperty) == receipt);
+}
+
+TEST_CASE("Terminal completion waits for callback capture destruction and its saves", "[save-completion]")
+{
+  CompletionWorld fixture;
+  struct Work {
+    std::function<void()> run;
+    ~Work() { run(); }
+  };
+  bool destroyed = false, settledDuringDestruction = true;
+  auto work = std::make_shared<Work>();
+  work->run = [&] {
+    destroyed = true;
+    settledDuringDestruction = fixture.storage->IsSettled();
+    fixture.Progress("2");
+  };
+  struct CancelOnUnwind {
+    std::weak_ptr<Work> work;
+    ~CancelOnUnwind() { if (auto held = work.lock()) held->run = [] {}; }
+  } cancel{work};
+  fixture.storage->capture = work;
+  work.reset();
+  fixture.storage->deferred = true;
+  fixture.Progress("1");
+  fixture.server.worldState.Tick();
+  REQUIRE_FALSE(destroyed);
+  fixture.storage->deferred = false;
+  fixture.storage->ready = true;
+  fixture.server.worldState.CompleteSavesForShutdown(1000);
+  REQUIRE(destroyed);
+  REQUIRE_FALSE(settledDuringDestruction);
+  REQUIRE(fixture.Saved().dynamicFields.GetValueDump("thornswoodQuests") == "2");
+  REQUIRE(fixture.storage->writes == 2);
 }
