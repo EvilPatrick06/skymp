@@ -22,7 +22,11 @@ public:
   FileDatabase database{root.string(), spdlog::default_logger()};
   std::function<void()> onSubmit, onRecycle, onTick;
   UpsertCallback deferred;
+  UpsertOutcomeCallback failureOutcome;
+  std::vector<std::optional<MpChangeForm>> failedRows;
   bool defer = false, failSubmission = false;
+  bool failAsync = false, deliverAsyncFailure = false, includeAffectedRows = true;
+  bool inlineFailureThenThrow = false;
   bool failBeforeConsumption = false;
   bool throwNonstandard = false;
   uint32_t writes = 0;
@@ -58,13 +62,53 @@ public:
       RunOnce(onSubmit);
       throw std::runtime_error("consumed submission failed");
     }
+    if (failAsync) {
+      failAsync = false;
+      failedRows = std::move(submitted);
+      deferred = cb;
+      RunOnce(onSubmit);
+      return;
+    }
     database.Upsert(std::move(submitted));
     ++writes;
     if (defer) deferred = cb;
     else cb();
     RunOnce(onSubmit);
   }
-  void Tick() override { RunOnce(onTick); }
+  bool SupportsUpsertOutcomes() const noexcept override { return true; }
+  void UpsertWithOutcome(std::vector<std::optional<MpChangeForm>>&& rows,
+                         const UpsertOutcomeCallback& cb) override
+  {
+    if (inlineFailureThenThrow) {
+      inlineFailureThenThrow = false;
+      cb(std::make_exception_ptr(std::runtime_error("inline failure")));
+      throw std::runtime_error("submission threw after inline failure");
+    }
+    if (failAsync) failureOutcome = cb;
+    try { Upsert(std::move(rows), [cb] { cb(nullptr); }); }
+    catch (...) {
+      failureOutcome = {};
+      deferred = {};
+      failedRows.clear();
+      throw;
+    }
+  }
+  void Tick() override
+  {
+    if (deliverAsyncFailure) {
+      deliverAsyncFailure = false;
+      auto affected = std::move(failedRows);
+      if (!includeAffectedRows) affected.clear();
+      auto error = std::make_exception_ptr(Viet::AsyncSaveStorage<MpChangeForm,
+        FormDesc, std::vector<FormDesc>>::UpsertFailedException(
+          std::move(affected), "injected asynchronous failure"));
+      deferred = {};
+      auto outcome = std::move(failureOutcome);
+      if (outcome) outcome(error);
+      else std::rethrow_exception(error);
+    }
+    RunOnce(onTick);
+  }
   bool GetRecycledChangeFormsBuffer(
     std::vector<std::optional<MpChangeForm>>& rows) override
   {
@@ -353,7 +397,7 @@ TEST_CASE("Newer form snapshots supersede retries across actor indices", "[save-
   REQUIRE(saved->dynamicFields.GetValueDump("thornswoodQuests") == "3");
 }
 
-TEST_CASE("Failed storage batches recover by form identity", "[save-pump]")
+TEST_CASE("Uncorrelated errors cannot invent a write from silent live state", "[save-pump]")
 {
   PartOne server;
   server.AttachEspm(&GetEspmLoader());
@@ -371,7 +415,186 @@ TEST_CASE("Failed storage batches recover by form identity", "[save-pump]")
         "injected mixed-batch failure");
   };
   server.worldState.Tick();
-  REQUIRE(storage->Read(actor).position == NiPoint3{9, 9, 9});
+  // An exception without submission ownership cannot accept a new snapshot.
+  REQUIRE(storage->Read(actor).position == NiPoint3{1, 1, 1});
+  REQUIRE(server.worldState.HasSaveStorageFailure());
+}
+
+TEST_CASE("Asynchronous failure preserves a destroyed actor deletion", "[world-outcome]")
+{
+  PartOne server;
+  server.AttachEspm(&GetEspmLoader());
+  auto storage = std::make_shared<CallbackFileStorage>();
+  server.AttachSaveStorage(storage);
+  auto& actor = AddHuman(server);
+  const auto desc = actor.GetChangeForm().formDesc;
+  server.worldState.Tick();
+  actor.Delete();
+  // BeforeDestroy queues its final position too. Submit that accepted snapshot
+  // after destruction, so another pending write cannot mask a lost batch.
+  server.DestroyActor(0xff000abc);
+  storage->failAsync = true;
+  server.worldState.Tick();
+  SECTION("affected rows returned") {}
+  SECTION("no rows returned") { storage->includeAffectedRows = false; }
+  storage->deliverAsyncFailure = true;
+  server.worldState.Tick();
+  auto saved = Viet::ISaveStorageUtils::FindSync(*storage, desc);
+  REQUIRE(saved);
+  REQUIRE(saved->isDeleted);
+  REQUIRE(server.worldState.HasSaveStorageFailure());
+}
+
+TEST_CASE("Asynchronous failure cannot substitute a restored replacement", "[world-outcome]")
+{
+  PartOne server;
+  server.AttachEspm(&GetEspmLoader());
+  auto storage = std::make_shared<CallbackFileStorage>();
+  server.AttachSaveStorage(storage);
+  auto& actor = AddHuman(server);
+  const auto inventory = actor.GetInventory();
+  REQUIRE(actor.CompareAndSetInventory(inventory, "null", inventory, 1));
+  auto restored = actor.GetChangeForm();
+  const auto originalReceipt = actor.GetInventoryReceiptDump();
+  server.worldState.Tick();
+  actor.Delete();
+  server.DestroyActor(0xff000abc);
+  storage->failAsync = true;
+  server.worldState.Tick();
+  auto replacementReceipt = nlohmann::json::parse(originalReceipt);
+  replacementReceipt["sequence"] = 2;
+  restored.dynamicFields.SetValueDump(MpObjectReference::kInventoryReceiptProperty,
+                                     replacementReceipt.dump());
+  server.worldState.LoadChangeForm(restored, server.CreateFormCallbacks());
+  auto& replacement = server.worldState.GetFormAt<MpActor>(0xff000abc);
+  REQUIRE(server.worldState.GetSavedInventoryReceipt(replacement) == replacementReceipt.dump());
+  storage->deliverAsyncFailure = true;
+  server.worldState.Tick();
+  auto saved = storage->Read(replacement);
+  CHECK(saved.isDeleted);
+  CHECK(saved.dynamicFields.GetValueDump(MpObjectReference::kInventoryReceiptProperty) == originalReceipt);
+  CHECK(server.worldState.GetSavedInventoryReceipt(replacement) == replacementReceipt.dump());
+}
+
+TEST_CASE("Inline outcomes cannot acknowledge a throwing submission", "[world-outcome]")
+{
+  PartOne server;
+  server.AttachEspm(&GetEspmLoader());
+  auto storage = std::make_shared<CallbackFileStorage>();
+  server.AttachSaveStorage(storage);
+  auto& actor = AddHuman(server);
+  server.worldState.Tick();
+  REQUIRE(server.worldState.GetSavedInventoryReceipt(actor) == "null");
+  const auto inventory = actor.GetInventory();
+  REQUIRE(actor.CompareAndSetInventory(inventory, "null", inventory, 1));
+  const auto receipt = actor.GetInventoryReceiptDump();
+  SECTION("inline success then throw") {
+    storage->onSubmit = [] { throw std::runtime_error("after inline success"); };
+  }
+  SECTION("inline failure then throw") { storage->inlineFailureThenThrow = true; }
+  server.worldState.Tick();
+  CHECK(server.worldState.GetSavedInventoryReceipt(actor) == "null");
+  CHECK(server.worldState.HasSaveStorageFailure());
+  server.worldState.Tick();
+  REQUIRE(server.worldState.GetSavedInventoryReceipt(actor) == receipt);
+}
+
+TEST_CASE("A destroyed world releases a backend with pending callbacks", "[world-outcome]")
+{
+  auto storage = std::make_shared<CallbackFileStorage>();
+  std::weak_ptr<CallbackFileStorage> weak = storage;
+  {
+    PartOne server;
+    server.AttachEspm(&GetEspmLoader());
+    server.AttachSaveStorage(storage);
+    AddHuman(server);
+    storage->defer = true;
+    server.worldState.Tick();
+  }
+  storage.reset();
+  const bool released = weak.expired();
+  // Break the old cycle after observing it, so the failing fixture cleans up.
+  if (auto retained = weak.lock()) retained->deferred = {};
+  REQUIRE(released);
+}
+
+TEST_CASE("Retired outcomes cannot release a newer save", "[world-outcome]")
+{
+  PartOne server;
+  server.AttachEspm(&GetEspmLoader());
+  auto storage = std::make_shared<CallbackFileStorage>();
+  server.AttachSaveStorage(storage);
+  auto& actor = AddHuman(server);
+  storage->defer = true;
+  SetProgress(actor, "1");
+  server.worldState.Tick();
+  auto retired = std::move(storage->deferred);
+  REQUIRE(retired);
+  retired();
+  SetProgress(actor, "2");
+  server.worldState.Tick();
+  auto active = std::move(storage->deferred);
+  REQUIRE(active);
+  SetProgress(actor, "3");
+  retired();
+  server.worldState.Tick();
+  CHECK(storage->writes == 2);
+  CHECK(storage->Read(actor).dynamicFields.GetValueDump("thornswoodQuests") == "2");
+  CHECK(server.worldState.HasSaveStorageFailure());
+  active();
+  storage->defer = false;
+  server.worldState.Tick();
+  REQUIRE(storage->Read(actor).dynamicFields.GetValueDump("thornswoodQuests") == "3");
+}
+
+TEST_CASE("Unrelated tick errors retain active save ownership", "[world-outcome]")
+{
+  PartOne server;
+  server.AttachEspm(&GetEspmLoader());
+  auto storage = std::make_shared<CallbackFileStorage>();
+  server.AttachSaveStorage(storage);
+  auto& actor = AddHuman(server);
+  storage->defer = true;
+  SetProgress(actor, "1");
+  server.worldState.Tick();
+  auto active = std::move(storage->deferred);
+  REQUIRE(active);
+  SetProgress(actor, "2");
+  storage->onTick = [] { throw std::runtime_error("unrelated storage error"); };
+  server.worldState.Tick();
+  CHECK(storage->writes == 1);
+  CHECK(storage->Read(actor).dynamicFields.GetValueDump("thornswoodQuests") == "1");
+  CHECK(server.worldState.HasSaveStorageFailure());
+  active();
+  storage->defer = false;
+  server.worldState.Tick();
+  REQUIRE(storage->Read(actor).dynamicFields.GetValueDump("thornswoodQuests") == "2");
+}
+
+TEST_CASE("Duplicate inline outcomes cannot acknowledge a submission", "[world-outcome]")
+{
+  PartOne server;
+  server.AttachEspm(&GetEspmLoader());
+  auto storage = std::make_shared<CallbackFileStorage>();
+  server.AttachSaveStorage(storage);
+  auto& actor = AddHuman(server);
+  server.worldState.Tick();
+  const auto inventory = actor.GetInventory();
+  REQUIRE(actor.CompareAndSetInventory(inventory, "null", inventory, 1));
+  const auto receipt = actor.GetInventoryReceiptDump();
+  storage->defer = true;
+  storage->onSubmit = [&] {
+    auto callback = std::move(storage->deferred);
+    REQUIRE(callback);
+    callback();
+    callback();
+  };
+  server.worldState.Tick();
+  CHECK(server.worldState.GetSavedInventoryReceipt(actor) == "null");
+  CHECK(server.worldState.HasSaveStorageFailure());
+  storage->defer = false;
+  server.worldState.Tick();
+  REQUIRE(server.worldState.GetSavedInventoryReceipt(actor) == receipt);
 }
 
 TEST_CASE("Save failure observation starts clear", "[save-failure]")
