@@ -79,6 +79,12 @@ if(BUILD_UNIT_TESTS AND NOT EMSCRIPTEN)
   add_test(NAME save_settlement COMMAND save-settlement-test)
   set_tests_properties(save_settlement PROPERTIES TIMEOUT 20)
 
+  add_executable(save-outcome-test "${CMAKE_SOURCE_DIR}/misc/tests/save_outcome_test.cpp")
+  target_link_libraries(save-outcome-test PRIVATE viet)
+  apply_default_settings(TARGETS save-outcome-test)
+  add_test(NAME save_outcome COMMAND save-outcome-test)
+  set_tests_properties(save_outcome PROPERTIES TIMEOUT 20)
+
   add_executable(save-directory-test "${CMAKE_SOURCE_DIR}/misc/tests/save_directory_test.cpp")
   target_include_directories(save-directory-test PRIVATE "${CMAKE_SOURCE_DIR}/skymp5-server/cpp/server_guest_lib")
   apply_default_settings(TARGETS save-directory-test)
