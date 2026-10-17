@@ -106,6 +106,7 @@ bool HasEntry(MpActor& actor, uint32_t baseId)
 
 size_t UnequipSnippetsFor(PartOne& partOne, uint32_t baseId)
 {
+  partOne.Tick();
   size_t n = 0;
   for (auto& m : partOne.Messages()) {
     if (m.j["t"] == MsgType::SpSnippet && m.j["function"] == "UnequipItem" &&
