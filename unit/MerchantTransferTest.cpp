@@ -24,6 +24,7 @@ public:
   FileDatabase database{ root.string(), spdlog::default_logger() };
   std::vector<std::optional<MpChangeForm>> pending;
   UpsertCallback completion;
+  UpsertOutcomeCallback failureOutcome;
   bool ready = false;
   bool fail = false;
   bool failSubmission = false;
@@ -50,6 +51,14 @@ public:
     }
     pending = std::move(forms);
     completion = cb;
+  }
+  bool SupportsUpsertOutcomes() const noexcept override { return true; }
+  void UpsertWithOutcome(std::vector<std::optional<MpChangeForm>>&& forms,
+                         const UpsertOutcomeCallback& cb) override
+  {
+    failureOutcome = cb;
+    try { Upsert(std::move(forms), [cb] { cb(nullptr); }); }
+    catch (...) { failureOutcome = {}; throw; }
   }
   void Iterate(const IterateCallback& cb,
                const std::optional<std::vector<FormDesc>>& filter) override
@@ -81,13 +90,17 @@ public:
     if (fail) {
       fail = false;
       completion = {};
-      throw Viet::AsyncSaveStorage<
+      auto error = std::make_exception_ptr(Viet::AsyncSaveStorage<
         MpChangeForm, FormDesc,
         std::vector<FormDesc>>::UpsertFailedException(std::move(pending),
-                                                      "injected failure");
+                                                      "injected failure"));
+      auto outcome = std::move(failureOutcome);
+      if (outcome) { outcome(error); return; }
+      std::rethrow_exception(error);
     }
     if (ready) {
       ready = false;
+      auto outcome = std::move(failureOutcome);
       auto cb = std::move(completion);
       pending.clear();
       ++writes;

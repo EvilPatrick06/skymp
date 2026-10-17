@@ -20,11 +20,11 @@
 #include <atomic>
 #include <antigo/Context.h>
 #include <deque>
+#include <exception>
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 #include <iterator>
 #include <optional>
-#include <save_storages/AsyncSaveStorage.h> // UpsertFailedException
 #include <save_storages/ISaveStorage.h>
 #include <unordered_map>
 #include <unordered_set>
@@ -97,9 +97,19 @@ struct WorldState::Impl
   std::map<ReceiptKey, SavedReceipt> savedInventoryReceipts;
   PendingChanges pendingChanges;
   std::vector<SaveOrigin> initializingForms;
-  // Unconsumed failed submissions own their snapshots independently of actor
-  // indices, which can be reused by newly queued actors before the next pump.
+  // Failed submissions retain exact snapshots independently of actor indices
+  // and live state, until a correlated acknowledgement completes.
   SaveBatch retryBatch;
+  struct SaveAttempt
+  {
+    enum class Phase { Submitting, Waiting, Retired };
+    SaveBatch backup;
+    Phase phase = Phase::Submitting;
+    std::optional<std::exception_ptr> stagedOutcome;
+    bool outcomeSeen = false;
+    bool duplicateOutcome = false;
+  };
+  std::shared_ptr<SaveAttempt> activeSave;
 
   std::shared_ptr<
     Viet::ISaveStorage<MpChangeForm, FormDesc, std::vector<FormDesc>>>
@@ -131,6 +141,17 @@ struct WorldState::Impl
   std::vector<uint32_t> attachEspmRecordFailures;
   std::optional<std::vector<uint32_t>> placedActorIds;
   std::unordered_set<uint32_t> npcPlacementExclusions;
+
+  void FailSave(const std::shared_ptr<SaveAttempt>& attempt) noexcept
+  {
+    if (activeSave != attempt || attempt->phase == SaveAttempt::Phase::Retired) return;
+    saveStorageFailed = true;
+    attempt->phase = SaveAttempt::Phase::Retired;
+    saveStorageBusy = false;
+    // Only this current attempt can populate retry while it is in flight.
+    retryBatch.Swap(attempt->backup);
+    activeSave.reset();
+  }
 };
 
 WorldState::~WorldState()
@@ -190,6 +211,9 @@ void WorldState::AttachSaveStorage(
   }
   if (pImpl->saveStorage == saveStorage) {
     return;
+  }
+  if (saveStorage && !saveStorage->SupportsUpsertOutcomes()) {
+    throw std::runtime_error("World saves require correlated storage outcomes");
   }
   if (pImpl->saveStorage &&
       (pImpl->saveStorageBusy || !pImpl->pendingChanges.empty() ||
@@ -929,52 +953,11 @@ void WorldState::TickSaveStorageImpl(const std::chrono::system_clock::time_point
 
   try {
     storage->Tick();
-  } catch (
-    Viet::AsyncSaveStorage<MpChangeForm, FormDesc,
-                           std::vector<FormDesc>>::UpsertFailedException& e) {
+  } catch (const std::exception& e) {
     pImpl->saveStorageFailed = true;
-    spdlog::error(
-      "TickSaveStorage - received UpsertFailedException {}, re-saving",
-      e.what());
-
-    // No SetTimer here because timers may also break in theory. we faced such
-    // problems earlier
-    pImpl->saveStorageBusy = false;
-
-    auto& forms = e.GetAffectedForms();
-    size_t numRequested = 0;
-
-    for (size_t i = 0; i < forms.size(); ++i) {
-      auto& changeForm = forms[i];
-      if (changeForm == std::nullopt) {
-        continue;
-      }
-
-      // A retry can combine retained rows with new work. Storage batch offsets
-      // are not actor indices; persistent form identity selects recovery.
-      auto live = this->forms.find(changeForm->formDesc.ToFormId(espmFiles));
-      MpObjectReference* refr = live != this->forms.end()
-        ? live->second->AsObjectReference() : nullptr;
-      if (!refr) {
-        continue;
-      }
-
-      if (!pImpl->pendingChanges.count(changeForm->formDesc)) {
-        RequestSave(*refr);
-        numRequested++;
-      }
-    }
-
-    spdlog::info("TickSaveStorage - requested re-save for {} forms in buffer "
-                 "with size {}",
-                 numRequested, forms.size());
-
-  } catch (std::exception& e) {
-    pImpl->saveStorageFailed = true;
-    spdlog::error(
-      "TickSaveStorage - received std::exception {}, can't request re-save",
-      e.what());
-    pImpl->saveStorageBusy = false;
+    // This error has no submission identity. Keep any active attempt and do
+    // not invent an accepted write from whichever form now owns a descriptor.
+    spdlog::error("TickSaveStorage - uncorrelated storage error: {}", e.what());
   }
 
   if (pImpl->saveStorageBusy) {
@@ -985,47 +968,23 @@ void WorldState::TickSaveStorageImpl(const std::chrono::system_clock::time_point
     return;
   }
 
-  auto pImpl_ = pImpl;
-
-  std::vector<std::pair<FormDesc, SaveOrigin>> submittedForms;
-  SaveBatch submitted;
+  std::shared_ptr<Impl::SaveAttempt> attempt;
   bool published = false;
-  auto recoverSubmission = [&] {
-    pImpl->saveStorageBusy = false;
-    if (!published) return;
-    if (!submitted.rows.empty()) {
-      pImpl->retryBatch.Swap(submitted);
-      return;
-    }
-    // Preserve exact callback-queued snapshots, even if live state has since
-    // changed silently. Reconstruct consumed identities only into empty slots.
-    for (auto& [identity, weak] : submittedForms) {
-      auto form = weak.lock();
-      if (!form) continue;
-      auto current = forms.find(form->GetFormId());
-      auto ref = form->AsObjectReference();
-      if (ref && current != forms.end() && current->second == form &&
-          !pImpl->pendingChanges.count(identity)) {
-        RequestSave(*ref);
-      }
-    }
-  };
-
-  // Batch/map construction may allocate on MSVC. No callback can release busy
-  // if construction fails, so acquire it only after all recovery state exists.
-  pImpl->saveStorageBusy = true;
   try {
+    // Retain exact accepted rows independently of the vector storage consumes.
+    // Every allocation, including MSVC's map sentinel, precedes publication.
+    attempt = std::make_shared<Impl::SaveAttempt>();
     auto candidate = PendingSaveDetail::Prepare(pImpl->pendingChanges, pImpl->retryBatch);
-    submitted.Swap(candidate);
+    attempt->backup.Swap(candidate);
+    auto submittedRows = attempt->backup.rows;
     // Metadata belongs to this submitted snapshot, not the actor's later state.
     std::vector<std::pair<Impl::ReceiptKey, Impl::SavedReceipt>> receipts;
     std::vector<std::optional<MpChangeForm>> eligibleTransferRows;
-    for (const auto& changeForm : submitted.rows) {
+    for (const auto& changeForm : attempt->backup.rows) {
       if (!changeForm) {
         continue;
       }
-      const auto& binding = submitted.origins.at(changeForm->formDesc);
-      submittedForms.push_back({changeForm->formDesc, binding});
+      const auto& binding = attempt->backup.origins.at(changeForm->formDesc);
       auto origin = binding.lock();
       if (!origin) continue;
       auto live = forms.find(origin->GetFormId());
@@ -1045,35 +1004,79 @@ void WorldState::TickSaveStorageImpl(const std::chrono::system_clock::time_point
     }
     std::weak_ptr<MerchantTransferController> controller = pImpl->merchantTransfers;
     auto transfers = pImpl->merchantTransfers->CaptureSubmittedBatch(eligibleTransferRows);
-    // std::function construction may allocate, so finish it before publication.
-    decltype(storage)::element_type::UpsertCallback completion =
-      [pImpl_, receipts = std::move(receipts), controller, transfers = std::move(transfers)] {
-        pImpl_->saveStorageBusy = false;
+    std::weak_ptr<Impl> weakState = pImpl;
+    auto finalizeAction = [weakState, attempt, receipts = std::move(receipts),
+                           controller, transfers = std::move(transfers)](std::exception_ptr error) {
+      auto state = weakState.lock();
+      if (!state || state->activeSave != attempt ||
+          attempt->phase == Impl::SaveAttempt::Phase::Retired) return;
+      if (error) {
+        state->FailSave(attempt);
+        try { std::rethrow_exception(error); }
+        catch (const std::exception& failure) {
+          spdlog::error("TickSaveStorage - asynchronous save failed: {}", failure.what());
+        } catch (...) {
+          spdlog::error("TickSaveStorage - asynchronous save failed with nonstandard exception");
+        }
+        return;
+      }
+      try {
         for (const auto& saved : receipts) {
-          auto current = pImpl_->savedInventoryReceipts.find(saved.first);
+          auto current = state->savedInventoryReceipts.find(saved.first);
           auto form = saved.second.form.lock();
           auto actor = form ? form->AsActor() : nullptr;
-          if (current != pImpl_->savedInventoryReceipts.end() && actor &&
-              actor->GetProfileId() == saved.first.second &&
-              current->second.form.lock() == form) {
+          if (current != state->savedInventoryReceipts.end() && actor &&
+              actor->GetProfileId() == saved.first.second && current->second.form.lock() == form) {
             current->second.dump = saved.second.dump;
           }
         }
         if (auto current = controller.lock()) current->AcknowledgeSubmittedBatch(transfers);
+      } catch (...) {
+        state->FailSave(attempt);
+        throw;
+      }
+      attempt->phase = Impl::SaveAttempt::Phase::Retired;
+      state->saveStorageBusy = false;
+      state->activeSave.reset();
+      attempt->backup.Clear();
+    };
+    auto finalize = std::make_shared<decltype(finalizeAction)>(std::move(finalizeAction));
+    decltype(storage)::element_type::UpsertOutcomeCallback receive =
+      [weakState, attempt, finalize](std::exception_ptr error) {
+        auto state = weakState.lock();
+        if (!state) return;
+        if (attempt->outcomeSeen || state->activeSave != attempt ||
+            attempt->phase == Impl::SaveAttempt::Phase::Retired) {
+          state->saveStorageFailed = true;
+          if (state->activeSave == attempt &&
+              attempt->phase == Impl::SaveAttempt::Phase::Submitting) attempt->duplicateOutcome = true;
+          return;
+        }
+        attempt->outcomeSeen = true;
+        if (attempt->phase == Impl::SaveAttempt::Phase::Submitting) {
+          attempt->stagedOutcome = std::move(error);
+          return;
+        }
+        (*finalize)(std::move(error));
       };
-    // Inline callbacks enqueue into the next batch, not the submitted buffer.
+    // Inline outcomes stay provisional until the submission call returns.
+    pImpl->activeSave = attempt;
+    pImpl->saveStorageBusy = true;
     pImpl->pendingChanges.clear();
     pImpl->retryBatch.Clear();
     published = true;
-    storage->Upsert(std::move(submitted.rows), completion);
+    storage->UpsertWithOutcome(std::move(submittedRows), receive);
+    attempt->phase = Impl::SaveAttempt::Phase::Waiting;
+    if (attempt->duplicateOutcome) pImpl->FailSave(attempt);
+    else if (attempt->stagedOutcome) (*finalize)(*attempt->stagedOutcome);
   } catch (std::exception& e) {
     pImpl->saveStorageFailed = true;
-    recoverSubmission();
+    if (published) pImpl->FailSave(attempt);
     spdlog::error("TickSaveStorage - Upsert failed with {}", e.what());
     return;
   } catch (...) {
     pImpl->saveStorageFailed = true;
-    recoverSubmission();
+    if (published) pImpl->FailSave(attempt);
     throw;
   }
 
