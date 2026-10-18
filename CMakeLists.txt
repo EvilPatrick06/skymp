@@ -301,10 +301,19 @@ endforeach()
 file(GLOB NODE_TESTS "${CMAKE_SOURCE_DIR}/misc/tests/node/test_*.js")
 foreach(TEST_SCRIPT ${NODE_TESTS})
   get_filename_component(TEST_NAME "${TEST_SCRIPT}" NAME_WE)
+  # Emscripten has no native Node addon SDK; the bridge is native-only too.
+  if(EMSCRIPTEN AND TEST_NAME STREQUAL "test_save_completion_addon")
+    continue()
+  endif()
   add_test(
     NAME node_${TEST_NAME}
     COMMAND node ${TEST_SCRIPT}
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   )
   set_tests_properties(node_${TEST_NAME} PROPERTIES TIMEOUT 120)
+  if(TEST_NAME STREQUAL "test_save_completion_addon")
+    set_tests_properties(node_${TEST_NAME} PROPERTIES
+      ENVIRONMENT "SKYMP_TEST_NODE_SDK_ROOT=${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}"
+    )
+  endif()
 endforeach()
