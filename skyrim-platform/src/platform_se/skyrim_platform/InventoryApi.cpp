@@ -5,6 +5,7 @@
 #include "InventoryLoadEpoch.h"
 #include "InventoryRemove.h"
 #include "InventoryRename.h"
+#include "MadePotion.h"
 
 extern CallNativeApi::NativeCallRequirements g_nativeCallRequirements;
 
@@ -526,8 +527,121 @@ Napi::Value InventoryApi::RemoveInventoryItems(const Napi::CallbackInfo& info)
   return Napi::Boolean::New(info.Env(), true);
 }
 
+// createMadePotion(formId, name, poison, effectIds, magnitudes, areas,
+// durations): builds, in this session, the potion the server keeps under
+// formId by its contents (Thornswood #1649), and gives it that very id, so
+// the pack the server sends, and everything the client sends back about the
+// bottle (drinking it, dropping it, putting it in a chest), all name the
+// same id. True when a potion has that id now: built by this call, or by an
+// earlier one this session (the caller keeps which contents it built under
+// which id). False, building nothing, for a request that is not well formed
+// (MadePotion::IsWellFormed), an effect id that is not a magic effect, or an
+// id some other form already has.
+//
+// Built the way the game builds a brew: a new potion copied from the bottle
+// the game uses for every brew (MadePotion::kPotionTemplate, or the poison
+// one), with the template's effects replaced by these and its name by the
+// one the game gave the brew. Synchronous, because the caller hands the new
+// form to addItemEx on the next line; it runs inside the JS tick, while the
+// Papyrus thread that drives it waits, the same place TESModPlatform's
+// CreateNpc builds its forms.
+Napi::Value InventoryApi::CreateMadePotion(const Napi::CallbackInfo& info)
+{
+  const auto env = info.Env();
+  MadePotion::Request request;
+  request.formId = NapiHelper::ExtractUInt32(info[0], "formId");
+  const auto name = NapiHelper::ExtractString(info[1], "name");
+  const bool poison = NapiHelper::ExtractBoolean(info[2], "poison");
+  auto effectIds = NapiHelper::ExtractArray(info[3], "effectIds");
+  auto magnitudes = NapiHelper::ExtractArray(info[4], "magnitudes");
+  auto areas = NapiHelper::ExtractArray(info[5], "areas");
+  auto durations = NapiHelper::ExtractArray(info[6], "durations");
+  for (uint32_t i = 0; i < effectIds.Length(); ++i) {
+    request.effectIds.push_back(
+      NapiHelper::ExtractUInt32(effectIds.Get(i), "effectIds[i]"));
+  }
+  for (auto [array, out] :
+       { std::make_pair(&magnitudes, &request.magnitudes),
+         std::make_pair(&areas, &request.areas),
+         std::make_pair(&durations, &request.durations) }) {
+    for (uint32_t i = 0; i < array->Length(); ++i) {
+      out->push_back(NapiHelper::ExtractDouble(array->Get(i), "effect value"));
+    }
+  }
+  if (!MadePotion::IsWellFormed(request)) {
+    return Napi::Boolean::New(env, false);
+  }
+
+  if (auto existing = RE::TESForm::LookupByID(request.formId)) {
+    return Napi::Boolean::New(env, existing->Is(RE::FormType::AlchemyItem));
+  }
+
+  std::vector<RE::EffectSetting*> mgefs;
+  for (auto id : request.effectIds) {
+    auto mgef = RE::TESForm::LookupByID<RE::EffectSetting>(id);
+    if (!mgef) {
+      return Napi::Boolean::New(env, false);
+    }
+    mgefs.push_back(mgef);
+  }
+
+  auto templ = RE::TESForm::LookupByID<RE::AlchemyItem>(
+    poison ? MadePotion::kPoisonTemplate : MadePotion::kPotionTemplate);
+  auto factory =
+    RE::IFormFactory::GetConcreteFormFactoryByType<RE::AlchemyItem>();
+  if (!templ || !factory) {
+    return Napi::Boolean::New(env, false);
+  }
+  RE::AlchemyItem* potion = factory->Create();
+  if (!potion) {
+    return Napi::Boolean::New(env, false);
+  }
+
+  // The game's own copy: model, icon, sounds, weight, keywords, the ENIT
+  // data. Then this brew's effects in place of the template's (the copied
+  // Effect objects are left alone rather than freed: a few bytes for each
+  // brew built, against freeing what the copy may share).
+  potion->Copy(templ);
+  potion->effects.clear();
+  potion->hostileCount = 0;
+  for (size_t i = 0; i < mgefs.size(); ++i) {
+    auto effect = new RE::Effect();
+    effect->baseEffect = mgefs[i];
+    effect->effectItem.magnitude = static_cast<float>(request.magnitudes[i]);
+    effect->effectItem.area = static_cast<uint32_t>(request.areas[i]);
+    effect->effectItem.duration = static_cast<uint32_t>(request.durations[i]);
+    effect->cost =
+      MadePotion::Cost(mgefs[i]->data.baseCost, effect->effectItem.magnitude,
+                       effect->effectItem.duration);
+    if (mgefs[i]->IsHostile()) {
+      potion->hostileCount++;
+    }
+    potion->effects.push_back(effect);
+  }
+  // The first effect is the one the game named the brew after.
+  potion->avEffectSetting = mgefs[0];
+  potion->data.flags.reset(RE::AlchemyItem::AlchemyFlag::kCostOverride);
+  if (poison) {
+    potion->data.flags.reset(RE::AlchemyItem::AlchemyFlag::kMedicine);
+    potion->data.flags.set(RE::AlchemyItem::AlchemyFlag::kPoison);
+  } else {
+    potion->data.flags.reset(RE::AlchemyItem::AlchemyFlag::kPoison);
+    potion->data.flags.set(RE::AlchemyItem::AlchemyFlag::kMedicine);
+  }
+  if (!name.empty()) {
+    potion->fullName = name.c_str();
+  }
+  potion->SetFormID(request.formId, false);
+
+  return Napi::Boolean::New(
+    env, RE::TESForm::LookupByID<RE::AlchemyItem>(request.formId) == potion);
+}
+
 void InventoryApi::Register(Napi::Env env, Napi::Object& exports)
 {
+  exports.Set("createMadePotion",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(CreateMadePotion)));
   exports.Set("renameInventoryItems",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(RenameInventoryItems)));

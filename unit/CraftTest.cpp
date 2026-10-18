@@ -819,7 +819,24 @@ public:
   nlohmann::json effects;
 };
 
-CraftItemMessage Brew(std::vector<uint32_t> ingredients)
+// THORNSWOOD PATCH (Thornswood #1649). What the client reads off a bottle
+// the game brewed: these effects, in this order, at believable strengths.
+Inventory::Made Bottle(std::vector<uint32_t> mgefs, bool poison = false)
+{
+  Inventory::Made made;
+  made.name = poison ? "Weak Poison" : "Potion of Restore Health";
+  made.poison = poison;
+  for (auto id : mgefs) {
+    made.effects.push_back({ id, 12.5f, 0, 30 });
+  }
+  return made;
+}
+
+// A brew as the client sends it. Since Thornswood #1649 a brew carries what
+// is in the bottle (resultPotion); `bottle` is the effects it names, and with
+// none the message has no description, the way a client before #1649 sent it.
+CraftItemMessage Brew(std::vector<uint32_t> ingredients,
+                      std::vector<uint32_t> bottle = {})
 {
   CraftItemMessage msg;
   for (auto id : ingredients) {
@@ -827,6 +844,9 @@ CraftItemMessage Brew(std::vector<uint32_t> ingredients)
   }
   msg.data.workbench = kForge;
   msg.data.resultObjectId = kBrewedBottle;
+  if (!bottle.empty()) {
+    msg.data.resultPotion = Bottle(bottle);
+  }
   return msg;
 }
 }
@@ -895,7 +915,8 @@ TEST_CASE("onCraft's sixth argument names a brew's effects, and a brew off "
 
     gate->armed = true;
     p.GetActionListener().OnCraftItem(
-      msgData, Brew({ kBlueMountainFlower, kWheat }));
+      msgData,
+      Brew({ kBlueMountainFlower, kWheat }, { kRestoreHealth, kFortifyHealth }));
     gate->armed = false;
 
     REQUIRE(gate->asked == 1);
@@ -920,8 +941,8 @@ TEST_CASE("onCraft's sixth argument names a brew's effects, and a brew off "
     const Inventory before = ac.GetInventory();
 
     gate->armed = true;
-    p.GetActionListener().OnCraftItem(msgData,
-                                      Brew({ kLavender, kTundraCotton }));
+    p.GetActionListener().OnCraftItem(
+      msgData, Brew({ kLavender, kTundraCotton }, { kResistMagic }));
     gate->armed = false;
 
     REQUIRE(gate->asked == 1);
@@ -1282,4 +1303,75 @@ TEST_CASE("A craft's output name cannot be empty, and null names none "
   REQUIRE(craft.GetOutputName() == std::optional<std::string>("Woven"));
   craft.SetOutputName(std::nullopt);
   REQUIRE(!craft.GetOutputName().has_value());
+}
+
+TEST_CASE("A named output keeps a brew's contents only while it is the brew "
+          "(Thornswood #1649, #2906)",
+          "[Craft][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto gamemode = std::make_shared<NameCraftOutput>(p.worldState);
+  p.AddListener(gamemode);
+  RawMessageData msgData;
+  msgData.userId = 0;
+
+  Inventory::Made bottle = Bottle({ kRestoreHealth, kFortifyHealth });
+  Inventory::Round(bottle);
+  const uint32_t madeId = Inventory::MadeBaseId(bottle);
+  const auto madeCount = [&](MpActor& ac) {
+    uint32_t sum = 0;
+    for (auto& entry : ac.GetInventory().entries) {
+      if (entry.baseId == madeId && entry.made == bottle) {
+        sum += entry.count;
+      }
+    }
+    return sum;
+  };
+
+  {
+    // A master's double batch: the same bottle twice, contents and all.
+    auto& ac = MakeCrafter(p, kForge);
+    ac.AddItem(kBlueMountainFlower, 1);
+    ac.AddItem(kWheat, 1);
+    gamemode->baseId = madeId;
+    gamemode->count = 2;
+    gamemode->armed = true;
+    p.GetActionListener().OnCraftItem(
+      msgData,
+      Brew({ kBlueMountainFlower, kWheat }, { kRestoreHealth, kFortifyHealth }));
+    gamemode->armed = false;
+
+    REQUIRE(gamemode->seenBaseId == madeId);
+    CHECK(madeCount(ac) == 2);
+    CHECK(ac.GetInventory().GetItemCount(kBlueMountainFlower) == 0);
+
+    p.DestroyActor(0xff000000);
+    DoDisconnect(p, 0);
+  }
+
+  {
+    // Another record named in its place: that record, with nothing of the
+    // brew on it.
+    auto& ac = MakeCrafter(p, kForge);
+    ac.AddItem(kBlueMountainFlower, 1);
+    ac.AddItem(kWheat, 1);
+    const uint32_t daggers = ac.GetInventory().GetItemCount(kIronDagger);
+    gamemode->baseId = kIronDagger;
+    gamemode->count = 1;
+    gamemode->armed = true;
+    p.GetActionListener().OnCraftItem(
+      msgData,
+      Brew({ kBlueMountainFlower, kWheat }, { kRestoreHealth, kFortifyHealth }));
+    gamemode->armed = false;
+
+    CHECK(madeCount(ac) == 0);
+    CHECK(ac.GetInventory().GetItemCount(madeId) == 0);
+    CHECK(ac.GetInventory().GetItemCount(kIronDagger) == daggers + 1);
+    for (auto& entry : ac.GetInventory().entries) {
+      CHECK(!entry.made);
+    }
+
+    p.DestroyActor(0xff000000);
+    DoDisconnect(p, 0);
+  }
 }
