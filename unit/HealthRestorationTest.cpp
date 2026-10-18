@@ -115,3 +115,65 @@ TEST_CASE("An onEatItem listener scales a potion before it lands",
   REQUIRE(part < full);
   REQUIRE(none == 0.1f);
 }
+
+namespace {
+// Thornswood #1383: counts onEatItem and keeps the base id it was raised for.
+class EatSeenListener : public FakeListener
+{
+public:
+  bool OnMpApiEvent(const GameModeEvent& event) override
+  {
+    if (std::string(event.GetName()) == "onEatItem") {
+      ++seen;
+      args = event.GetArgumentsJsonArray();
+    }
+    return true;
+  }
+
+  int seen = 0;
+  std::string args;
+};
+}
+
+TEST_CASE("A brewed bottle the pack holds raises onEatItem and is taken",
+          "[Restoration]")
+{
+  using namespace std::chrono_literals;
+  PartOne& p = GetPartOne();
+  auto listener = std::make_shared<EatSeenListener>();
+  p.AddListener(listener);
+  DoConnect(p, 0);
+  p.CreateActor(0xff000000, { 0, 0, 0 }, 0, 0x3c);
+  p.SetUserActor(0, 0xff000000);
+
+  auto& ac = p.worldState.GetFormAt<MpActor>(0xff000000);
+  ac.SetLastAttributesPercentagesUpdate(std::chrono::steady_clock::now() -
+                                        10s);
+  constexpr uint32_t kBottle = 0xff000123; // a runtime form: a brew
+  ac.AddItem(kBottle, 2);
+  ac.SetPercentages({ 0.5f, 0.f, 0.f });
+
+  RawMessageData rawMsgData;
+  rawMsgData.userId = 0;
+  OnEquipMessage msg;
+  msg.baseId = kBottle;
+  p.GetActionListener().OnEquip(rawMsgData, msg);
+
+  REQUIRE(listener->seen == 1);
+  REQUIRE(listener->args ==
+          "[" + std::to_string(0xff000000) + "," + std::to_string(kBottle) +
+            "]");
+  REQUIRE(ac.GetInventory().GetItemCount(kBottle) == 1);
+  // No record, so the server applies nothing itself.
+  REQUIRE(ac.GetChangeForm().actorValues.healthPercentage == 0.5f);
+
+  // A runtime id the pack does not hold is not drunk.
+  msg.baseId = 0xff000456;
+  p.GetActionListener().OnEquip(rawMsgData, msg);
+  REQUIRE(listener->seen == 1);
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+  auto& ls = p.worldState.listeners;
+  ls.erase(std::remove(ls.begin(), ls.end(), listener), ls.end());
+}
