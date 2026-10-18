@@ -808,31 +808,6 @@ bool MpActor::OnEquip(uint32_t baseId)
   auto lookupRes = espm.GetBrowser().LookupById(baseId);
 
   if (!lookupRes.rec) {
-    /*
-      THORNSWOOD PATCH (Thornswood #1383). A bottle somebody brewed is drunk.
-
-      A brew is a runtime form (above 0xff000000) that only the brewing client
-      has a record of; CraftService puts it in the server's pack from the
-      recipeless branch. The client sends OnEquip with that id when it is
-      drunk (sendInputsService.ts sends one for every potion), and this used
-      to return here: the gamemode was never told, so a brewed potion of cure
-      disease cured nothing on the server, and the bottle was never taken out
-      of the pack, so the next inventory the server sent put it back.
-
-      So a runtime form the server's own pack holds raises onEatItem and one
-      is taken. Neither ingredient nor ALCH, because there is no record:
-      EatItemEvent::OnFireSuccess then applies nothing (the client already
-      applied the bottle's effects) and the gamemode, which knows what the
-      brew was from mp.onCraft's effects (fork #60), decides what the drink
-      does. A runtime id the pack does not hold is refused as before, so
-      nothing is drunk on the client's word.
-    */
-    if (baseId >= 0xff000000 && GetInventory().GetItemCount(baseId) > 0) {
-      EatItemEvent brewedBottle(this, baseId, false, false);
-      brewedBottle.Fire(GetParent());
-      RemoveItem(baseId, 1, nullptr);
-      return true;
-    }
     return false;
   }
 
