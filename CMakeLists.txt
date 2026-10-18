@@ -301,6 +301,10 @@ endforeach()
 file(GLOB NODE_TESTS "${CMAKE_SOURCE_DIR}/misc/tests/node/test_*.js")
 foreach(TEST_SCRIPT ${NODE_TESTS})
   get_filename_component(TEST_NAME "${TEST_SCRIPT}" NAME_WE)
+  # Emscripten has no native Node addon SDK; the bridge is native-only too.
+  if(EMSCRIPTEN AND TEST_NAME STREQUAL "test_save_completion_addon")
+    continue()
+  endif()
   add_test(
     NAME node_${TEST_NAME}
     COMMAND node ${TEST_SCRIPT}

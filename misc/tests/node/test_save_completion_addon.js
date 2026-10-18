@@ -28,7 +28,7 @@ assert.match(types, /readonly supportsDurableUpsert: boolean;/);
 const triplet = process.platform === 'win32' ? 'x64-windows-sp' : process.platform === 'darwin' ? 'x64-osx' : 'x64-linux';
 const sdk = process.env.SKYMP_TEST_NODE_SDK_ROOT || path.join(root, 'build/vcpkg_installed', triplet);
 const include = path.join(sdk, 'include');
-const nodeInclude = ['node', 'node-embedder-api-prebuilt', ''].map(p => path.join(include, p))
+const nodeInclude = ['node', 'node-embedder-api-prebuilt', 'node-embedder-api', ''].map(p => path.join(include, p))
   .find(p => fs.existsSync(path.join(p, 'node_api.h')));
 assert.ok(fs.existsSync(path.join(include, 'napi.h')) && nodeInclude, 'Configured Node-API SDK missing');
 const work = fs.mkdtempSync(path.join(os.tmpdir(), 'thornswood-save-completion-'));
