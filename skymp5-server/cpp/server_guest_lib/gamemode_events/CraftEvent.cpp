@@ -9,13 +9,15 @@ CraftEvent::CraftEvent(MpActor* actor_, uint32_t craftedItemBaseId_,
                        uint32_t count_, uint32_t recipeId_,
                        const std::vector<Inventory::Entry>& entries_,
                        uint32_t workbenchId_,
-                       std::optional<std::vector<uint32_t>> effects_)
+                       std::optional<std::vector<uint32_t>> effects_,
+                       std::optional<Inventory::Made> made_)
   : actor(actor_)
   , craftedItemBaseId(craftedItemBaseId_)
   , count(count_)
   , recipeId(recipeId_)
   , workbenchId(workbenchId_)
   , effects(std::move(effects_))
+  , made(std::move(made_))
   , entries(entries_)
   , outputBaseId(craftedItemBaseId_)
   , outputCount(count_)
@@ -136,6 +138,13 @@ void CraftEvent::OnFireSuccess(WorldState*)
 {
   Inventory::ExtraData extraData;
   extraData.name = outputName;
+  // Thornswood #1649: the brewed bottle goes in by its contents, see
+  // CraftService. Only while the output is still that bottle: a listener that
+  // names another record (#2906) gets that record, which has contents of its
+  // own, and a double batch is the same bottle twice.
+  if (made && outputBaseId == craftedItemBaseId) {
+    extraData.made = made;
+  }
   // Refused before the inputs are taken, so a pack that can't hold the
   // output keeps them.
   Inventory afterInputs = actor->GetInventory();

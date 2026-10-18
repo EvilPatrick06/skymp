@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <simdjson.h>
 #include <string>
 #include <tuple>
@@ -28,6 +29,83 @@ public:
   static Inventory FromJson(const simdjson::dom::element& element);
   static Inventory FromJson(const nlohmann::json& j);
 
+  /*
+    THORNSWOOD PATCH (Thornswood #1649). A made thing, kept as what it is.
+
+    A potion brewed at a lab is a form the brewing game made while it ran
+    (above 0xff000000). The id means nothing to the next session or to any
+    other client, so the server keeps the bottle by its contents instead:
+    each effect's magic effect record (MGEF, a global form id), magnitude,
+    area and duration, the name the game gave it and whether it is a
+    poison. The client builds a form from this on arrival (createMadePotion)
+    and the server applies these effects when it is drunk.
+
+    An entry carrying `made` has the base id MadeBaseId(made): the same
+    contents always get the same id, so two bottles of the same brew stack
+    wherever they are, whoever brewed them, in every session.
+  */
+  struct MadeEffect
+  {
+    template <class Archive>
+    void Serialize(Archive& archive)
+    {
+      archive.Serialize("effectId", effectId)
+        .Serialize("magnitude", magnitude)
+        .Serialize("area", area)
+        .Serialize("duration", duration);
+    }
+
+    uint32_t effectId = 0;
+    float magnitude = 0.f;
+    uint32_t area = 0;
+    uint32_t duration = 0;
+
+    friend bool operator==(const MadeEffect& lhs, const MadeEffect& rhs)
+    {
+      return std::tie(lhs.effectId, lhs.magnitude, lhs.area, lhs.duration) ==
+        std::tie(rhs.effectId, rhs.magnitude, rhs.area, rhs.duration);
+    }
+  };
+
+  struct Made
+  {
+    template <class Archive>
+    void Serialize(Archive& archive)
+    {
+      archive.Serialize("name", name)
+        .Serialize("poison", poison)
+        .Serialize("effects", effects);
+    }
+
+    std::string name;
+    bool poison = false;
+    std::vector<MadeEffect> effects;
+
+    friend bool operator==(const Made& lhs, const Made& rhs)
+    {
+      return std::tie(lhs.name, lhs.poison, lhs.effects) ==
+        std::tie(rhs.name, rhs.poison, rhs.effects);
+    }
+    friend bool operator!=(const Made& lhs, const Made& rhs)
+    {
+      return !(lhs == rhs);
+    }
+  };
+
+  // The base id an entry carrying `made` has. In 0xff800000..0xffffffff,
+  // the top half of the runtime range: a game session hands out its own
+  // runtime ids from the bottom of that range upwards, one at a time, and
+  // never gets near the top, so the client can give the form it builds this
+  // very id. FNV-1a over the canonical text of `made` (Made::Canonical).
+  static constexpr uint32_t kMadeIdFirst = 0xff800000;
+  static uint32_t MadeBaseId(const Made& made);
+
+  // Magnitudes are kept to two decimals so the same brew made twice is the
+  // same text, and the text survives a JSON round trip. Made::Round applies
+  // that, Canonical writes the text the id is hashed from.
+  static void Round(Made& made);
+  static std::string Canonical(const Made& made);
+
   class ExtraData
   {
   public:
@@ -44,7 +122,8 @@ public:
         .Serialize("poisonId", poisonId)
         .Serialize("poisonCount", poisonCount)
         .Serialize("worn", worn_)
-        .Serialize("wornLeft", wornLeft);
+        .Serialize("wornLeft", wornLeft)
+        .Serialize("made", made);
     }
 
     std::optional<float> health;
@@ -58,6 +137,7 @@ public:
     std::optional<uint32_t> poisonCount;
     std::optional<bool> worn_;
     std::optional<bool> wornLeft;
+    std::optional<Made> made; // Thornswood #1649, see Made above
   };
 
   class Entry : public ExtraData

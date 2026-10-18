@@ -6,6 +6,7 @@
 #include <fmt/format.h>
 #include <limits>
 #include <spdlog/spdlog.h>
+#include <cmath>
 #include <tuple>
 
 Inventory::Entry::Entry()
@@ -79,11 +80,45 @@ bool Inventory::Entry::EqualExceptCount(const Inventory::Entry& other) const
   // nullopt mismatch. Logically it should be the same
   return std::make_tuple(baseId, health, enchantmentId, maxCharge,
                          removeEnchantmentOnUnequip, chargePercent, name, soul,
-                         poisonId, poisonCount, GetWorn()) ==
+                         poisonId, poisonCount, GetWorn(), made) ==
     std::make_tuple(other.baseId, other.health, other.enchantmentId,
                     other.maxCharge, other.removeEnchantmentOnUnequip,
                     other.chargePercent, other.name, other.soul,
-                    other.poisonId, other.poisonCount, other.GetWorn());
+                    other.poisonId, other.poisonCount, other.GetWorn(),
+                    other.made);
+}
+
+void Inventory::Round(Made& made)
+{
+  for (auto& effect : made.effects) {
+    if (!std::isfinite(effect.magnitude)) {
+      effect.magnitude = 0.f;
+    }
+    effect.magnitude = std::round(effect.magnitude * 100.f) / 100.f;
+  }
+}
+
+std::string Inventory::Canonical(const Made& made)
+{
+  // Two decimals, as Round leaves them; fmt prints a float's shortest
+  // round-trip text, so "12.3" stays "12.3" on every machine.
+  std::string text = made.poison ? "poison|" : "potion|";
+  text += made.name;
+  for (const auto& effect : made.effects) {
+    text += fmt::format("|{:x}:{:.2f}:{}:{}", effect.effectId,
+                        effect.magnitude, effect.area, effect.duration);
+  }
+  return text;
+}
+
+uint32_t Inventory::MadeBaseId(const Made& made)
+{
+  uint32_t hash = 2166136261u;
+  for (unsigned char c : Canonical(made)) {
+    hash ^= c;
+    hash *= 16777619u;
+  }
+  return kMadeIdFirst | (hash & (~kMadeIdFirst));
 }
 
 Inventory& Inventory::AddItem(uint32_t baseId, uint32_t count)
