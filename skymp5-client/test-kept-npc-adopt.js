@@ -110,6 +110,8 @@ function rig() {
   const stubs = {
     skyrimPlatform: sp,
     './spawnProcess': { SpawnProcess: function (app, pos, id) { w.spawnProcess.push(id); } },
+    // The spawn log (Thornswood #1287) only reads; stood in so it writes nothing here.
+    './spawnTrace': { traceSpawnChosen: function () { }, traceRespawnNeeded: function () { } },
     '../extensions/objectReferenceEx': { ObjectReferenceEx: { getWorldOrCell: function () { return 0x3c; }, getPos: function () { return [0, 0, 0]; }, dealWithRef: function () { } } },
     '../services/spApiInteractor': { SpApiInteractor: { getControllerInstance: function () { return controller; } } },
   };
