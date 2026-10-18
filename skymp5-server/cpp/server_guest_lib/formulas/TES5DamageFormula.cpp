@@ -6,11 +6,75 @@
 #include "WorldState.h"
 #include "libespm/espm.h"
 
+#include <algorithm>
+#include <string>
+
 namespace internal {
 
 bool IsUnarmedAttack(const uint32_t sourceFormId)
 {
   return sourceFormId == 0x1f4;
+}
+
+/*
+  THORNSWOOD PATCH (#1384). A PIECE AT 120% CONDITION HITS AND HOLDS 5% HARDER.
+
+  Thornswood's gamemode keeps a piece's condition on its name, the way the
+  person sees it in the inventory: "Iron Sword (85%)". A plain name is 100%,
+  and the most a repair puts a piece at is 120%, which only the half that
+  makes the kit can do (docs/systems/durability.md in the Thornswood repo).
+  That page's table: at 120% a weapon does 5% more damage and an armour
+  piece gives 5% more of its own rating; clothing gets nothing.
+
+  Nothing in this formula read an inventory entry's name before, so the
+  numbers never moved. The name is read here the way the gamemode reads it
+  (the SUFFIX pattern in its durability block): " (NN%)" at the end, one to
+  three digits, held to 0..120. A name without one is 100.
+*/
+constexpr uint32_t kThornswoodConditionSound = 100;
+constexpr uint32_t kThornswoodConditionHighest = 120;
+constexpr float kThornswoodHighestConditionMult = 1.05f;
+
+uint32_t ThornswoodConditionOf(const Inventory::Entry& entry)
+{
+  if (!entry.name) {
+    return kThornswoodConditionSound;
+  }
+  const std::string& name = *entry.name;
+  if (name.size() < 5 || name.compare(name.size() - 2, 2, "%)") != 0) {
+    return kThornswoodConditionSound;
+  }
+  const size_t open = name.rfind(" (");
+  if (open == std::string::npos) {
+    return kThornswoodConditionSound;
+  }
+  const size_t first = open + 2;
+  const size_t last = name.size() - 2; // one past the last digit
+  if (last <= first || last - first > 3) {
+    return kThornswoodConditionSound;
+  }
+  uint32_t value = 0;
+  for (size_t i = first; i < last; ++i) {
+    if (name[i] < '0' || name[i] > '9') {
+      return kThornswoodConditionSound;
+    }
+    value = value * 10 + static_cast<uint32_t>(name[i] - '0');
+  }
+  return std::min(value, kThornswoodConditionHighest);
+}
+
+bool ThornswoodAtHighestCondition(const Inventory::Entry& entry)
+{
+  return ThornswoodConditionOf(entry) >= kThornswoodConditionHighest;
+}
+
+// Clothing carries no buff. BOD2 holds the armour type (0 light, 1 heavy,
+// 2 clothing) after the body part flags. The BODT read in ARMO.cpp keeps its
+// general flags in that slot rather than the type, so it is not asked; a
+// piece of clothing has no armour rating to raise in any case.
+bool ThornswoodIsClothing(const espm::ARMO::Data& armorData)
+{
+  return armorData.bod2.present && armorData.bod2.skill == 2;
 }
 
 class TES5DamageFormulaImpl
@@ -31,6 +95,7 @@ private:
 
 private:
   [[nodiscard]] float GetBaseWeaponDamage() const;
+  [[nodiscard]] float CalcWeaponConditionMult() const;
   [[nodiscard]] float CalcWeaponRating() const;
   [[nodiscard]] float CalcArmorRatingComponent(
     const Inventory::Entry& opponentEquipmentEntry) const;
@@ -62,10 +127,32 @@ float TES5DamageFormulaImpl::GetBaseWeaponDamage() const
   return weapData.weapData->damage;
 }
 
+// THORNSWOOD PATCH (#1384). The weapon the hit was landed with is the
+// aggressor's worn entry of hitData.source. HitData carries no hand, so when
+// both hands hold that same weapon the buff is given only when both are at
+// 120%: it is never given for a piece that may not be the one that struck.
+float TES5DamageFormulaImpl::CalcWeaponConditionMult() const
+{
+  bool worn = false;
+  bool allHighest = true;
+  const auto eq = aggressor.GetEquipment();
+  for (const auto& entry : eq.inv.entries) {
+    if (entry.baseId != hitData.source ||
+        entry.GetWorn() == Inventory::Worn::None) {
+      continue;
+    }
+    worn = true;
+    if (!ThornswoodAtHighestCondition(entry)) {
+      allHighest = false;
+    }
+  }
+  return worn && allHighest ? kThornswoodHighestConditionMult : 1.f;
+}
+
 float TES5DamageFormulaImpl::CalcWeaponRating() const
 {
   // TODO(#457): take other components into account
-  return GetBaseWeaponDamage();
+  return GetBaseWeaponDamage() * CalcWeaponConditionMult();
 }
 
 float TES5DamageFormulaImpl::CalcMagicEffects(const Effects& effects) const
@@ -91,6 +178,12 @@ float TES5DamageFormulaImpl::CalcArmorRatingComponent(
       espm::GetData<espm::ARMO>(opponentEquipmentEntry.baseId, espmProvider);
     // TODO(#458): take other components into account
     auto ac = static_cast<float>(armorData.baseRatingX100) / 100;
+    // THORNSWOOD PATCH (#1384): 5% more of this piece's own rating at 120%
+    // condition. The enchantment below is not the piece's rating.
+    if (ThornswoodAtHighestCondition(opponentEquipmentEntry) &&
+        !ThornswoodIsClothing(armorData)) {
+      ac *= kThornswoodHighestConditionMult;
+    }
     if (armorData.enchantmentFormId) {
       // TODO(#632) refactor this effect with actor effect system
       const auto enchantmentData =
