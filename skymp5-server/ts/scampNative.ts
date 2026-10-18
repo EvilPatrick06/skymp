@@ -20,6 +20,11 @@ export interface InventorySnapshot {
   }[];
 }
 
+export interface SaveCompletionResult {
+  readonly phase: "writes-completed";
+  readonly supportsDurableUpsert: boolean;
+}
+
 export interface ScampServer {
   on(event: "connect", handler: (userId: number) => void): void;
   on(event: "disconnect", handler: (userId: number) => void): void;
@@ -28,6 +33,13 @@ export interface ScampServer {
     handler: (userId: number, content: string) => void
   ): void;
   attachSaveStorage(): void;
+  /** Terminal owner-thread drain of already accepted native saves. Before
+   * entry, the trusted caller must exclude all mutation producers and finish
+   * its JS writes. Never resume gameplay after entry, including on error or an
+   * unknown result. Completion alone proves neither durability nor process exit.
+   * timeoutMs must be a primitive finite integer from 1 through 30000.
+   */
+  completeSavesForShutdown(timeoutMs: number): SaveCompletionResult;
   tick(): void;
   compareAndSetInventory(formId: number, expected: InventorySnapshot,
     expectedReceipt: string, replacement: InventorySnapshot, sequence: number,
