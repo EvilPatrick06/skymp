@@ -41,6 +41,7 @@
 #include <save_storages/SaveStorageFactory.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <sstream>
+#include <stdexcept>
 #include <string_view>
 
 enum class CallType
@@ -90,6 +91,7 @@ Napi::Object ScampServer::Init(Napi::Env env, Napi::Object exports)
     env, "ScampServer",
     { InstanceMethod("_setSelf", &ScampServer::_SetSelf),
       InstanceMethod("attachSaveStorage", &ScampServer::AttachSaveStorage),
+      InstanceMethod("completeSavesForShutdown", &ScampServer::CompleteSavesForShutdown),
       InstanceMethod("validateInventoryTransaction", &ScampServer::ValidateInventoryTransaction),
       InstanceMethod("writePrivateEconomyLedger", &ScampServer::WritePrivateEconomyLedger),
       InstanceMethod("tick", &ScampServer::Tick),
@@ -870,11 +872,46 @@ Napi::Value ScampServer::GetSavedInventoryReceipt(
   }
 }
 
+Napi::Value ScampServer::CompleteSavesForShutdown(const Napi::CallbackInfo& info)
+{
+  try {
+    if (info.Length() != 1 || !info[0].IsNumber()) {
+      throw std::invalid_argument("Expected one numeric timeoutMs");
+    }
+    const double timeoutMs = info[0].As<Napi::Number>().DoubleValue();
+    if (!std::isfinite(timeoutMs) || std::trunc(timeoutMs) != timeoutMs ||
+        timeoutMs < 1 || timeoutMs > 30000) {
+      throw std::invalid_argument("timeoutMs must be an integer from 1 to 30000");
+    }
+
+    const auto completed = partOne->worldState.CompleteSavesForShutdown(
+      static_cast<uint32_t>(timeoutMs));
+    auto result = Napi::Object::New(info.Env());
+    // Defining own data properties avoids inherited JavaScript setters after
+    // native completion. Allocation failure still leaves the world terminal.
+    result.DefineProperties({
+      Napi::PropertyDescriptor::Value(
+        "phase", Napi::String::New(info.Env(), "writes-completed"),
+        napi_enumerable),
+      Napi::PropertyDescriptor::Value(
+        "supportsDurableUpsert",
+        Napi::Boolean::New(info.Env(), completed.supportsDurableUpsert),
+        napi_enumerable),
+    });
+    return result;
+  } catch (const std::exception& error) {
+    throw Napi::Error::New(info.Env(), error.what());
+  } catch (...) {
+    throw Napi::Error::New(info.Env(), "Native save completion failed");
+  }
+}
+
 Napi::Value ScampServer::Tick(const Napi::CallbackInfo& info)
 {
   ANTIGO_CONTEXT_INIT(ctx);
 
   try {
+    partOne->worldState.EnsureTickAllowed();
     tickEnv = info.Env();
 
     bool tickFinished = false;
