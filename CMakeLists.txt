@@ -307,4 +307,9 @@ foreach(TEST_SCRIPT ${NODE_TESTS})
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   )
   set_tests_properties(node_${TEST_NAME} PROPERTIES TIMEOUT 120)
+  if(TEST_NAME STREQUAL "test_save_completion_addon")
+    set_tests_properties(node_${TEST_NAME} PROPERTIES
+      ENVIRONMENT "SKYMP_TEST_NODE_SDK_ROOT=${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}"
+    )
+  endif()
 endforeach()
