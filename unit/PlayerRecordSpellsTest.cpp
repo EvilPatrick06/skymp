@@ -83,8 +83,8 @@ TEST_CASE("The server grants and takes back Flames like any other spell",
 
   // AddSpell used to answer false and record nothing: the engine counted
   // Flames as held already, from the Player record.
-  REQUIRE(static_cast<bool>(
-    papyrusActor.AddSpell(actor.ToVarValue(), { SpellArg(p, kFlames) })));
+  REQUIRE(static_cast<bool>(papyrusActor.AddSpell(
+    actor.ToVarValue(), { SpellArg(p, kFlames), VarValue(false) })));
   REQUIRE(actor.IsSpellLearned(kFlames));
   auto list = actor.GetSpellList();
   REQUIRE(std::find(list.begin(), list.end(), kFlames) != list.end());
