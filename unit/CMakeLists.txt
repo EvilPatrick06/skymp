@@ -67,6 +67,13 @@ if(BUILD_UNIT_TESTS AND NOT EMSCRIPTEN)
   apply_default_settings(TARGETS private-ledger-test)
   add_test(NAME private_ledger COMMAND private-ledger-test "${CMAKE_BINARY_DIR}/private-ledger-tests")
 
+  # mp.writeFileWhole's file write (Thornswood #2740), on the real file system:
+  # a reader holding the old file, one refusing the rename, nothing left over.
+  add_executable(whole-file-write-test "${CMAKE_SOURCE_DIR}/misc/tests/whole_file_write_test.cpp")
+  target_include_directories(whole-file-write-test PRIVATE "${CMAKE_SOURCE_DIR}/skymp5-server/cpp/addon")
+  apply_default_settings(TARGETS whole-file-write-test)
+  add_test(NAME whole_file_write COMMAND whole-file-write-test "${CMAKE_BINARY_DIR}/whole-file-write-tests")
+
   # This contract runner must not use unit/main.cpp, which loads game plugins.
   add_executable(save-capability-test "${CMAKE_SOURCE_DIR}/misc/tests/save_capability_test.cpp")
   target_link_libraries(save-capability-test PRIVATE viet)
@@ -78,6 +85,12 @@ if(BUILD_UNIT_TESTS AND NOT EMSCRIPTEN)
   apply_default_settings(TARGETS save-settlement-test)
   add_test(NAME save_settlement COMMAND save-settlement-test)
   set_tests_properties(save_settlement PROPERTIES TIMEOUT 20)
+
+  add_executable(save-outcome-test "${CMAKE_SOURCE_DIR}/misc/tests/save_outcome_test.cpp")
+  target_link_libraries(save-outcome-test PRIVATE viet)
+  apply_default_settings(TARGETS save-outcome-test)
+  add_test(NAME save_outcome COMMAND save-outcome-test)
+  set_tests_properties(save_outcome PROPERTIES TIMEOUT 20)
 
   add_executable(save-directory-test "${CMAKE_SOURCE_DIR}/misc/tests/save_directory_test.cpp")
   target_include_directories(save-directory-test PRIVATE "${CMAKE_SOURCE_DIR}/skymp5-server/cpp/server_guest_lib")

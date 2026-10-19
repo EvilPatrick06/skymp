@@ -24,6 +24,8 @@ public:
     typename ISaveStorage<T, FormDescType, FilterType>::IterateSyncCallback;
   using UpsertCallback =
     typename ISaveStorage<T, FormDescType, FilterType>::UpsertCallback;
+  using UpsertOutcomeCallback =
+    typename ISaveStorage<T, FormDescType, FilterType>::UpsertOutcomeCallback;
   using IterateCallback =
     typename ISaveStorage<T, FormDescType, FilterType>::IterateCallback;
 
@@ -95,6 +97,7 @@ public:
   }
 
   bool SupportsDurableUpsert() const noexcept override { return durableUpsert; }
+  bool SupportsUpsertOutcomes() const noexcept override { return true; }
 
   bool IsSettled() const override
   {
@@ -117,6 +120,8 @@ public:
       if (!iterateCallbacks.owns_lock()) return false;
       std::unique_lock iterates(state.share6.m, std::try_to_lock);
       if (!iterates.owns_lock()) return false;
+      std::unique_lock outcomes(state.share7.m, std::try_to_lock);
+      if (!outcomes.owns_lock()) return false;
       // Failure is read last: a queued operation can become active and fail
       // between the initial observation and acquiring the queue locks.
       return state.share2.exceptions.empty() &&
@@ -124,8 +129,10 @@ public:
         state.share4.upsertCallbacksToFire.empty() &&
         state.share5.iterateCallbacksToFire.empty() &&
         state.share6.iterateTasks.empty() &&
+        state.share7.outcomes.empty() &&
         state.tickStore.preparedUpsertCallbacksToFire.empty() &&
         state.tickStore.preparedIterateCallbacksToFire.empty() &&
+        state.tickStore.preparedOutcomes.empty() &&
         SaveStorageDetail::NoActiveOrFailedOperations(
           [&] { return state.publicOperations.load(); },
           [&] { return state.workerActive.load(); },
@@ -185,6 +192,20 @@ public:
     }
   }
 
+  void UpsertWithOutcome(std::vector<std::optional<T>>&& changeForms,
+                         const UpsertOutcomeCallback& cb) override
+  {
+    OperationGuard operation(*pImpl);
+    try {
+      if (!cb) throw std::invalid_argument("An upsert outcome callback is required");
+      std::lock_guard l(pImpl->share3.m);
+      pImpl->share3.upsertTasks.push_back({ std::move(changeForms), {}, cb });
+    } catch (...) {
+      pImpl->failed = true;
+      throw;
+    }
+  }
+
   uint32_t GetNumFinishedUpserts() const override
   {
     return pImpl->tickStore.numFinishedUpserts;
@@ -213,6 +234,7 @@ public:
         }
       }
       TickUpsertCallbacks();
+      TickOutcomes();
       TickIterateCallbacks();
     } catch (...) {
       pImpl->failed = true;
@@ -247,6 +269,37 @@ private:
     None,
     CanBeGarbageCollected,
   };
+
+  struct OutcomeEvent
+  {
+    CallbackGarbageMark garbageState;
+    UpsertOutcomeCallback callback;
+    std::exception_ptr error;
+  };
+
+  void TickOutcomes()
+  {
+    auto& prepared = pImpl->tickStore.preparedOutcomes;
+    std::erase_if(prepared, [](const auto& event) {
+      return event.garbageState == CallbackGarbageMark::CanBeGarbageCollected;
+    });
+    {
+      std::lock_guard lock(pImpl->share7.m);
+      auto& queued = pImpl->share7.outcomes;
+      if (queued.size() > prepared.max_size() - prepared.size()) {
+        throw std::length_error("Upsert outcome queue exceeds its size limit");
+      }
+      prepared.reserve(prepared.size() + queued.size());
+      std::move(queued.begin(), queued.end(), std::back_inserter(prepared));
+      queued.clear();
+    }
+    for (auto& event : prepared) {
+      if (event.garbageState == CallbackGarbageMark::CanBeGarbageCollected) continue;
+      event.garbageState = CallbackGarbageMark::CanBeGarbageCollected;
+      event.callback(event.error);
+      if (!event.error) ++pImpl->tickStore.numFinishedUpserts;
+    }
+  }
 
   struct TickCallbacksParams
   {
@@ -327,6 +380,7 @@ private:
     {
       std::vector<std::optional<T>> changeForms;
       std::function<void()> callback;
+      UpsertOutcomeCallback outcome;
     };
 
     struct IterateTask
@@ -379,10 +433,17 @@ private:
 
     struct
     {
+      std::vector<OutcomeEvent> outcomes;
+      std::mutex m;
+    } share7;
+
+    struct
+    {
       std::vector<std::pair<CallbackGarbageMark, std::function<void()>>>
         preparedUpsertCallbacksToFire;
       std::vector<std::pair<CallbackGarbageMark, std::function<void()>>>
         preparedIterateCallbacksToFire;
+      std::vector<OutcomeEvent> preparedOutcomes;
 
       uint32_t numFinishedUpserts = 0;
       uint32_t numFinishedIterates = 0;
@@ -446,6 +507,8 @@ private:
       std::function<void()> optionalCallbackToFire;
       std::exception_ptr optionalExceptionToFire;
       std::vector<std::optional<T>> optionalRecycledChangeFormsBuffer;
+      UpsertOutcomeCallback outcome;
+      bool tracked = false;
     };
 
     std::vector<TaskArtifact> taskArtifacts(tasks.size());
@@ -458,11 +521,12 @@ private:
       for (size_t i = 0; i < tasks.size(); ++i) {
         auto& t = tasks[i];
         auto& a = taskArtifacts[i];
+        a.tracked = bool(t.outcome);
         try {
           numChangeForms +=
             pImpl->share.dbImpl->Upsert(std::move(t.changeForms));
           t.changeForms.clear();
-          a.optionalCallbackToFire = std::move(t.callback);
+          if (!a.tracked) a.optionalCallbackToFire = std::move(t.callback);
 
           std::vector<std::optional<T>> tmp;
           if (pImpl->share.dbImpl->GetRecycledChangeFormsBuffer(tmp)) {
@@ -472,6 +536,9 @@ private:
           pImpl->failed = true;
           a.optionalExceptionToFire = std::current_exception();
         }
+        // Keep this exact task's callback until success/failure is known. A
+        // recycling failure must not publish both outcomes for a tracked job.
+        a.outcome = std::move(t.outcome);
       }
 
       if (numChangeForms > 0 && pImpl->logger) {
@@ -500,9 +567,19 @@ private:
     {
       std::lock_guard l(pImpl->share2.m);
       for (auto& taskArtifact : taskArtifacts) {
-        if (taskArtifact.optionalExceptionToFire) {
+        if (taskArtifact.optionalExceptionToFire && !taskArtifact.tracked) {
           pImpl->share2.exceptions.push_back(
             std::move(taskArtifact.optionalExceptionToFire));
+        }
+      }
+    }
+
+    {
+      std::lock_guard lock(pImpl->share7.m);
+      for (auto& artifact : taskArtifacts) {
+        if (artifact.tracked) {
+          pImpl->share7.outcomes.push_back({ CallbackGarbageMark::None,
+            std::move(artifact.outcome), std::move(artifact.optionalExceptionToFire) });
         }
       }
     }
