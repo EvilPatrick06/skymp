@@ -28,6 +28,9 @@ Napi::Value SetMenuOpenKeyBlocked(const Napi::CallbackInfo& info);
 Napi::Value SetOverEncumberedIgnored(const Napi::CallbackInfo& info);
 Napi::Value IsOverEncumberedIgnored(const Napi::CallbackInfo& info);
 
+// THORNSWOOD PATCH (Thornswood #2848). CastDurations.h says what it is.
+Napi::Value SetCastDurationEvery(const Napi::CallbackInfo& info);
+
 using NativeExportsMap =
   std::map<std::string, std::function<Napi::Object(const Napi::Object&)>>;
 
@@ -82,6 +85,9 @@ inline void Register(Napi::Env env, Napi::Object& exports,
   exports.Set("isOverEncumberedIgnored",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(IsOverEncumberedIgnored)));
+  exports.Set("setCastDurationEvery",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(SetCastDurationEvery)));
   exports.Set("blockPapyrusEvents",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(BlockPapyrusEvents)));
