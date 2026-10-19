@@ -17,6 +17,7 @@ function load(file,map){
   m._compile(out,file);return m.exports;
 }
 const metrics=load(path.join(root,'ts/systems/metricsSystem.ts'),{});
+const serveData=load(path.join(root,'ts/serveData.ts'),{});
 const servers=[];
 const calls=[];
 
@@ -28,6 +29,7 @@ async function start(devServer,allSettings={}){
   const mine=[];
   const ui=load(path.join(root,'ts/ui.ts'),{
     './systems/metricsSystem':metrics,
+    './serveData':serveData,
     axios:{__esModule:true,default:()=>devServer?Promise.resolve({}):Promise.reject(new Error('no dev server'))},
     http:{...http,createServer:(...a)=>{const s=http.createServer(...a);mine.push(s);servers.push(s);return s;}},
   });
