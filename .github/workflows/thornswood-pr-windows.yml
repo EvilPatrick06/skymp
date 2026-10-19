@@ -5,8 +5,8 @@
 # pull request into main: the same pr_base action with the same inputs, on
 # GitHub's windows-2022 image, and the unit tests after it, except that it
 # does not repeat the unit tests under OpenCppCoverage. A small Ubuntu job also
-# tests the POSIX directory helper without building the engine or reading any
-# game data.
+# tests the POSIX directory helper and the whole-file write (Thornswood #2740)
+# without building the engine or reading any game data.
 #
 # Why no coverage: the first build of this workflow took 96 minutes on 5 Oct,
 # of which test_unit_coverage was 43 and vcpkg building every library for the
@@ -90,6 +90,14 @@ jobs:
             -I skymp5-server/cpp/server_guest_lib \
             misc/tests/save_directory_test.cpp -o "$RUNNER_TEMP/save-directory-test"
           "$RUNNER_TEMP/save-directory-test" "$RUNNER_TEMP/save-directory-fixtures"
+      - name: Check the whole-file write on POSIX (Thornswood #2740)
+        shell: bash
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror \
+            -I skymp5-server/cpp/addon \
+            misc/tests/whole_file_write_test.cpp -o "$RUNNER_TEMP/whole-file-write-test"
+          mkdir -p "$RUNNER_TEMP/whole-file-write-fixtures"
+          "$RUNNER_TEMP/whole-file-write-test" "$RUNNER_TEMP/whole-file-write-fixtures"
   build:
     runs-on: windows-2022
     # packages: write lets vcpkg keep the libraries it built in GitHub

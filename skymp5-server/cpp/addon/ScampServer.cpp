@@ -34,6 +34,8 @@
 #include <cmath>
 #include <database_drivers/DatabaseFactory.h>
 #include <database_drivers/PrivateEconomyLedger.h>
+// After PrivateEconomyLedger.h, which brings in Windows.h on Windows already.
+#include "WholeFileWrite.h"
 #include <limits>
 #include <memory>
 #include <napi.h>
@@ -94,6 +96,7 @@ Napi::Object ScampServer::Init(Napi::Env env, Napi::Object exports)
       InstanceMethod("completeSavesForShutdown", &ScampServer::CompleteSavesForShutdown),
       InstanceMethod("validateInventoryTransaction", &ScampServer::ValidateInventoryTransaction),
       InstanceMethod("writePrivateEconomyLedger", &ScampServer::WritePrivateEconomyLedger),
+      InstanceMethod("writeFileWhole", &ScampServer::WriteFileWhole),
       InstanceMethod("tick", &ScampServer::Tick),
       InstanceMethod("on", &ScampServer::On),
       InstanceMethod("createActor", &ScampServer::CreateActor),
@@ -609,6 +612,22 @@ Napi::Value ScampServer::WritePrivateEconomyLedger(const Napi::CallbackInfo& inf
     const auto servedDir = std::filesystem::u8path("data");
     ::WritePrivateEconomyLedger(privateDir, servedDir, name, bytes);
     return Napi::Boolean::New(info.Env(), true);
+  } catch (std::exception& e) {
+    throw Napi::Error::New(info.Env(), e.what());
+  }
+}
+
+// mp.writeFileWhole(path, text) (Thornswood #2740): text, as UTF-8, replaces
+// the file at path whole, for files other programs read while the server
+// runs. WholeFileWrite.h says how and why. Throws, and leaves the file as it
+// was, when it cannot.
+Napi::Value ScampServer::WriteFileWhole(const Napi::CallbackInfo& info)
+{
+  try {
+    const auto path = NapiHelper::ExtractString(info[0], "path");
+    const auto text = NapiHelper::ExtractString(info[1], "text");
+    WholeFileWrite::Write(std::filesystem::u8path(path), text);
+    return info.Env().Undefined();
   } catch (std::exception& e) {
     throw Napi::Error::New(info.Env(), e.what());
   }
