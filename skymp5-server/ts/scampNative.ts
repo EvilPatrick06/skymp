@@ -125,6 +125,14 @@ export interface ScampServer {
   getUserIp(userId: number): string;
   kick(userId: number): void;
 
+  /** Thornswood #2740: replaces the file at path with text (UTF-8), whole.
+   * The bytes go to a new file beside it, flushed, then renamed over it with
+   * POSIX semantics, so a reader holding the old file keeps the old bytes and
+   * every open after it gets the new file whole. Throws, leaving the file as
+   * it was, when it cannot (a reader that does not share delete refuses it).
+   * No fallback to writing in place. */
+  writeFileWhole(path: string, text: string): void;
+
   executeJavaScriptOnChakra(src: string): void;
   clear(): void;
   writeLogs(logLevel: string, message: string): void;
