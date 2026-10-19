@@ -2,6 +2,7 @@
 #include "EventsApi.h"
 #include "FridaHookHandler.h"
 #include "FridaHooksUtils.h"
+#include "OverEncumberedIgnores.h"
 #include "Override.h"
 #include "PapyrusTESModPlatform.h"
 #include "StringHolder.h"
@@ -299,6 +300,46 @@ void InstallRenderCursorMenuHook()
     std::make_shared<Frida::Hook>(OnRenderCursorMenuEnter, nullptr));
 }
 
+/**
+ * THORNSWOOD PATCH (Thornswood #1385). Is Over Encumbered hook.
+ *
+ * Actor::IsOverEncumbered is the game's one answer to "is this character
+ * carrying more than its carry weight", and the walk the game forces on an
+ * overloaded character is that answer. For a form on OverEncumberedIgnores
+ * (a plugin puts it there, Pack Mule for the person's own character) the
+ * answer is no, whatever it carries. Every other character, and every form
+ * while the list is empty, gets the game's own answer untouched.
+ *
+ * Whether to answer no is decided on enter, where rcx is still the actor,
+ * and kept in this call's own invocation data for leave.
+ */
+void OnIsOverEncumberedEnter(GumInvocationContext* ic)
+{
+  auto ignored = static_cast<bool*>(
+    gum_invocation_context_get_listener_invocation_data(ic, sizeof(bool)));
+  auto actor = reinterpret_cast<RE::Actor*>(ic->cpu_context->rcx);
+  *ignored =
+    actor && OverEncumberedIgnores::GetSingleton().Has(actor->GetFormID());
+}
+
+void OnIsOverEncumberedLeave(GumInvocationContext* ic)
+{
+  auto ignored = static_cast<bool*>(
+    gum_invocation_context_get_listener_invocation_data(ic, sizeof(bool)));
+  if (*ignored) {
+    gum_invocation_context_replace_return_value(ic, gpointer(0));
+  }
+}
+
+void InstallIsOverEncumberedHook()
+{
+  Frida::HookHandler::GetSingleton()->Install(
+    Frida::HookID::IS_OVER_ENCUMBERED,
+    Offsets::Hooks::IsOverEncumbered.address(),
+    std::make_shared<Frida::Hook>(OnIsOverEncumberedEnter,
+                                  OnIsOverEncumberedLeave));
+}
+
 // void OnFunctionRegistered(RE::BSScript::NativeFunction* func)
 // {
 //         // GetNativeFunctionAddr::Result result =
@@ -371,6 +412,8 @@ void Frida::InstallHooks()
   InstallSendAnimationEventHook();
   InstallQueueNinodeUpdateHook();
   InstallRenderCursorMenuHook();
+  // THORNSWOOD PATCH (Thornswood #1385)
+  InstallIsOverEncumberedHook();
 #ifdef ENABLE_SKYRIM_AE
   InstallApplyMasksToRenderTargetsHook();
 #endif
