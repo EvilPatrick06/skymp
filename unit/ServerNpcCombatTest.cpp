@@ -8,6 +8,7 @@
 #include "UpdateAnimationMessage.h"
 #include "UpdateAnimationMessage.h"
 #include "formulas/TES5DamageFormula.h"
+#include "gamemode_events/GameModeEvent.h"
 #include "libespm/IterateFields.h"
 #include <algorithm>
 #include <chrono>
@@ -276,7 +277,29 @@ TEST_CASE("Server NPC attacks enter the normal directional block pipeline",
   f.Npc().SetPos(f.Human().GetPos() +
     direction * (facingAttacker ? 40.f : -40.f));
   f.Human().SetIsBlockActive(true);
+  // The OnHit event carries the server's block, decided before it is sent
+  // (Thornswood #1386: the gamemode charges a block's stamina from it).
+  struct OnHitListener : FakeListener
+  {
+    size_t hits = 0;
+    bool blocked = false;
+    bool OnMpApiEvent(const GameModeEvent& event) override
+    {
+      if (std::string(event.GetName()) == "onPapyrusEvent:OnHit") {
+        const auto args = event.GetAdditionalArguments();
+        if (args.second == 7) {
+          ++hits;
+          blocked = static_cast<bool>(args.first[6]); // abHitBlocked
+        }
+      }
+      return true;
+    }
+  };
+  auto listener = std::make_shared<OnHitListener>();
+  f.p.AddListener(listener);
   REQUIRE(f.Attack());
+  REQUIRE(listener->hits == 1);
+  REQUIRE(listener->blocked == facingAttacker);
   REQUIRE(f.damage->calls == 1);
   REQUIRE(f.damage->last.isHitBlocked == facingAttacker);
   const float expectedDamage = facingAttacker ? 0.4f : 4.f;
