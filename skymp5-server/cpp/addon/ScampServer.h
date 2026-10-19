@@ -35,6 +35,7 @@ public:
   Napi::Value AttachSaveStorage(const Napi::CallbackInfo& info);
   Napi::Value CompleteSavesForShutdown(const Napi::CallbackInfo& info);
   Napi::Value WritePrivateEconomyLedger(const Napi::CallbackInfo& info);
+  Napi::Value WriteFileWhole(const Napi::CallbackInfo& info);
   Napi::Value Tick(const Napi::CallbackInfo& info);
   Napi::Value On(const Napi::CallbackInfo& info);
   Napi::Value CreateActor(const Napi::CallbackInfo& info);
