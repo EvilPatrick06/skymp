@@ -64,13 +64,21 @@ namespace WholeFileWrite {
 
 namespace Detail {
 
+// A path as UTF-8 in a std::string, under C++17 (where u8string() is a
+// std::string) and C++20 (where it is a std::u8string) alike.
+inline std::string Utf8(const std::filesystem::path& p)
+{
+  const auto s = p.u8string();
+  return std::string(reinterpret_cast<const char*>(s.data()), s.size());
+}
+
 inline std::runtime_error Failed(const std::filesystem::path& target,
                                  const std::string& step, int code)
 {
   return std::runtime_error(
-    "Could not write " + target.u8string() + " whole: " + step + ": " +
+    "Could not write " + Utf8(target) + " whole: " + step + ": " +
     std::system_category().message(code) + " (" + std::to_string(code) +
-    "). " + target.filename().u8string() + " is as it was.");
+    "). " + Utf8(target.filename()) + " is as it was.");
 }
 
 inline std::filesystem::path Beside(const std::filesystem::path& target)
@@ -81,7 +89,7 @@ inline std::filesystem::path Beside(const std::filesystem::path& target)
 #else
   const unsigned long pid = static_cast<unsigned long>(getpid());
 #endif
-  auto name = std::filesystem::u8path(".");
+  std::filesystem::path name(".");
   name += target.filename();
   name += ".whole-" + std::to_string(pid) + "-" + std::to_string(counter++);
   return target.parent_path() / name;
@@ -94,7 +102,7 @@ inline std::filesystem::path Beside(const std::filesystem::path& target)
 inline void Write(const std::filesystem::path& target, std::string_view bytes)
 {
   if (target.empty() || !target.has_filename()) {
-    throw std::runtime_error("Could not write '" + target.u8string() +
+    throw std::runtime_error("Could not write '" + Detail::Utf8(target) +
                              "' whole: it names no file");
   }
   const auto absolute = std::filesystem::absolute(target);
@@ -116,7 +124,7 @@ inline void Write(const std::filesystem::path& target, std::string_view bytes)
                            nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (w == INVALID_HANDLE_VALUE) {
       throw Detail::Failed(target,
-                           "creating " + temporary.filename().u8string(),
+                           "creating " + Detail::Utf8(temporary.filename()),
                            static_cast<int>(GetLastError()));
     }
     bool written = false;
@@ -226,7 +234,7 @@ inline void Write(const std::filesystem::path& target, std::string_view bytes)
                       O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
                       0644);
   if (fd < 0) {
-    throw Detail::Failed(target, "creating " + temporary.filename().u8string(),
+    throw Detail::Failed(target, "creating " + Detail::Utf8(temporary.filename()),
                          errno);
   }
   struct Owned

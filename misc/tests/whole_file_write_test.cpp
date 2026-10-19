@@ -44,7 +44,7 @@ int Leftovers(const fs::path& dir)
 {
   int n = 0;
   for (const auto& entry : fs::directory_iterator(dir)) {
-    if (entry.path().filename().u8string().find(".whole-") !=
+    if (WholeFileWrite::Detail::Utf8(entry.path().filename()).find(".whole-") !=
         std::string::npos) {
       ++n;
     }
@@ -122,7 +122,7 @@ int main(int argc, char** argv)
     std::cerr << "usage: whole-file-write-test <a folder of its own>\n";
     return 2;
   }
-  const fs::path root = fs::u8path(argv[1]) /
+  const fs::path root = fs::path(argv[1]) /
     std::to_string(
       std::chrono::steady_clock::now().time_since_epoch().count());
   const auto dir = root / "data";
