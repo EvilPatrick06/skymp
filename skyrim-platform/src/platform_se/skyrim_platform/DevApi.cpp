@@ -3,6 +3,7 @@
 #include "MenuOpenKeyBlocks.h"
 #include "InvalidArgumentException.h"
 #include "NullPointerException.h"
+#include "OverEncumberedIgnores.h"
 #include "PapyrusTESModPlatform.h"
 #include "Settings.h"
 #include "Validators.h"
@@ -216,6 +217,32 @@ Napi::Value DevApi::SetMenuOpenKeyBlocked(const Napi::CallbackInfo& info)
   MenuOpenKeyBlocks::GetSingleton().Set(userEvent, code, blocked,
                                         std::move(exceptMenus));
   return info.Env().Undefined();
+}
+
+/*
+  THORNSWOOD PATCH (Thornswood #1385).
+
+    setOverEncumberedIgnored(formId, ignored)
+    isOverEncumberedIgnored(formId)
+
+  While ignored, the game does not hold that form to its carry weight: its
+  Actor::IsOverEncumbered answers no, so the game never makes it walk for
+  what it carries (FridaHooks.cpp). ignored=false gives it the game's own
+  answer again. isOverEncumberedIgnored says whether a form is on the list.
+*/
+Napi::Value DevApi::SetOverEncumberedIgnored(const Napi::CallbackInfo& info)
+{
+  auto formId = NapiHelper::ExtractUInt32(info[0], "formId");
+  bool ignored = NapiHelper::ExtractBoolean(info[1], "ignored");
+  OverEncumberedIgnores::GetSingleton().Set(formId, ignored);
+  return info.Env().Undefined();
+}
+
+Napi::Value DevApi::IsOverEncumberedIgnored(const Napi::CallbackInfo& info)
+{
+  auto formId = NapiHelper::ExtractUInt32(info[0], "formId");
+  return Napi::Boolean::New(info.Env(),
+                            OverEncumberedIgnores::GetSingleton().Has(formId));
 }
 
 namespace {
