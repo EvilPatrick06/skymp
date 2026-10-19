@@ -22,6 +22,8 @@ export declare function setMenuOpenKeyBlocked(userEvent: string, code: number, b
 // Thornswood #1385: while ignored, the game does not hold form `formId` to its carry weight (Actor::IsOverEncumbered answers no), so being overloaded never makes it walk.
 export declare function setOverEncumberedIgnored(formId: number, ignored: boolean): void
 export declare function isOverEncumberedIgnored(formId: number): boolean
+// Thornswood #2848: every `every`th cast this machine makes for form `formId` of a spell that holds (a spell cast and let go, with an effect that lasts a time and none that takes health) holds `mult` times its usual time. every=0 takes it off.
+export declare function setCastDurationEvery(formId: number, every: number, mult: number): void
 export declare function sendIpcMessage(targetSystemName: string, message: ArrayBuffer): void
 export declare function encodeUtf8(text: string): ArrayBuffer
 export declare function decodeUtf8(buffer: ArrayBuffer): string
@@ -285,6 +287,8 @@ export interface SpellCastEvent {
   castingSource: SpellType
   aimAngle: number
   aimHeading: number
+  // Thornswood #2848: how many times their usual time this cast's effects hold (setCastDurationEvery). 1 is the game's own.
+  durationMult: number
 }
 
 export interface OpenCloseEvent {
@@ -1632,7 +1636,8 @@ export interface ActorAnimationVariables {
 
 export declare function setInventory(formId: number, inventory: Inventory): void;
 
-export declare function castSpellImmediate(actorCasterFormId: number, castingSource: SpellType, formIdSpell: number, formIdTarget: number, aimAngle: number, aimHeading: number, animationVariables: ActorAnimationVariables): void;
+// Thornswood #2848: durationMult, how many times their usual time the effects of this cast hold on this machine; left out, the game's own.
+export declare function castSpellImmediate(actorCasterFormId: number, castingSource: SpellType, formIdSpell: number, formIdTarget: number, aimAngle: number, aimHeading: number, animationVariables: ActorAnimationVariables, durationMult?: number): void;
 export declare function interruptCast(actorCasterFormId: number, castingSource: SpellType, animationVariables: ActorAnimationVariables): void;
 export declare function getAnimationVariablesFromActor(actorFormId: number): ActorAnimationVariables;
 export declare function applyAnimationVariablesToActor(actorFormId: number, animationVariables: ActorAnimationVariables): boolean;
