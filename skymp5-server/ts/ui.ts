@@ -1,11 +1,11 @@
 const Koa = require("koa");
-const serve = require("koa-static");
 const proxy = require("koa-proxy");
 const Router = require("koa-router");
 const auth = require("koa-basic-auth");
 import * as koaBody from "koa-body";
 import * as http from "http";
 import { Settings } from "./settings";
+import { serveFromOneHandle } from "./serveData";
 import Axios from "axios";
 import { AddressInfo } from "net";
 import { register, getAggregatedMetrics, rpcCallsCounter, rpcDurationHistogram } from "./systems/metricsSystem";
@@ -106,7 +106,9 @@ const createApp = (getOriginPort: () => number) => {
   }
 
   app.use(router.routes()).use(router.allowedMethods());
-  app.use(serve("data"));
+  // Each file from the one handle it opened, its length from that handle
+  // (Thornswood #2740, serveData.ts).
+  app.use(serveFromOneHandle("data"));
   return app;
 };
 
