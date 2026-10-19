@@ -1,8 +1,10 @@
 #pragma once
 #include <cstdint>
+#include <exception>
 #include <functional>
 #include <map>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -14,6 +16,7 @@ class ISaveStorage
 public:
   using IterateSyncCallback = std::function<void(const T&)>;
   using UpsertCallback = std::function<void()>;
+  using UpsertOutcomeCallback = std::function<void(std::exception_ptr)>;
   using IterateCallback = std::function<void(const std::vector<T>&)>;
 
   virtual ~ISaveStorage() = default;
@@ -26,6 +29,17 @@ public:
   // Instantaneous owner-thread observation; the caller excludes new producers.
   // This does not certify durability, restoration or a stopped process.
   virtual bool IsSettled() const { return false; }
+
+  // Opt-in to one owner-thread outcome for this exact submission. Null error
+  // means the database returned, not durable persistence. A submission throw
+  // leaves no accepted job or future outcome; inline outcomes are provisional
+  // until the submission call returns. Legacy implementations must refuse.
+  virtual bool SupportsUpsertOutcomes() const noexcept { return false; }
+  virtual void UpsertWithOutcome(std::vector<std::optional<T>>&&,
+                                const UpsertOutcomeCallback&)
+  {
+    throw std::runtime_error("Save storage does not support correlated outcomes");
+  }
 
   virtual void IterateSync(const IterateSyncCallback& cb) = 0;
   virtual void Upsert(std::vector<std::optional<T>>&& changeForms,

@@ -1,4 +1,5 @@
 import { FormModel } from '../view/model';
+import * as sp from "skyrimPlatform";
 import { ObjectReference, Actor, TESModPlatform } from "skyrimPlatform";
 import { NiPoint3, Movement, RunMode } from "./movement";
 import { ObjectReferenceEx } from '../extensions/objectReferenceEx';
@@ -124,9 +125,15 @@ const getRunMode = (ac: Actor): RunMode => {
     isRunning = isSneaking(ac);
   }
 
+  // THORNSWOOD PATCH (Thornswood #1385): a form the game does not hold to its
+  // carry weight is not made to walk by it (OverEncumberedIgnores.h), so the
+  // walk sent for it is the one its own game plays. Not in the npm typings
+  // this client builds against, hence the cast.
   const carryWeight = ac.getActorValue("CarryWeight");
   const totalItemWeight = ac.getTotalItemWeight();
-  if (carryWeight < totalItemWeight) {
+  const overEncumberedIgnored =
+    (sp as any).isOverEncumberedIgnored(ac.getFormID()) === true;
+  if (carryWeight < totalItemWeight && !overEncumberedIgnored) {
     isRunning = false;
   }
 
