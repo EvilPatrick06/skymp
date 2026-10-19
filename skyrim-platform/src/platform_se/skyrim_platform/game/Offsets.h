@@ -30,6 +30,10 @@ inline REL::Relocation<std::uintptr_t> ApplyMasksToRenderTargets{
 };
 inline REL::Relocation<std::uintptr_t> RenderCursorMenu{ RELOCATION_ID(
   32867, 33632) };
+// THORNSWOOD PATCH (Thornswood #1385). Actor::IsOverEncumbered, the id
+// CommonLibSSE's Actor.cpp calls it by.
+inline REL::Relocation<std::uintptr_t> IsOverEncumbered{ RELOCATION_ID(
+  36457, 37453) };
 }
 
 namespace EventSource {
