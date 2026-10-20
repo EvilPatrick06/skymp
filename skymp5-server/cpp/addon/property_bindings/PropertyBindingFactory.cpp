@@ -24,6 +24,7 @@
 #include "RespawnPercentagesBinding.h"
 #include "SpawnDelayBinding.h"
 #include "SpawnPointBinding.h"
+#include "SpellCastDurationMultBinding.h"
 #include "TemplateChainBinding.h"
 #include "TypeBinding.h"
 #include "WorldOrCellDescBinding.h"
@@ -50,6 +51,8 @@ PropertyBindingFactory::CreateStandardPropertyBindings()
   result["pos"] = std::make_shared<PosBinding>();
   result["profileId"] = std::make_shared<ProfileIdBinding>();
   result["spawnPoint"] = std::make_shared<SpawnPointBinding>();
+  result["spellCastDurationMult"] =
+    std::make_shared<SpellCastDurationMultBinding>();
   result["type"] = std::make_shared<TypeBinding>();
   result["worldOrCellDesc"] = std::make_shared<WorldOrCellDescBinding>();
   result["idx"] = std::make_shared<IdxBinding>();

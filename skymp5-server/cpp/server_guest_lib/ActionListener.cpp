@@ -14,6 +14,7 @@
 #include "WorldState.h"
 #include "gamemode_events/CustomEvent.h"
 #include "gamemode_events/EatItemEvent.h"
+#include "gamemode_events/SpellCastEvent.h"
 #include "gamemode_events/UpdateAppearanceAttemptEvent.h"
 #include "gamemode_events/UpdateEquipmentAttemptEvent.h"
 #include "script_objects/EspmGameObject.h"
@@ -1566,11 +1567,26 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
     return;
   }
 
-  SendToNeighbours(myActor->idx, rawMsgData);
+  // THORNSWOOD PATCH (Thornswood #2848). Neighbours get the cast as the
+  // client sent it, but with how long its effects hold decided here: the
+  // onSpellCast listeners' answer, the game's own unless one agrees to more
+  // (SpellCastEvent.h). The caster's own machine already gave its own
+  // effects what it asked for. An interrupt has no effects to hold.
+  SpellCastMessage forwarded;
+  forwarded.data = msg.data;
+  forwarded.data.durationMult.reset();
 
   if (spellCastData.interruptCast) {
+    SendToNeighbours(myActor->idx, rawMsgData.userId, forwarded, false);
     return;
   }
+
+  SpellCastEvent spellCastEvent(caster, spellCastData.spell,
+                                msg.data.durationMult.value_or(1.f));
+  spellCastEvent.Fire(&partOne.worldState);
+
+  forwarded.data.durationMult = spellCastEvent.GetDurationMult();
+  SendToNeighbours(myActor->idx, rawMsgData.userId, forwarded, false);
 
   auto& browser = partOne.worldState.GetEspm().GetBrowser();
 
