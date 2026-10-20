@@ -1394,8 +1394,13 @@ export class RemoteServer extends ClientListener {
 
       const spell = ac.getEquippedSpell(msg.data.castingSource);
       if (spell) {
-        castSpellImmediate(ac.getFormID(), msg.data.castingSource, spell.getFormID(), remoteIdToLocalId(msg.data.target),
-          msg.data.aimAngle, msg.data.aimHeading, actorAnimationVariables);
+        // THORNSWOOD PATCH (Thornswood #2848): the server's answer for how
+        // long this cast's effects hold, on the actors this machine runs. Its
+        // eighth argument is not in the npm typings this client builds
+        // against, hence the cast.
+        const durationMult = typeof msg.data.durationMult === 'number' ? msg.data.durationMult : 1;
+        (castSpellImmediate as any)(ac.getFormID(), msg.data.castingSource, spell.getFormID(), remoteIdToLocalId(msg.data.target),
+          msg.data.aimAngle, msg.data.aimHeading, actorAnimationVariables, durationMult);
       }
     });
   }

@@ -14,6 +14,11 @@ export interface SpellCastMsgData {
         floats: number[]
         integers: number[]
     }
+    // THORNSWOOD PATCH (Thornswood #2848): how many times their usual time
+    // this cast's effects hold. From the caster, what its own machine gave
+    // them; from the server, what everybody else's gives them. Absent is the
+    // game's own.
+    durationMult?: number
 }
 
 export interface SpellCastMessage {
