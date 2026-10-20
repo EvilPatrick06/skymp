@@ -1,4 +1,5 @@
 #include "EventHandler.h"
+#include "BrowserApiTilted.h"
 #include "CastDurationsGame.h"
 #include "EventManager.h"
 #include "EventsApi.h"
@@ -1847,6 +1848,13 @@ EventResult EventHandler::ProcessEvent(
 
   auto menuName = event->menuName;
   bool opening = event->opening;
+
+  // Thornswood #2384: the browser's cursor is the game's Cursor Menu, and a
+  // close nobody here asked for while the page holds focus is shown again
+  // from this event (CursorFocus.h), not from a watcher in the plugin.
+  if (menuName == RE::CursorMenu::MENU_NAME) {
+    BrowserApiTilted::OnCursorMenu(opening);
+  }
 
   SkyrimPlatform::GetSingleton()->AddUpdateTask(
     [menuName, opening](Napi::Env env) {
