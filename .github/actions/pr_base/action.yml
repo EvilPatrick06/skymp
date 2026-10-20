@@ -47,6 +47,14 @@ inputs:
     description: "Set to false to build and test without OpenCppCoverage on Windows"
     required: false
     default: "true"
+  # THORNSWOOD PATCH (Thornswood #459). Whose GitHub Packages feed vcpkg
+  # keeps its libraries in, for pull requests and pushes alike. The fork's
+  # build passes its own owner; upstream's leave it empty and keep the actor
+  # for a pull request and skyrim-multiplayer for anything else.
+  NUGET_FEED_OWNER:
+    description: "Owner of the NuGet feed for vcpkg's libraries; empty keeps the actor (pull request) or skyrim-multiplayer (push)"
+    required: false
+    default: ""
 runs:
   using: composite
   steps:  
@@ -216,7 +224,18 @@ runs:
 
         $nugetPath = & 'C:\vcpkg\vcpkg.exe' fetch nuget | Select-Object -Last 1
 
-        if ("${{ github.event_name }}" -eq "pull_request") {
+        # THORNSWOOD PATCH (Thornswood #459). A fork keeps the libraries it
+        # built in its own owner's feed for every event: the default below
+        # gives a push upstream's feed, which a fork's token cannot write.
+        if ("${{ inputs.NUGET_FEED_OWNER }}" -ne "") {
+          Write-Host "Adding the NuGet source of ${{ inputs.NUGET_FEED_OWNER }}, which this repository's builds keep their libraries in."
+          & $nugetPath sources add `
+            -source "https://nuget.pkg.github.com/${{ inputs.NUGET_FEED_OWNER }}/index.json" `
+            -storepasswordincleartext `
+            -name "GitHub" `
+            -username "${{ inputs.NUGET_FEED_OWNER }}" `
+            -password "${{ inputs.NUGET_GITHUB_TOKEN }}"
+        } elseif ("${{ github.event_name }}" -eq "pull_request") {
           Write-Host "Pull request detected. Adding NuGet source for actor."
           & $nugetPath sources add `
             -source "https://nuget.pkg.github.com/${{ github.actor }}/index.json" `
@@ -374,9 +393,13 @@ runs:
         path: ${{github.workspace}}/build/dist
 
     # Workaround for https://github.com/actions/upload-artifact/issues/785 and 769
+    # THORNSWOOD PATCH (Thornswood #459): a copy under the new name, not a
+    # move, so build/dist/client stays the build as it was made. The fork's
+    # build keeps its six client files after this action, skymp5-client.js
+    # among them, for Thornswood to record.
     - name: Upload client (rename to work around action bug)
       run: |
-        mv \
+        cp \
           '${{ github.workspace }}/build/dist/client/Data/Platform/Plugins/skymp5-client.js' \
           '${{ github.workspace }}/build/dist/client/Data/Platform/Plugins/${{ inputs.DESCRIPTION }}_skymp5-client.js'
       shell: bash
