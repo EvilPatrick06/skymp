@@ -49,20 +49,18 @@ private:
 nlohmann::json CastMessage(std::optional<float> durationMult,
                            bool interruptCast = false)
 {
-  nlohmann::json data = {
-    { "caster", 0x14 },
-    { "target", 0 },
-    { "spell", 0x12FCD },
-    { "isDualCasting", false },
-    { "interruptCast", interruptCast },
-    { "castingSource", 1 },
-    { "aimAngle", 0.f },
-    { "aimHeading", 0.f },
-    { "actorAnimationVariables",
-      { { "booleans", nlohmann::json::array() },
-        { "floats", nlohmann::json::array() },
-        { "integers", nlohmann::json::array() } } }
-  };
+  nlohmann::json data = { { "caster", 0x14 },
+                          { "target", 0 },
+                          { "spell", 0x12FCD },
+                          { "isDualCasting", false },
+                          { "interruptCast", interruptCast },
+                          { "castingSource", 1 },
+                          { "aimAngle", 0.f },
+                          { "aimHeading", 0.f },
+                          { "actorAnimationVariables",
+                            { { "booleans", nlohmann::json::array() },
+                              { "floats", nlohmann::json::array() },
+                              { "integers", nlohmann::json::array() } } } };
   if (durationMult) {
     data["durationMult"] = *durationMult;
   }
@@ -78,6 +76,15 @@ struct Heard
   float neighbourMult = -1.f;
 };
 
+// The stored face of both characters. GetPartOne reads Skyrim.esm, so the
+// race has to be a race there, not the 0x1 that TestUtils' face carries.
+nlohmann::json NordAppearance()
+{
+  auto data = jAppearance["data"];
+  data["raceId"] = 0x13746; // NordRace, Skyrim.esm
+  return data;
+}
+
 // Caster on user 0 with the spell in hand, a neighbour on user 1 who sees
 // them, and a listener that answers mult (0: does not touch it).
 Heard Cast(float listenerMult, std::optional<float> asked,
@@ -91,12 +98,13 @@ Heard Cast(float listenerMult, std::optional<float> asked,
   DoConnect(partOne, 0);
   partOne.CreateActor(0xff000ABC, { 1.f, 2.f, 3.f }, 180.f, 0x3c);
   auto& caster = partOne.worldState.GetFormAt<MpActor>(0xff000ABC);
-  GiveStoredAppearance(caster);
+  GiveStoredAppearance(caster, NordAppearance());
   partOne.SetUserActor(0, 0xff000ABC);
 
   DoConnect(partOne, 1);
   partOne.CreateActor(0xff000FFF, { 1.f, 2.f, 3.f }, 180.f, 0x3c);
-  GiveStoredAppearance(partOne.worldState.GetFormAt<MpActor>(0xff000FFF));
+  GiveStoredAppearance(partOne.worldState.GetFormAt<MpActor>(0xff000FFF),
+                       NordAppearance());
   partOne.SetUserActor(1, 0xff000FFF);
 
   Equipment eq = caster.GetEquipment();
@@ -114,8 +122,8 @@ Heard Cast(float listenerMult, std::optional<float> asked,
       continue;
     }
     auto& data = m.j["data"];
-    heard.neighbourMult = data.contains("durationMult") &&
-        !data["durationMult"].is_null()
+    heard.neighbourMult =
+      data.contains("durationMult") && !data["durationMult"].is_null()
       ? data["durationMult"].get<float>()
       : 0.f;
   }
