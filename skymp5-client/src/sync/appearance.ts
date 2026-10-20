@@ -166,6 +166,11 @@ export const applyAppearanceToPlayer = (appearance: Appearance): void => {
   );
   applyTints(null, appearance);
   (Game.getPlayer() as Actor).queueNiNodeUpdate();
+  // The hair already drawn keeps its old colour until the game is told to
+  // redraw it, so a colour changed on the record after the character is in
+  // the world (a hair dye, Thornswood #2675) is drawn now, not at the next
+  // load. The game's own UpdateHairColor.
+  Game.updateHairColor();
   Utility.wait(0.0625).then(() => {
     once("update", () => {
       Game.getPlayer()?.startDeferredKill();
