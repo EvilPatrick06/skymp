@@ -3,6 +3,7 @@
 
 #include "Inventory.h"
 #include <optional>
+#include <string>
 #include <vector>
 
 class MpActor;
@@ -27,11 +28,19 @@ public:
   // named, in the same step that takes the inputs, so the server never gives
   // the recipe's output and takes it back afterwards. A refused craft gives
   // nothing whatever was named.
+  //
+  // Thornswood #3026. The output may be named too, the name an inventory
+  // entry carries (Inventory::ExtraData::name): a master weaver's garment is
+  // the record with the mark of the half it carries in its name. Unnamed
+  // unless a listener names it, and OnFireSuccess adds the named entry, so a
+  // gamemode never renames what the craft added.
   uint32_t GetActorId() const;
   uint32_t GetCraftedItemBaseId() const;
   uint32_t GetOutputBaseId() const;
   uint32_t GetOutputCount() const;
   void SetOutput(uint32_t baseId, uint32_t count);
+  const std::optional<std::string>& GetOutputName() const;
+  void SetOutputName(std::optional<std::string> name);
 
 private:
   void OnFireSuccess(WorldState* worldState) override;
@@ -68,4 +77,6 @@ private:
   // listener named another.
   uint32_t outputBaseId = 0;
   uint32_t outputCount = 0;
+  // And the name it is added with (Thornswood #3026): none unless named.
+  std::optional<std::string> outputName;
 };

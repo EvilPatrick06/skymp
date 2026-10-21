@@ -2,8 +2,11 @@
 #include "NapiHelper.h"
 #include "gamemode_events/CraftEvent.h"
 #include <fmt/format.h>
+#include <limits>
+#include <optional>
 #include <spdlog/spdlog.h>
 #include <stdexcept>
+#include <string>
 
 namespace {
 CraftEvent* FindCraftEvent(ScampServer& scampServer, uint32_t formId)
@@ -30,6 +33,9 @@ Napi::Value CraftOutputBinding::Get(Napi::Env env, ScampServer& scampServer,
   auto output = Napi::Object::New(env);
   output.Set("baseId", Napi::Number::New(env, craft->GetOutputBaseId()));
   output.Set("count", Napi::Number::New(env, craft->GetOutputCount()));
+  if (auto& name = craft->GetOutputName()) {
+    output.Set("name", Napi::String::New(env, *name));
+  }
   return output;
 }
 
@@ -68,5 +74,22 @@ void CraftOutputBinding::Set(Napi::Env env, ScampServer& scampServer,
       fmt::format("craftOutput.baseId {:#x} is not a record", baseId));
   }
 
+  // The entry's name (Thornswood #3026): a string names it, null names none,
+  // and left out it stays what it is.
+  std::optional<std::optional<std::string>> name;
+  if (output.Has("name") && !output.Get("name").IsUndefined()) {
+    auto value = output.Get("name");
+    if (value.IsNull()) {
+      name.emplace();
+    } else {
+      name.emplace(
+        NapiHelper::ExtractString(value, "craftOutput.name", std::nullopt,
+                                  { 1, std::numeric_limits<size_t>::max() }));
+    }
+  }
+
   craft->SetOutput(baseId, count);
+  if (name) {
+    craft->SetOutputName(*name);
+  }
 }
