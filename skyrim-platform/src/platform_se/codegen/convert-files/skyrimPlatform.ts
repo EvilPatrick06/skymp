@@ -1643,6 +1643,8 @@ export declare function getAnimationVariablesFromActor(actorFormId: number): Act
 export declare function applyAnimationVariablesToActor(actorFormId: number, animationVariables: ActorAnimationVariables): boolean;
 
 export declare function setCollision(refrFormId: number, collision: boolean): void;
+// Thornswood #3080: the bench type in a furniture base's WBDT; 0 when it is no bench or not furniture.
+export declare function getWorkbenchType(baseFormId: number): number;
 
 // Based on Form.pex
 export declare class Form extends PapyrusObject {
