@@ -1,5 +1,7 @@
 #include "Inventory.h"
 #include <catch2/catch_all.hpp>
+#include <limits>
+#include <stdexcept>
 
 TEST_CASE(
   "RemoveItems in case of multiple entries with the same baseId/extras",
@@ -84,4 +86,26 @@ TEST_CASE("AddItems stacks entries that repeat within one call", "[Inventory]")
   REQUIRE(inv.entries.size() == 2);
   REQUIRE(inv.GetItemCount(0xa) == 5);
   REQUIRE(inv.GetItemCount(0xb) == 1);
+}
+
+TEST_CASE("AddItems refuses a stack past its limit and changes nothing",
+          "[Inventory]")
+{
+  constexpr uint32_t kMax = std::numeric_limits<uint32_t>::max();
+  Inventory inv;
+  inv.AddItem(0xa, kMax - 1);
+
+  REQUIRE(inv.CanAddItems({ Inventory::Entry(0xa, 1) }));
+  REQUIRE_FALSE(
+    inv.CanAddItems({ Inventory::Entry(0xb, 1), Inventory::Entry(0xa, 2) }));
+  REQUIRE_THROWS_AS(
+    inv.AddItems({ Inventory::Entry(0xb, 1), Inventory::Entry(0xa, 2) }),
+    std::runtime_error);
+
+  REQUIRE(inv.entries.size() == 1);
+  REQUIRE(inv.GetItemCount(0xa) == kMax - 1);
+  REQUIRE(inv.GetItemCount(0xb) == 0);
+
+  inv.AddItems({ Inventory::Entry(0xa, 1) });
+  REQUIRE(inv.GetItemCount(0xa) == kMax);
 }
