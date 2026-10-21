@@ -497,7 +497,8 @@ private:
 
   // Adds then removes on a copy of the rules, but removal is applied
   // first so a spent stack cannot fund itself. Metadata stays on the
-  // matched entry. AddItems is not used: it returns after one merge.
+  // matched entry. AddItems is not used: it neither refuses an invalid
+  // entry nor a stack whose count would pass uint32_t.
   static bool ApplyDelta(Inventory& inventory, const Inventory& add,
                          const Inventory& remove, std::string& reason)
   {
