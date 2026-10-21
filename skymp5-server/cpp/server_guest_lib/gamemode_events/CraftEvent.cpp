@@ -92,6 +92,11 @@ uint32_t CraftEvent::GetActorId() const
   return actor ? actor->GetFormId() : 0;
 }
 
+uint32_t CraftEvent::GetCraftedItemBaseId() const
+{
+  return craftedItemBaseId;
+}
+
 uint32_t CraftEvent::GetOutputBaseId() const
 {
   return outputBaseId;

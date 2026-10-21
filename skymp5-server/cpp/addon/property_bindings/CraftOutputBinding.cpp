@@ -45,8 +45,11 @@ void CraftOutputBinding::Set(Napi::Env env, ScampServer& scampServer,
   }
 
   auto output = NapiHelper::ExtractObject(newValue, "craftOutput");
-  uint32_t baseId =
-    NapiHelper::ExtractUInt32(output.Get("baseId"), "craftOutput.baseId");
+  uint32_t baseId = craft->GetOutputBaseId();
+  if (output.Has("baseId") && !output.Get("baseId").IsUndefined()) {
+    baseId =
+      NapiHelper::ExtractUInt32(output.Get("baseId"), "craftOutput.baseId");
+  }
   uint32_t count = craft->GetOutputCount();
   if (output.Has("count") && !output.Get("count").IsUndefined()) {
     count =
@@ -55,9 +58,11 @@ void CraftOutputBinding::Set(Napi::Env env, ScampServer& scampServer,
 
   // An item the server's records do not hold would land in the pack as a
   // base id nothing can show, eat or sell, so it is refused here, before the
-  // craft gives anything.
+  // craft gives anything. The craft's own output is not asked: a brewed
+  // bottle is a runtime form the client made, which no record holds, and a
+  // master's second bottle is the same form twice.
   auto& worldState = scampServer.GetPartOne()->worldState;
-  if (worldState.HasEspm() &&
+  if (baseId != craft->GetCraftedItemBaseId() && worldState.HasEspm() &&
       !worldState.GetEspm().GetBrowser().LookupById(baseId).rec) {
     throw std::runtime_error(
       fmt::format("craftOutput.baseId {:#x} is not a record", baseId));
