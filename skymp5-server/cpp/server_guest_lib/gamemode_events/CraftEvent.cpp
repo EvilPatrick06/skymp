@@ -117,14 +117,32 @@ void CraftEvent::SetOutput(uint32_t baseId, uint32_t count_)
   outputCount = count_;
 }
 
+const std::optional<std::string>& CraftEvent::GetOutputName() const
+{
+  return outputName;
+}
+
+void CraftEvent::SetOutputName(std::optional<std::string> name)
+{
+  if (name && name->empty()) {
+    throw std::runtime_error(
+      "A craft's output name needs at least one character; null names none");
+  }
+  outputName = std::move(name);
+}
+
 void CraftEvent::OnFireSuccess(WorldState*)
 {
   actor->RemoveItems(entries);
-  if (outputBaseId != craftedItemBaseId || outputCount != count) {
+  if (outputBaseId != craftedItemBaseId || outputCount != count ||
+      outputName) {
     spdlog::info("CraftEvent - the gamemode named the output of actor "
-                 "{:#x}'s craft: {:#x} x{} in place of {:#x} x{}",
+                 "{:#x}'s craft: {:#x} x{}{} in place of {:#x} x{}",
                  actor->GetFormId(), outputBaseId, outputCount,
+                 outputName ? " '" + *outputName + "'" : std::string(),
                  craftedItemBaseId, count);
   }
-  actor->AddItem(outputBaseId, outputCount);
+  Inventory::ExtraData extraData;
+  extraData.name = outputName;
+  actor->AddItem(outputBaseId, outputCount, extraData);
 }
