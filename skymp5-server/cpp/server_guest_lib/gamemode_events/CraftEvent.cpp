@@ -1,6 +1,7 @@
 #include "CraftEvent.h"
 
 #include "MpActor.h"
+#include <fmt/format.h>
 #include <spdlog/spdlog.h>
 #include <stdexcept>
 
@@ -133,6 +134,20 @@ void CraftEvent::SetOutputName(std::optional<std::string> name)
 
 void CraftEvent::OnFireSuccess(WorldState*)
 {
+  Inventory::ExtraData extraData;
+  extraData.name = outputName;
+  // Refused before the inputs are taken, so a pack that can't hold the
+  // output keeps them.
+  Inventory afterInputs = actor->GetInventory();
+  afterInputs.RemoveItems(entries);
+  if (!afterInputs.CanAddItems(
+        { Inventory::Entry(outputBaseId, outputCount, extraData) })) {
+    throw std::runtime_error(fmt::format(
+      "CraftEvent - actor {:#x} can't take {:#x} x{}: a stack would pass its "
+      "limit",
+      actor->GetFormId(), outputBaseId, outputCount));
+  }
+
   actor->RemoveItems(entries);
   if (outputBaseId != craftedItemBaseId || outputCount != count ||
       outputName) {
@@ -142,7 +157,5 @@ void CraftEvent::OnFireSuccess(WorldState*)
                  outputName ? " '" + *outputName + "'" : std::string(),
                  craftedItemBaseId, count);
   }
-  Inventory::ExtraData extraData;
-  extraData.name = outputName;
   actor->AddItem(outputBaseId, outputCount, extraData);
 }
