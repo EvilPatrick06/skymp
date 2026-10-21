@@ -170,7 +170,10 @@ public:
                                const Inventory& replacement,
                                uint64_t sequence,
                                const InventoryPropertyChange* property = nullptr);
-  void AddItem(uint32_t baseId, uint32_t count);
+  // THORNSWOOD PATCH (Thornswood #3026). An entry's extra data may come with
+  // it (a crafted garment's name), so a named entry is added as itself.
+  void AddItem(uint32_t baseId, uint32_t count,
+               const Inventory::ExtraData& extraData = Inventory::ExtraData());
   void AddItems(const std::vector<Inventory::Entry>& entries);
   void RemoveItem(uint32_t baseId, uint32_t count, MpObjectReference* target);
   void RemoveItems(const std::vector<Inventory::Entry>& entries,
