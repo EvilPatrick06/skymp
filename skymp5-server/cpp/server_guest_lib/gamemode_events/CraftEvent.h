@@ -28,6 +28,7 @@ public:
   // the recipe's output and takes it back afterwards. A refused craft gives
   // nothing whatever was named.
   uint32_t GetActorId() const;
+  uint32_t GetCraftedItemBaseId() const;
   uint32_t GetOutputBaseId() const;
   uint32_t GetOutputCount() const;
   void SetOutput(uint32_t baseId, uint32_t count);

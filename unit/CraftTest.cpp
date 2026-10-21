@@ -1054,6 +1054,44 @@ TEST_CASE("An onCraft handler names what the craft gives (Thornswood #2906)",
   DoDisconnect(p, 0);
 }
 
+TEST_CASE("An onCraft handler doubles a batch of the recipe's own output "
+          "(Thornswood #2906)",
+          "[Craft][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto gamemode = std::make_shared<NameCraftOutput>(p.worldState);
+  p.AddListener(gamemode);
+
+  auto& ac = MakeCrafter(p, kForge);
+  const Inventory recipe = Inventory()
+                             .AddItem(kIronIngot, 1)
+                             .AddItem(kLeatherStrips, 3)
+                             .AddItem(kSteelIngot, 4);
+  for (auto& entry : recipe.entries) {
+    ac.AddItem(entry.baseId, entry.count);
+  }
+
+  CraftItemMessage msg;
+  msg.data.craftInputObjects = recipe;
+  msg.data.workbench = kForge;
+  msg.data.resultObjectId = kSteelWarhammer;
+  RawMessageData msgData;
+  msgData.userId = 0;
+
+  // Grand Chef's rule (cook.md): every batch yields two instead of one.
+  gamemode->baseId = kSteelWarhammer;
+  gamemode->count = 2;
+  gamemode->armed = true;
+  p.GetActionListener().OnCraftItem(msgData, msg);
+  gamemode->armed = false;
+
+  REQUIRE(ac.GetInventory().GetItemCount(kSteelWarhammer) == 2);
+  REQUIRE(ac.GetInventory().GetItemCount(kSteelIngot) == 0);
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
+
 TEST_CASE("A refused craft gives nothing whatever its handler named "
           "(Thornswood #2906)",
           "[Craft][espm]")
