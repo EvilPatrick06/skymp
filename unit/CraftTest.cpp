@@ -1015,6 +1015,10 @@ TEST_CASE("An onCraft handler names what the craft gives (Thornswood #2906)",
   for (auto& entry : recipe.entries) {
     ac.AddItem(entry.baseId, entry.count);
   }
+  // A new actor's pack holds its base record's own items once it is read (an
+  // iron dagger among them, measured on the fork's build), so what the craft
+  // gives is counted from the pack as it was.
+  const Inventory before = ac.GetInventory();
 
   p.Tick();
   p.Messages().clear();
@@ -1039,8 +1043,10 @@ TEST_CASE("An onCraft handler names what the craft gives (Thornswood #2906)",
 
   // The inputs are gone, the named item is in the pack and the recipe's
   // output never was.
-  REQUIRE(ac.GetInventory().GetItemCount(kIronDagger) == 2);
-  REQUIRE(ac.GetInventory().GetItemCount(kSteelWarhammer) == 0);
+  REQUIRE(ac.GetInventory().GetItemCount(kIronDagger) ==
+          before.GetItemCount(kIronDagger) + 2);
+  REQUIRE(ac.GetInventory().GetItemCount(kSteelWarhammer) ==
+          before.GetItemCount(kSteelWarhammer));
   REQUIRE(ac.GetInventory().GetItemCount(kIronIngot) == 0);
   REQUIRE(ac.GetInventory().GetItemCount(kLeatherStrips) == 0);
   REQUIRE(ac.GetInventory().GetItemCount(kSteelIngot) == 0);
@@ -1070,6 +1076,7 @@ TEST_CASE("An onCraft handler doubles a batch of the recipe's own output "
   for (auto& entry : recipe.entries) {
     ac.AddItem(entry.baseId, entry.count);
   }
+  const Inventory before = ac.GetInventory();
 
   CraftItemMessage msg;
   msg.data.craftInputObjects = recipe;
@@ -1085,7 +1092,8 @@ TEST_CASE("An onCraft handler doubles a batch of the recipe's own output "
   p.GetActionListener().OnCraftItem(msgData, msg);
   gamemode->armed = false;
 
-  REQUIRE(ac.GetInventory().GetItemCount(kSteelWarhammer) == 2);
+  REQUIRE(ac.GetInventory().GetItemCount(kSteelWarhammer) ==
+          before.GetItemCount(kSteelWarhammer) + 2);
   REQUIRE(ac.GetInventory().GetItemCount(kSteelIngot) == 0);
 
   p.DestroyActor(0xff000000);
@@ -1125,7 +1133,8 @@ TEST_CASE("A refused craft gives nothing whatever its handler named "
   gamemode->armed = false;
 
   REQUIRE(ac.GetInventory() == before);
-  REQUIRE(ac.GetInventory().GetItemCount(kIronDagger) == 0);
+  REQUIRE(ac.GetInventory().GetItemCount(kIronDagger) ==
+          before.GetItemCount(kIronDagger));
 
   p.DestroyActor(0xff000000);
   DoDisconnect(p, 0);
