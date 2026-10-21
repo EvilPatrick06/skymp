@@ -1,4 +1,5 @@
 import { Flora, Form, FormType, MotionType, ObjectReference } from "skyrimPlatform";
+import * as sp from "skyrimPlatform";
 import { NiPoint3 } from "../sync/movement";
 import { FormTypeEx } from "./formTypeEx";
 
@@ -33,6 +34,11 @@ export class ObjectReferenceEx {
     const deltaY = a[1] - b[1];
     return Math.sqrt(deltaX * deltaX + deltaY * deltaY);
   };
+
+  static isBench(base: Form): boolean {
+    const getWorkbenchType = (sp as any).getWorkbenchType as (baseFormId: number) => number;
+    return getWorkbenchType(base.getFormID()) !== 0;
+  }
 
   static dealWithRef(self: ObjectReference, base: Form): void {
     const t = base.getType();
@@ -71,6 +77,22 @@ export class ObjectReferenceEx {
       to un-pick the plant (putBack, on a four second timer). Blocked, a press
       only sends the activation: a refused one changes nothing on this
       machine, and the server hands over what an allowed one gives.
+
+      THORNSWOOD PATCH (Thornswood #3080). A crafting bench goes through the
+      server too, before Skyrim opens its menu.
+
+      Furniture stays Skyrim's, as above, except furniture whose record names
+      a bench type (WBDT): a forge, a cookpot, a loom, an alchemy lab, an
+      enchanter. Unblocked, a bench opened its crafting menu on the presser's
+      machine before the server had said anything, so somebody the server
+      refused the bench still stood in its menu and only each pick was
+      refused. Blocked, a refused press opens nothing, and an allowed one
+      comes back as the server's open, which activates the bench with
+      default processing exactly as it does a container. One person works a
+      bench at a time, the server's occupancy rule for furniture.
+
+      getWorkbenchType is ours (ObjectReferenceApi) and is not in the npm
+      typings this client builds against, hence the cast.
     */
     if (self.isLocked()) {
       self.blockActivation(false);
@@ -79,6 +101,7 @@ export class ObjectReferenceEx {
       || t === FormType.NPC
       || t === FormType.Flora
       || t === FormType.Tree
+      || (t === FormType.Furniture && ObjectReferenceEx.isBench(base))
       || (t === FormType.Door && self.getBaseObject()?.getFormID() !== caveGSecretDoor01)) {
       self.blockActivation(true);
     } else {
