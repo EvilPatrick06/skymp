@@ -4,6 +4,7 @@
 #include "archives/SimdJsonInputArchive.h"
 #include <algorithm>
 #include <fmt/format.h>
+#include <limits>
 #include <spdlog/spdlog.h>
 #include <tuple>
 
@@ -90,20 +91,47 @@ Inventory& Inventory::AddItem(uint32_t baseId, uint32_t count)
   return AddItems({ { baseId, count } });
 }
 
-Inventory& Inventory::AddItems(const std::vector<Entry>& toAdd)
+namespace {
+// Adds toAdd to entries, each entry joining the stack it matches. Returns
+// the entry that would take its stack past what Entry::count holds, with
+// entries left part done, or nullptr when everything was added.
+const Inventory::Entry* AddEntries(std::vector<Inventory::Entry>& entries,
+                                   const std::vector<Inventory::Entry>& toAdd)
 {
   for (auto& entryToAdd : toAdd) {
-    auto it =
-      std::find_if(entries.begin(), entries.end(), [&](const Entry& entry) {
-        return entry.EqualExceptCount(entryToAdd);
-      });
-    if (it != entries.end()) {
-      it->count += entryToAdd.count;
-    } else {
+    auto it = std::find_if(entries.begin(), entries.end(),
+                           [&](const Inventory::Entry& entry) {
+                             return entry.EqualExceptCount(entryToAdd);
+                           });
+    if (it == entries.end()) {
       entries.push_back(entryToAdd);
+      continue;
     }
+    if (entryToAdd.count > std::numeric_limits<uint32_t>::max() - it->count) {
+      return &entryToAdd;
+    }
+    it->count += entryToAdd.count;
   }
+  return nullptr;
+}
+}
+
+Inventory& Inventory::AddItems(const std::vector<Entry>& toAdd)
+{
+  auto copy = entries;
+  if (auto refused = AddEntries(copy, toAdd)) {
+    throw std::runtime_error(fmt::format(
+      "Inventory can't take {} more of {:#x}: one stack holds at most {}",
+      refused->count, refused->baseId, std::numeric_limits<uint32_t>::max()));
+  }
+  entries = std::move(copy);
   return *this;
+}
+
+bool Inventory::CanAddItems(const std::vector<Entry>& toAdd) const
+{
+  auto copy = entries;
+  return AddEntries(copy, toAdd) == nullptr;
 }
 
 Inventory& Inventory::RemoveItems(const std::vector<Entry>& entries)
