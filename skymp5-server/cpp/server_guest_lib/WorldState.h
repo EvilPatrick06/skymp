@@ -299,6 +299,11 @@ public:
   void SetNpcSettings(
     std::unordered_map<std::string, NpcSettingsEntry>&& settings);
   void SetForbiddenRelootTypes(const std::set<std::string>& types);
+  void SetForbiddenBaseContainerTypes(const std::set<std::string>& types);
+  // True when a reference whose base is this record type starts with none
+  // of the record's own contents (forbiddenBaseContainer).
+  [[nodiscard]] bool IsBaseContainerForbidden(
+    const std::string& type) const noexcept;
   void SetEnableConsoleCommandsForAllSetting(bool enable);
 
 public:

@@ -2145,6 +2145,15 @@ void MpObjectReference::EnsureBaseContainerAdded(espm::Loader& espm)
     return;
   }
 
+  // A base record type the server settings name in forbiddenBaseContainer
+  // brings none of its record's contents: the reference starts empty and
+  // holds only what the gamemode or a person puts in it (Thornswood #3078).
+  // Nothing is marked, so the record is read again only if the setting
+  // changes.
+  if (worldState->IsBaseContainerForbidden(baseType)) {
+    return;
+  }
+
   auto actor = AsActor();
   const std::vector<FormDesc> kEmptyTemplateChain;
   const std::vector<FormDesc>& templateChain =
