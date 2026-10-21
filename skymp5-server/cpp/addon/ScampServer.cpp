@@ -550,6 +550,17 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
         (*it).get<std::set<std::string>>());
     }
 
+    if (auto it = serverSettings.find("forbiddenBaseContainer");
+        it != serverSettings.end() && it->is_array()) {
+      auto types = it->get<std::set<std::string>>();
+      partOne->worldState.SetForbiddenBaseContainerTypes(types);
+      for (auto& type : types) {
+        logger->info("'{}' references start with none of their record's "
+                     "contents",
+                     type);
+      }
+    }
+
     if (auto it = serverSettings.find("serverKey");
         it != serverSettings.end()) {
       auto serverKey = it.value();
