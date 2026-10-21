@@ -947,11 +947,12 @@ bool MpObjectReference::CompareAndSetInventory(
   return true;
 }
 
-void MpObjectReference::AddItem(uint32_t baseId, uint32_t count)
+void MpObjectReference::AddItem(uint32_t baseId, uint32_t count,
+                                const Inventory::ExtraData& extraData)
 {
   EditChangeForm([&](MpChangeFormREFR& changeForm) {
     changeForm.baseContainerAdded = true;
-    changeForm.inv.AddItem(baseId, count);
+    changeForm.inv.AddItems({ Inventory::Entry(baseId, count, extraData) });
   });
   SendInventoryUpdate();
 
