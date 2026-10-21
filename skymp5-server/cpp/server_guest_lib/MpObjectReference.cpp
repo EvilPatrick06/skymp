@@ -951,8 +951,8 @@ void MpObjectReference::AddItem(uint32_t baseId, uint32_t count,
                                 const Inventory::ExtraData& extraData)
 {
   EditChangeForm([&](MpChangeFormREFR& changeForm) {
-    changeForm.baseContainerAdded = true;
     changeForm.inv.AddItems({ Inventory::Entry(baseId, count, extraData) });
+    changeForm.baseContainerAdded = true;
   });
   SendInventoryUpdate();
 
@@ -981,8 +981,8 @@ void MpObjectReference::AddItems(const std::vector<Inventory::Entry>& entries)
 {
   if (entries.size() > 0) {
     EditChangeForm([&](MpChangeFormREFR& changeForm) {
-      changeForm.baseContainerAdded = true;
       changeForm.inv.AddItems(entries);
+      changeForm.baseContainerAdded = true;
     });
     SendInventoryUpdate();
   }
@@ -1007,6 +1007,15 @@ void MpObjectReference::RemoveItem(uint32_t baseId, uint32_t count,
 void MpObjectReference::RemoveItems(
   const std::vector<Inventory::Entry>& entries, MpObjectReference* target)
 {
+  // Refused before the source gives anything up, so a target that can't
+  // take the entries leaves both as they were.
+  if (target && !target->GetInventory().CanAddItems(entries)) {
+    throw std::runtime_error(fmt::format(
+      "MpObjectReference::RemoveItems - {:#x} can't take the entries from "
+      "{:#x}: a stack would pass its limit",
+      target->GetFormId(), GetFormId()));
+  }
+
   EditChangeForm([&](MpChangeFormREFR& changeForm) {
     changeForm.inv.RemoveItems(entries);
   });
@@ -1542,8 +1551,20 @@ void MpObjectReference::GivePickupItemsToActivationSource(
     auto map = LeveledListUtils::EvaluateListRecurse(
       loader.GetBrowser(), resultItemLookupRes, kCountMult,
       kPlayerCharacterLevel, chanceNoneOverride.get());
+    std::vector<Inventory::Entry> entries;
     for (auto& p : map) {
-      activationSource.AddItem(p.first, p.second);
+      entries.push_back({ p.first, p.second });
+    }
+    // One AddItem per entry for OnItemAdded, so the whole list is checked
+    // first: a refusal part way would give some and leave it unharvested.
+    if (!activationSource.GetInventory().CanAddItems(entries)) {
+      throw std::runtime_error(fmt::format(
+        "MpObjectReference::GivePickupItemsToActivationSource - {:#x} can't "
+        "take what {:#x} gives: a stack would pass its limit",
+        activationSource.GetFormId(), GetFormId()));
+    }
+    for (auto& entry : entries) {
+      activationSource.AddItem(entry.baseId, entry.count);
     }
   } else {
     auto refrRecord = espm::Convert<espm::REFR>(
