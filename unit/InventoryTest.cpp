@@ -59,3 +59,29 @@ TEST_CASE("Not enough items to remove", "[Inventory]")
   REQUIRE_THROWS_AS(inv.RemoveItems({ Inventory::Entry(0xf, 20) }),
                     std::runtime_error);
 }
+
+TEST_CASE("AddItems adds every entry after one that stacks", "[Inventory]")
+{
+  Inventory inv;
+  inv.AddItem(0xa, 1);
+
+  inv.AddItems({ Inventory::Entry(0xa, 1), Inventory::Entry(0xb, 1),
+                 Inventory::Entry(0xc, 1) });
+
+  REQUIRE(inv.entries.size() == 3);
+  REQUIRE(inv.GetItemCount(0xa) == 2);
+  REQUIRE(inv.GetItemCount(0xb) == 1);
+  REQUIRE(inv.GetItemCount(0xc) == 1);
+}
+
+TEST_CASE("AddItems stacks entries that repeat within one call", "[Inventory]")
+{
+  Inventory inv;
+
+  inv.AddItems({ Inventory::Entry(0xa, 2), Inventory::Entry(0xb, 1),
+                 Inventory::Entry(0xa, 3) });
+
+  REQUIRE(inv.entries.size() == 2);
+  REQUIRE(inv.GetItemCount(0xa) == 5);
+  REQUIRE(inv.GetItemCount(0xb) == 1);
+}
