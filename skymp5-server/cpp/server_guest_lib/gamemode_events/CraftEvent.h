@@ -20,6 +20,19 @@ public:
 
   std::string GetArgumentsJsonArray() const override;
 
+  // THORNSWOOD PATCH (Thornswood #2906). An onCraft listener may name what
+  // this craft gives in place of the recipe's output: a cook's burnt meal or
+  // fine dish, or a master's double batch. The default is the second and
+  // third arguments, craftedItemBaseId and count. OnFireSuccess adds what is
+  // named, in the same step that takes the inputs, so the server never gives
+  // the recipe's output and takes it back afterwards. A refused craft gives
+  // nothing whatever was named.
+  uint32_t GetActorId() const;
+  uint32_t GetCraftedItemBaseId() const;
+  uint32_t GetOutputBaseId() const;
+  uint32_t GetOutputCount() const;
+  void SetOutput(uint32_t baseId, uint32_t count);
+
 private:
   void OnFireSuccess(WorldState* worldState) override;
 
@@ -50,4 +63,9 @@ private:
 
   // OnFireSuccess-specific arguments
   const std::vector<Inventory::Entry>& entries;
+
+  // What OnFireSuccess adds (Thornswood #2906): the recipe's output unless a
+  // listener named another.
+  uint32_t outputBaseId = 0;
+  uint32_t outputCount = 0;
 };

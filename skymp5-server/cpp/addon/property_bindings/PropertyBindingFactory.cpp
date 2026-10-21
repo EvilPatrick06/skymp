@@ -5,6 +5,7 @@
 #include "AppearanceBinding.h"
 #include "BaseDescBinding.h"
 #include "ConsoleCommandsAllowedBinding.h"
+#include "CraftOutputBinding.h"
 #include "CustomPropertyBinding.h"
 #include "EatItemScaleBinding.h"
 #include "EquipmentBinding.h"
@@ -37,6 +38,7 @@ PropertyBindingFactory::CreateStandardPropertyBindings()
   result["angle"] = std::make_shared<AngleBinding>();
   result["appearance"] = std::make_shared<AppearanceBinding>();
   result["baseDesc"] = std::make_shared<BaseDescBinding>();
+  result["craftOutput"] = std::make_shared<CraftOutputBinding>();
   result["eatItemScale"] = std::make_shared<EatItemScaleBinding>();
   result["equipment"] = std::make_shared<EquipmentBinding>();
   result["inventory"] = std::make_shared<InventoryBinding>();
