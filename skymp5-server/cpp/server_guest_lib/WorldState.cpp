@@ -139,6 +139,7 @@ struct WorldState::Impl
   // The clock SetTimerClock gave, for reloot timers made after it.
   Viet::Timer::Clock timerClock;
   std::set<std::string> forbiddenRelootTypes;
+  std::set<std::string> forbiddenBaseContainerTypes;
   std::vector<std::unique_ptr<IPapyrusClassBase>> classes;
   // By GetAllForms' modIndex
   std::unordered_map<uint32_t, std::shared_ptr<std::vector<uint32_t>>>
@@ -1751,6 +1752,12 @@ void WorldState::SetForbiddenRelootTypes(const std::set<std::string>& types)
   pImpl->forbiddenRelootTypes = types;
 }
 
+void WorldState::SetForbiddenBaseContainerTypes(
+  const std::set<std::string>& types)
+{
+  pImpl->forbiddenBaseContainerTypes = types;
+}
+
 void WorldState::SetEnableConsoleCommandsForAllSetting(bool enable)
 {
   enableConsoleCommandsForAll = enable;
@@ -1760,6 +1767,12 @@ bool WorldState::IsRelootForbidden(std::string type) const noexcept
 {
   return pImpl->forbiddenRelootTypes.find(type) !=
     pImpl->forbiddenRelootTypes.end();
+}
+
+bool WorldState::IsBaseContainerForbidden(
+  const std::string& type) const noexcept
+{
+  return pImpl->forbiddenBaseContainerTypes.count(type) > 0;
 }
 
 bool WorldState::HasEspmFile(std::string_view filename) const noexcept
