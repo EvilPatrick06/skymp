@@ -59,12 +59,26 @@ export class ObjectReferenceEx {
 
       activationService has the other half: while a reference is locked it is
       not announced to the server at all.
+
+      THORNSWOOD PATCH (Thornswood #3080). A plant or a tree goes through the
+      server too, before Skyrim picks it.
+
+      Upstream left Flora and Tree unblocked ("I don't think it's
+      necessary"). Unblocked, the presser's own Skyrim played the pick,
+      emptied the plant and put the produce in its own pack with the game's
+      "added" line before the server had said anything. When the server said
+      no, the gamemode had to take the produce back out and tell this client
+      to un-pick the plant (putBack, on a four second timer). Blocked, a press
+      only sends the activation: a refused one changes nothing on this
+      machine, and the server hands over what an allowed one gives.
     */
     if (self.isLocked()) {
       self.blockActivation(false);
     } else if (t === FormType.Container
       || isItem
       || t === FormType.NPC
+      || t === FormType.Flora
+      || t === FormType.Tree
       || (t === FormType.Door && self.getBaseObject()?.getFormID() !== caveGSecretDoor01)) {
       self.blockActivation(true);
     } else {
