@@ -57,6 +57,13 @@ enum class SetPosMode
   // Will save pos from time to time
   CalledByUpdateMovement,
 
+  // The server's own NPC movement (MpActor::UpdateServerMovement). Never
+  // saves on its own: the gamemode saves a server NPC when it takes it on and
+  // when a fight or a flight starts or ends, never while it wanders
+  // (Thornswood #3180). The 30-second save above, meant for a player's
+  // movement, rewrote every walking NPC's change form twice a minute.
+  CalledByServerMovement,
+
   // Will save pos immediately
   Other
 };
@@ -112,6 +119,12 @@ public:
   bool HasScript(const char* name) const;
   bool IsActivationBlocked() const;
   bool GetTeleportFlag() const;
+
+  // Whether a move or a turn asks for a save: a player's movement once its
+  // last save is 30 seconds old, the server's own NPC movement never, and
+  // anything else at once (SetPosMode says why).
+  static ChangeFormGuard::Mode SaveModeFor(bool isLocationSaveNeeded,
+                                           SetPosMode setPosMode);
 
   virtual void VisitProperties(CreateActorMessage& message,
                                VisitPropertiesMode mode);
