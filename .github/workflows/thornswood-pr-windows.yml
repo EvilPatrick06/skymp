@@ -40,6 +40,12 @@
 #   build\skymp5-server\launch_server.bat.tmp   the one the configure wrote,
 #                                       which the record holds launch_server.bat to
 #   build\skymp5-scripts\pex\           Papyrus the build compiled, when it did
+#   build\licences\                     the licence text of every vcpkg
+#                                       library whose code is in one of the
+#                                       four native client files, and
+#                                       licences.json, which says which is in
+#                                       which (misc\thornswood\Write-ClientLicences.ps1,
+#                                       Thornswood #3099)
 #   fork-build.json                     the commit, this run, and each file's
 #                                       sha256, size and time
 # A zip keeps a file's time without its zone, so the times go in
@@ -129,6 +135,12 @@ jobs:
           NUGET_FEED_OWNER: ${{ github.repository_owner }}
           COVERAGE: "false"
 
+      # Read from each native client file's own program database, which only
+      # this build folder has (Thornswood #3099; the script says how).
+      - name: Write the client files' licence texts
+        shell: pwsh
+        run: .\misc\thornswood\Write-ClientLicences.ps1 -Build (Join-Path $env:GITHUB_WORKSPACE 'build')
+
       # The header, THE BUILD THORNSWOOD RECORDS. After the unit tests, so
       # only a build whose tests passed is kept.
       - name: Gather the build Thornswood records
@@ -163,6 +175,9 @@ jobs:
                          'Data/Platform/Distribution/RuntimeDependencies/SkyrimPlatformCEF.exe.hidden',
                          'Data/Platform/Plugins/skymp5-client.js', 'Data/Scripts/TESModPlatform.pex') { $rels.Add('dist/client/' + $c) }
           $rels.Add('skymp5-server/launch_server.bat.tmp')
+          $lic = Join-Path $b 'licences'
+          if (-not (Test-Path -LiteralPath (Join-Path $lic 'licences.json'))) { Write-Host '::error::the build has no build/licences/licences.json'; exit 1 }
+          foreach ($f in @(Get-ChildItem -LiteralPath $lic -File)) { $rels.Add('licences/' + $f.Name) }
           $pex = Join-Path $b 'skymp5-scripts\pex'
           if (Test-Path -LiteralPath $pex) {
             foreach ($f in @(Get-ChildItem -LiteralPath $pex -File)) { $rels.Add('skymp5-scripts/pex/' + $f.Name) }
