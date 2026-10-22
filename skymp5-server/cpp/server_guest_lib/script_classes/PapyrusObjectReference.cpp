@@ -254,6 +254,25 @@ VarValue PapyrusObjectReference::RemoveItem(
   }
 
   for (auto itemId : formIds) {
+    const auto actor = selfRefr->AsActor();
+    if (actor && !actor->IsCreatedAsPlayer() && actor->GetProfileId() < 0) {
+      // Count only eligible copies, retaining each assigned stack's metadata.
+      // Combat ownership includes inherited gear, but that is not a transfer
+      // allowance. A null destination is trusted script destruction.
+      uint64_t left = count < 0 ? UINT64_MAX : static_cast<uint64_t>(count);
+      std::vector<Inventory::Entry> entries;
+      for (const auto& held : selfRefr->GetInventory().entries) {
+        if (!left) break;
+        if (held.baseId != itemId || !held.count ||
+            (refrToAdd && held.npcEquipment.value_or(false))) continue;
+        auto taken = held;
+        taken.count = static_cast<uint32_t>(std::min<uint64_t>(left, held.count));
+        entries.push_back(taken);
+        left -= taken.count;
+      }
+      if (!entries.empty()) selfRefr->RemoveItems(entries, refrToAdd);
+      continue;
+    }
     uint32_t maxCount = selfRefr->GetInventory().GetItemCount(itemId);
     uint32_t realCount = count > maxCount ? maxCount : count;
     selfRefr->RemoveItem(itemId, realCount, refrToAdd);
