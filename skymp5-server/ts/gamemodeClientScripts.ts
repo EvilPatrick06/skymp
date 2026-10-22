@@ -31,20 +31,27 @@ export const recordClientScripts = (server: any): ClientScriptsRecorder => {
   const scripts = new Map<string, string>();
   const makeProperty = server.makeProperty;
   const makeEventSource = server.makeEventSource;
+  // Defined on the instance, not assigned: the server is a node-addon-api
+  // ObjectWrap whose methods sit on its prototype read-only (napi_default),
+  // and an assignment cannot shadow a read-only inherited property. In the
+  // bundle, which is not strict, it did nothing, and every load recorded no
+  // scripts at all.
+  const wrap = (key: string, fn: (...args: any[]) => unknown) =>
+    Object.defineProperty(server, key, { value: fn, writable: true, configurable: true, enumerable: false });
   // Recorded only once the server took them, so a refused one is not.
-  server.makeProperty = (name: unknown, info: any) => {
+  wrap("makeProperty", (name: unknown, info: any) => {
     const result = makeProperty.call(server, name, info);
     scripts.set("property " + String(name), JSON.stringify([
       !!(info && info.isVisibleByOwner), !!(info && info.isVisibleByNeighbors),
       String((info && info.updateOwner) ?? ""), String((info && info.updateNeighbor) ?? ""),
     ]));
     return result;
-  };
-  server.makeEventSource = (name: unknown, functionBody: unknown) => {
+  });
+  wrap("makeEventSource", (name: unknown, functionBody: unknown) => {
     const result = makeEventSource.call(server, name, functionBody);
     scripts.set("event source " + String(name), String(functionBody));
     return result;
-  };
+  });
 
   let loads = 0;
   let last = "";
