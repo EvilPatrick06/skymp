@@ -236,7 +236,8 @@ foreach ($n in @($inFiles.Keys | Sort-Object)) {
   if (Test-Path -LiteralPath $spdx) {
     $doc = [IO.File]::ReadAllText($spdx) | ConvertFrom-Json
     $pkg = @($doc.packages | Where-Object { $_.SPDXID -eq 'SPDXRef-port' }) | Select-Object -First 1
-    if ($pkg -and $pkg.licenseConcluded -and $pkg.licenseConcluded -ne 'NOASSERTION') { $licence = [string]$pkg.licenseConcluded }
+    # vcpkg writes LicenseRef-vcpkg-null for a port whose vcpkg.json says "license": null (makeid): not declared, like NOASSERTION.
+    if ($pkg -and $pkg.licenseConcluded -and $pkg.licenseConcluded -notin @('NOASSERTION', 'LicenseRef-vcpkg-null')) { $licence = [string]$pkg.licenseConcluded }
   }
   $portRecord[$n] = [ordered]@{
     version = $ports[$n].version
