@@ -1,4 +1,5 @@
 #include "gamemode_events/DyingEvent.h"
+#include "ActionListener.h"
 #include "ChangeValuesMessage.h"
 #include "TestUtils.hpp"
 #include <algorithm>
