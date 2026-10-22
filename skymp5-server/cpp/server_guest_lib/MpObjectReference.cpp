@@ -187,16 +187,20 @@ public:
   bool setPropertyCalled = false;
 };
 
-namespace {
-ChangeFormGuard::Mode MakeMode(bool isLocationSaveNeeded,
-                               SetPosMode setPosMode)
+ChangeFormGuard::Mode MpObjectReference::SaveModeFor(bool isLocationSaveNeeded,
+                                                     SetPosMode setPosMode)
 {
+  if (setPosMode == SetPosMode::CalledByServerMovement) {
+    return ChangeFormGuard::Mode::NoRequestSave;
+  }
+
   if (isLocationSaveNeeded) {
     return ChangeFormGuard::Mode::RequestSave;
   }
 
   switch (setPosMode) {
     case SetPosMode::CalledByUpdateMovement:
+    case SetPosMode::CalledByServerMovement:
       return ChangeFormGuard::Mode::NoRequestSave;
     case SetPosMode::Other:
       return ChangeFormGuard::Mode::RequestSave;
@@ -207,6 +211,7 @@ ChangeFormGuard::Mode MakeMode(bool isLocationSaveNeeded,
   }
 }
 
+namespace {
 MpChangeForm MakeChangeForm(const LocationalData& locationalData)
 {
   MpChangeForm changeForm;
@@ -541,7 +546,7 @@ void MpObjectReference::SetPos(const NiPoint3& newPos, SetPosMode setPosMode)
 
   EditChangeForm(
     [&newPos](MpChangeFormREFR& changeForm) { changeForm.position = newPos; },
-    MakeMode(IsLocationSavingNeeded(), setPosMode));
+    SaveModeFor(IsLocationSavingNeeded(), setPosMode));
 
   if (oldGridPos != newGridPos || !everSubscribedOrListened)
     ForceSubscriptionsUpdate();
@@ -605,7 +610,7 @@ void MpObjectReference::SetAngle(const NiPoint3& newAngle,
 {
   EditChangeForm(
     [&](MpChangeFormREFR& changeForm) { changeForm.angle = newAngle; },
-    MakeMode(IsLocationSavingNeeded(), setAngleMode));
+    SaveModeFor(IsLocationSavingNeeded(), setAngleMode));
 }
 
 void MpObjectReference::SetHarvested(bool harvested)
