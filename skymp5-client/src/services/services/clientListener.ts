@@ -16,6 +16,11 @@ declare module "skyrimPlatform" {
     // reference's inventory to `to`, where they lie. False when no set of
     // its extra lists holds exactly those units; nothing is changed then.
     function renameInventoryItems(refrId: number, baseId: number, from: string, to: string, count: number): boolean;
+    // Thornswood #2146. Takes counts[i] units away from the reference's extra
+    // list at indexes[i] of baseId (as getExtraContainerChanges lists them,
+    // listCount of them), then `plain` units that have no list. False, and
+    // nothing taken, when the game is paused or the lists are not those.
+    function removeInventoryItems(refrId: number, baseId: number, listCount: number, indexes: number[], counts: number[], plain: number): boolean;
     function getExteriorCellCoordinates(cellId: number): number[] | undefined;
     function setTextsVisibility(visibility: 'inheritBrowser' | 'off' | 'on'): void;
     function getTextsVisibility(): 'inheritBrowser' | 'off' | 'on';
