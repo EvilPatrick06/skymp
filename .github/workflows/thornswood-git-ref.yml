@@ -1,0 +1,102 @@
+# Deletes a branch of this fork for a session whose git cannot write refs: a
+# cloud Claude thread working Thornswood (Thornswood #3107).
+#
+# WHY. A cloud session reaches GitHub through the cloud environment's proxy,
+# which refuses every ref write before GitHub sees it (measured 22 Oct 2026:
+# DELETE git/refs/heads/<branch> is 403 "Write access to this GitHub API path
+# is not permitted through this proxy", and a git push of a ref delete is cut
+# off). Starting a workflow is allowed. So every fork branch a cloud thread
+# left went to Patrick's machine. Thornswood's own branches go through its
+# git-ref.yml; this is the same for the fork, whose token Thornswood's run
+# does not have.
+#
+# HOW. A session runs
+#
+#   pwsh scripts/ops/Set-Ref.ps1 -Fork -DeleteBranch claude/<what> -Commit <sha>
+#
+# in Thornswood, which starts this on main, waits for the run, and prints the
+# answer it left as an annotation titled Set-Ref: DELETED or GONE, or why the
+# branch stays.
+#
+# WHAT IT DELETES. Never the default branch. The branch has to be at the
+# commit given, so a commit pushed after the caller looked is never deleted
+# with it, and no open pull request may come from it or be built onto it.
+# GitHub's "Restore branch" button on a closed pull request brings one back.
+# These are the rules of Thornswood's Set-Ref.ps1 -OnGitHub, which
+# tests\test-3107-set-ref.ps1 there holds; this repository cannot read that
+# script, so the same rules are written here.
+#
+# WHAT IT RUNS. Nothing from the repository: no checkout and no action. The
+# inputs reach the script through the environment, never pasted into it.
+# The run's own token can write refs and read pull requests, nothing else,
+# and there is no secret. workflow_dispatch only, so only people who can
+# already push and delete branches here can start it. GitHub's hosted runner,
+# whose minutes cost nothing in this public repository. Never add a
+# pull_request or push trigger here, and never a self-hosted runner.
+name: Thornswood delete branch
+run-name: Delete branch ${{ inputs.delete_branch }} by ${{ github.actor }}
+on:
+  workflow_dispatch:
+    inputs:
+      delete_branch:
+        description: 'The branch to delete'
+        required: true
+      commit:
+        description: 'The commit the branch has to be at'
+        required: true
+permissions:
+  contents: write
+  pull-requests: read
+jobs:
+  delete:
+    name: Delete the branch
+    runs-on: ubuntu-latest
+    # Four calls at most. Past this it is stuck, not slow.
+    timeout-minutes: 5
+    steps:
+      - name: Delete the branch if it is still at the commit given
+        shell: pwsh -NoProfile -NonInteractive -Command ". '{0}'"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF_DELETE_BRANCH: ${{ inputs.delete_branch }}
+          REF_COMMIT: ${{ inputs.commit }}
+          REF_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          function Note([string]$level, [string]$m) { Write-Host ('::' + $level + ' title=Set-Ref::' + ($m -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A')) }
+          function Die([string]$m) { Note 'error' $m; exit 1 }
+          function Api([string]$method, [string]$path) {
+            $r = Invoke-WebRequest -Method $method -Uri ("$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/" + $path) -SkipHttpErrorCheck -TimeoutSec 60 `
+              -Headers @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
+            $text = [string]$r.Content
+            $o = if ($text.Trim()) { $text | ConvertFrom-Json } else { $null }
+            return [pscustomobject]@{ Code = [int]$r.StatusCode; Body = $o }
+          }
+          $b = [string]$env:REF_DELETE_BRANCH
+          $c = [string]$env:REF_COMMIT
+          if ($c -notmatch '^[0-9a-f]{40}$') { Die "the commit has to be a full 40 character commit id, and it is '$c'. Nothing was changed." }
+          if ($b -notmatch '^[A-Za-z0-9][A-Za-z0-9._/-]*$' -or $b -match '\.\.|//|/\.|\.lock(/|$)|[/.]$') { Die "'$b' is not a branch name this deletes. Nothing was changed." }
+          if ($b -eq $env:REF_DEFAULT_BRANCH) { Die "$b is the default branch, which this never deletes." }
+          # Each part of the name escaped on its own, the slashes kept.
+          $ref = (@($b.Split('/') | ForEach-Object { [Uri]::EscapeDataString($_) }) -join '/')
+          $has = Api GET "git/ref/heads/$ref"
+          if ($has.Code -eq 404) { Note 'notice' "GONE $b"; exit 0 }
+          if ($has.Code -ne 200) { Die "GitHub would not say where $b is (HTTP $($has.Code)). Nothing was changed." }
+          $tip = [string]$has.Body.object.sha
+          if ($tip -ne $c) { Die "$b is at $tip, not ${c}: a commit came after the one given, so it stays. Look at it, then ask again with its commit." }
+          $owner = $env:GITHUB_REPOSITORY.Split('/')[0]
+          $q = [Uri]::EscapeDataString($b)
+          $open = @()
+          foreach ($ask in @("pulls?state=open&per_page=100&head=$owner`:$q", "pulls?state=open&per_page=100&base=$q")) {
+            $a = Api GET $ask
+            if ($a.Code -ne 200) { Die "GitHub would not list the open pull requests on $b (HTTP $($a.Code)). Nothing was changed." }
+            $open += @($a.Body | Where-Object { $_ -and $_.PSObject.Properties['number'] })
+          }
+          if ($open.Count) { Die ("$b stays: open pull request(s) " + ((@($open | ForEach-Object { '#' + $_.number }) | Sort-Object -Unique) -join ', ') + ' come from it or are built onto it.') }
+          $gone = Api DELETE "git/refs/heads/$ref"
+          if ($gone.Code -eq 204) { Note 'notice' "DELETED $b $c"; exit 0 }
+          # 422 is GitHub saying the ref is not there any more: it went between
+          # the read and the delete, which is the state this run is for.
+          if ($gone.Code -eq 422) { Note 'notice' "GONE $b"; exit 0 }
+          Die "GitHub did not delete $b (HTTP $($gone.Code))."
