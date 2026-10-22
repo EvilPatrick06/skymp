@@ -283,10 +283,10 @@ void MpActor::UpdateServerMovement(const NiPoint3& pos, const NiPoint3& angle,
     throw std::invalid_argument("Invalid NPC movement; use a bounded local route");
   }
   if (pos != GetPos()) {
-    SetPos(pos, SetPosMode::CalledByUpdateMovement);
+    SetPos(pos, SetPosMode::CalledByServerMovement);
   }
   if (angle != GetAngle()) {
-    SetAngle(angle, SetAngleMode::CalledByUpdateMovement);
+    SetAngle(angle, SetAngleMode::CalledByServerMovement);
   }
   pImpl->serverMovementSpeed = speed;
   SendServerStateToObservers(GetServerMovementMessage(), false);
