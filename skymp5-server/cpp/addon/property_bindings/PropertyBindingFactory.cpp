@@ -7,6 +7,7 @@
 #include "ConsoleCommandsAllowedBinding.h"
 #include "CraftOutputBinding.h"
 #include "CustomPropertyBinding.h"
+#include "DyingHealthBinding.h"
 #include "EatItemScaleBinding.h"
 #include "EquipmentBinding.h"
 #include "IdxBinding.h"
@@ -39,6 +40,7 @@ PropertyBindingFactory::CreateStandardPropertyBindings()
   result["appearance"] = std::make_shared<AppearanceBinding>();
   result["baseDesc"] = std::make_shared<BaseDescBinding>();
   result["craftOutput"] = std::make_shared<CraftOutputBinding>();
+  result["dyingHealth"] = std::make_shared<DyingHealthBinding>();
   result["eatItemScale"] = std::make_shared<EatItemScaleBinding>();
   result["equipment"] = std::make_shared<EquipmentBinding>();
   result["inventory"] = std::make_shared<InventoryBinding>();

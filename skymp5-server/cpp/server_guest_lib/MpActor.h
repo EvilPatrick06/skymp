@@ -152,6 +152,8 @@ public:
     std::optional<Viet::Promise<VarValue>> promise = std::nullopt);
 
   void ResolveSnippet(uint32_t snippetIdx, VarValue v);
+  // SetPercentages kills on a health of nothing without asking the gamemode;
+  // NetSetPercentages asks first (Thornswood #1626). SetPercentage asks.
   void SetPercentages(const ActorValues& actorValues,
                       MpActor* aggressor = nullptr);
   void SetPercentage(espm::ActorValue av, float percentage);
@@ -270,6 +272,12 @@ private:
   bool factionsLoaded = false;
 
   bool SendAndSetDeathState(bool isDead, bool shouldTeleport);
+
+  // Thornswood #1626. Fires onDying for a death a health write is about to
+  // make. std::nullopt lets the death go ahead; a value is the health share
+  // a listener's refusal keeps the actor alive at. The caller checks the
+  // actor (and the killer) are still the same lives afterwards.
+  std::optional<float> AskBeforeDeath(MpActor* killer);
   void SendServerStateToObservers(const IMessageBase& message,
                                   bool reliable) const;
 
