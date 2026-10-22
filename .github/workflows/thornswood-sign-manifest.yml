@@ -30,6 +30,22 @@
 #      signing setup, before anything is published.
 # The manifest lists hashes only: nothing secret goes in or out.
 #
+# THE LAUNCHER IS CHECKED HERE FIRST (Thornswood #3312). Since #3312 a
+# release launcher may be signed by Thornswood's release.yml on its VPS
+# fallback, on runner 3, when GitHub's hosted runner has no minutes. So that
+# the box that signed is never the only machine that checked it, the job
+# "launcher" below fetches the launcher this release names from the site
+# (launcher_url, https://thornswood.net/feed[-dev]/assets/<sha256>, where
+# Thornswood's Publish-Update.ps1 put it before it asked for this), holds it to the
+# sha256 the manifest lists, and runs the launcher's own signature check on
+# it: Authenticode Valid, the signer naming the expected signer, a
+# timestamp, and Thornswood's launcher\app\Signature.cs, which the Ship sends
+# as signature_cs_gz, gzipped and base64 (so the whole dispatch stays inside
+# Windows' 32,767 character command line). Only when it passes does "sign" run. "launcher"
+# has no id-token and no environment: the C# it compiles comes from the
+# request, and a job that compiles a request's code never gets the Azure
+# token.
+#
 # WHO CAN RUN IT. workflow_dispatch only, so only people who can write to this
 # repository. A pull request never gets the environment, and so never the
 # Azure token: the environment allows main alone. Never add a pull_request or
@@ -68,6 +84,12 @@ on:
       expected_signer:
         description: What the signer's subject must contain (Updater.cs ExpectedSigner)
         required: true
+      signature_cs_gz:
+        description: Thornswood's launcher\app\Signature.cs, the launcher's own signature check, gzipped and base64
+        required: true
+      launcher_url:
+        description: Where the site serves the launcher this release names (https://thornswood.net/feed[-dev]/assets/<sha256>)
+        required: true
 
 permissions:
   contents: read
@@ -77,8 +99,74 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  launcher:
+    name: Check the launcher the release names
+    if: github.repository == 'EvilPatrick06/skymp' && github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    steps:
+      # Inputs reach the script through env, never pasted into script text.
+      - name: Fetch the launcher from the site and run the launcher's own check
+        shell: pwsh
+        env:
+          MANIFEST: ${{ inputs.manifest }}
+          MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
+          EXPECTED_SIGNER: ${{ inputs.expected_signer }}
+          SIGNATURE_CS_GZ: ${{ inputs.signature_cs_gz }}
+          LAUNCHER_URL: ${{ inputs.launcher_url }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Stop-Job([string]$m) { Write-Host "::error::$m"; exit 1 }
+          if ($env:MANIFEST_SHA256 -notmatch '^[0-9a-fA-F]{64}$') { Stop-Job 'manifest_sha256 is not a sha256' }
+          if (-not $env:EXPECTED_SIGNER) { Stop-Job 'expected_signer is empty' }
+          try { $bytes = [Convert]::FromBase64String($env:MANIFEST) } catch { Stop-Job 'the manifest is not base64' }
+          $sha = [Security.Cryptography.SHA256]::Create()
+          $got = -join ($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') })
+          if ($got -ne $env:MANIFEST_SHA256.ToLowerInvariant()) { Stop-Job "the manifest is $got, not the $($env:MANIFEST_SHA256) the Ship sent" }
+          try { $m = [Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json } catch { Stop-Job 'the manifest is not JSON' }
+          $l = @(@($m.assets) | Where-Object { [string]$_.what -match '^launcher( |$)' })
+          if ($l.Count -ne 1) { Stop-Job "the manifest lists $($l.Count) launchers, not one" }
+          $want = ([string]$l[0].sha256).ToLowerInvariant()
+          if ($want -notmatch '^[0-9a-f]{64}$') { Stop-Job 'the manifest lists the launcher with no sha256' }
+          # The feed's own launcherUrl: a dev feed may name main's launcher
+          # from main's store, so the folder is the feed's word, held here to
+          # the site and to the sha256 the manifest lists.
+          $url = [string]$env:LAUNCHER_URL
+          if ($url -notmatch '^https://thornswood\.net/feed(-dev)?/assets/([0-9a-f]{64})$' -or $Matches[2] -ne $want) { Stop-Job "launcher_url '$url' is not the site's address for the launcher the manifest lists ($want)" }
+
+          $work = Join-Path $env:RUNNER_TEMP 'launcher'
+          New-Item -ItemType Directory -Force -Path $work | Out-Null
+          $exe = Join-Path $work 'Thornswood.exe'
+          Invoke-WebRequest -Uri $url -OutFile $exe -UseBasicParsing -TimeoutSec 300
+          $have = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($have -ne $want) { Stop-Job "the launcher at $url is $have, not the $want the manifest lists" }
+
+          $sig = Get-AuthenticodeSignature -LiteralPath $exe
+          if ($sig.Status -ne 'Valid') { Stop-Job "$($l[0].what) reads $($sig.Status), not Valid" }
+          $who = [string]$sig.SignerCertificate.Subject
+          if ($who.IndexOf($env:EXPECTED_SIGNER, [StringComparison]::OrdinalIgnoreCase) -lt 0) { Stop-Job "$($l[0].what) is signed by '$who', which does not contain '$($env:EXPECTED_SIGNER)'" }
+          if (-not $sig.TimeStamperCertificate) { Stop-Job "$($l[0].what) has no timestamp" }
+
+          # Signature.cs as Thornswood's Assert-PublishSigned.ps1 compiles it:
+          # under a namespace named for its hash, then Signature.Refusal.
+          try {
+            $gz = New-Object IO.Compression.GZipStream((New-Object IO.MemoryStream(, [Convert]::FromBase64String($env:SIGNATURE_CS_GZ))), [IO.Compression.CompressionMode]::Decompress)
+            $src = (New-Object IO.StreamReader($gz, [Text.Encoding]::UTF8)).ReadToEnd()
+          } catch { Stop-Job 'signature_cs_gz is not gzipped base64' }
+          if ($src -notmatch '(?m)^namespace Thornswood\s*$' -or $src -notmatch 'public static string Refusal\(string path, string expectedSigner, out string said\)') { Stop-Job 'signature_cs_gz is not the launcher''s Signature.cs' }
+          $hash = -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($src)) | Select-Object -First 8 | ForEach-Object { $_.ToString('x2') })
+          $ns = 'ThornswoodSign' + $hash
+          Add-Type -TypeDefinition ([regex]::Replace($src, '(?m)^namespace Thornswood\s*$', ('namespace ' + $ns))) -Language CSharp
+          $said = ''
+          $why = (($ns + '.Signature') -as [type])::Refusal($exe, $env:EXPECTED_SIGNER, [ref]$said)
+          if ($why) { Stop-Job "$($l[0].what): the launcher's own check refuses it: $why" }
+          Write-Host ("{0}, sha256 {1}, from {2}: signed by {3}, timestamped, and the launcher's own check accepts it ({4})" -f $l[0].what, $want, $url, $who, $said)
+
   sign:
     name: Sign the release manifest's catalog
+    needs: launcher
     if: github.repository == 'EvilPatrick06/skymp' && github.ref == 'refs/heads/main'
     runs-on: windows-latest
     environment: thornswood-signing
