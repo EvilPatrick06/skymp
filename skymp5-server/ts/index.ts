@@ -239,18 +239,24 @@ const main = async () => {
 
   console.log(`Current process ID is ${pid}`);
 
+  // Each tick is timed only when /metrics can serve the times (Thornswood
+  // #3181). Without metricsAuth nobody can read them, and on 22 Oct 2026 a
+  // 120 s profile of the dev server with nobody on found the two timers, the
+  // histogram and the summary's digest at about 3.4 s of the 15.5 s its
+  // JavaScript thread was busy.
+  const timeTicks = ui.metricsServed();
   (async () => {
     while (1) {
-      const endTimerHistogram = tickDurationHistogram.startTimer();
-      const endTimerSummary = tickDurationSummary.startTimer();
+      const endTimerHistogram = timeTicks ? tickDurationHistogram.startTimer() : null;
+      const endTimerSummary = timeTicks ? tickDurationSummary.startTimer() : null;
       try {
         server.tick();
         await new Promise((r) => setTimeout(r, 1));
       } catch (e) {
         console.error(`in server.tick:\n${e.stack}`);
       } finally {
-        endTimerHistogram();
-        endTimerSummary();
+        if (endTimerHistogram) endTimerHistogram();
+        if (endTimerSummary) endTimerSummary();
       }
     }
   })();
