@@ -3,6 +3,7 @@
 #include "archives/BitStreamInputArchive.h"
 #include "archives/BitStreamOutputArchive.h"
 #include "script_classes/PapyrusActor.h"
+#include "script_classes/PapyrusObjectReference.h"
 #include "script_objects/EspmGameObject.h"
 #include <cstring>
 
@@ -246,4 +247,27 @@ TEST_CASE("An NPC can fight with inherited gear after an attempted loot transfer
   REQUIRE(f.Npc().GetEquipment() == gear);
   REQUIRE(f.p.GetActionListener().ServerNpcAttack(kNpc, kHuman));
   REQUIRE(f.Human().GetActorValues().healthPercentage < 1.f);
+}
+
+TEST_CASE("Papyrus removes only eligible assigned copies of inherited NPC items",
+          "[NpcBodyLoot][Papyrus][espm]")
+{
+  NpcLootFixture f;
+  const auto before = f.Npc().GetInventory();
+  const auto weapon = f.Npc().GetEquippedWeapon()[1];
+  REQUIRE(weapon.has_value());
+  int count = -1;
+  Inventory::Entry assigned(weapon->baseId, 3);
+  SECTION("Remove all copies") {}
+  SECTION("Clamp an oversized request") { count = 100; }
+  SECTION("Keep assigned metadata") { assigned.name = "Assigned guard sword"; }
+  f.Npc().AddItems({assigned});
+  const auto lookup = f.p.GetEspm().GetBrowser().LookupById(weapon->baseId);
+  VarValue item(std::make_shared<EspmGameObject>(lookup));
+  PapyrusObjectReference papyrus;
+  REQUIRE_NOTHROW(papyrus.RemoveItem(f.Npc().ToVarValue(),
+    {item, VarValue(int32_t(count)), VarValue(true), f.Human().ToVarValue()}));
+  REQUIRE(f.Npc().GetInventory() == before);
+  REQUIRE(f.Human().GetInventory().entries ==
+          std::vector<Inventory::Entry>{assigned});
 }

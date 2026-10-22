@@ -1659,7 +1659,7 @@ std::map<uint32_t, uint32_t> MpActor::EvaluateDeathItem()
 {
   // Thornswood assigns body piles and Hunter yields. Never roll the plugin's
   // death list, including when deciding whether a respawn resets inventory.
-  if (!IsCreatedAsPlayer()) return {};
+  if (!IsCreatedAsPlayer() && GetProfileId() < 0) return {};
   auto worldState = GetParent();
   if (!worldState) {
     return {};
