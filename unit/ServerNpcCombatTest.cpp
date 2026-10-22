@@ -1319,3 +1319,25 @@ TEST_CASE("An unsafe saved NPC return deadline is rejected before scheduling",
   f.p.worldState.Tick();
   REQUIRE(npc.IsDead());
 }
+
+TEST_CASE("The server's own NPC movement never asks for a save on a timer",
+          "[ServerNpcCombat][Save]")
+{
+  // Thornswood #3180: every walking server NPC's change form was rewritten
+  // each 30 seconds, about 5,000 files per server twice a minute with nobody
+  // on, because UpdateServerMovement took the player's movement mode, which
+  // saves once its last save is 30 seconds old.
+  using Mode = ChangeFormGuard::Mode;
+  for (bool locationSaveDue : { false, true }) {
+    CHECK(MpObjectReference::SaveModeFor(locationSaveDue,
+                                         SetPosMode::CalledByServerMovement) ==
+          Mode::NoRequestSave);
+  }
+  // A player's movement keeps its 30-second save, and any other move saves.
+  CHECK(MpObjectReference::SaveModeFor(
+          true, SetPosMode::CalledByUpdateMovement) == Mode::RequestSave);
+  CHECK(MpObjectReference::SaveModeFor(
+          false, SetPosMode::CalledByUpdateMovement) == Mode::NoRequestSave);
+  CHECK(MpObjectReference::SaveModeFor(false, SetPosMode::Other) ==
+        Mode::RequestSave);
+}
