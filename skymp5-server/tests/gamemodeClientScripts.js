@@ -77,4 +77,34 @@ check('clear forgets the last load, so a load that registers less is a change',(
   assert.equal(b.scripts,1);assert.equal(b.clientScriptsChanged,true);
 });
 
+// The real server is a node-addon-api ObjectWrap: its methods are on the
+// prototype with napi_default attributes, so read-only. An assignment to the
+// instance cannot shadow a read-only inherited property; in the engine's
+// bundle (not strict) it did nothing at all, and the first load on dev with
+// #105 logged "client scripts e3b0c44298fc (0)" for a gamemode that makes
+// dozens of properties at load.
+function nativeServer(){
+  const made=[];
+  function Native(){}
+  for(const [k,fn] of Object.entries({
+    makeProperty(name){made.push('property '+name);},
+    makeEventSource(name){made.push('event '+name);},
+    clear(){made.length=0;},
+  }))Object.defineProperty(Native.prototype,k,{value:fn,writable:false,enumerable:false,configurable:false});
+  return {s:new Native(),made};
+}
+check('a server whose methods are read-only on its prototype, as a native one is, is recorded',()=>{
+  const {s,made}=nativeServer(),r=recordClientScripts(s);
+  const a=load(r,s,{x:prop('return 1'),y:prop('return 2')},{onHit:'ctx.sendEvent()'});
+  assert.equal(a.scripts,3);
+  assert.deepEqual(made,['property x','property y','event onHit'],'the server itself still gets every call');
+  assert.equal(load(r,s,{x:prop('return 9'),y:prop('return 2')},{onHit:'ctx.sendEvent()'}).clientScriptsChanged,true);
+});
+check('and a gamemode calling them through the global mp, as the engine sets it, is recorded too',()=>{
+  const {s}=nativeServer(),r=recordClientScripts(s);
+  const mp=s;
+  r.clear();mp.makeProperty('x',prop('a'));
+  assert.equal(r.loaded().scripts,1);
+});
+
 if(failed){console.log(failed+' failed');process.exit(1);}
