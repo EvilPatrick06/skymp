@@ -27,6 +27,11 @@ const metricsAuthParse = (settings: Settings): void => {
   metricsAuth = { user: authConfig.user, password: authConfig.password };
 }
 
+// Whether /metrics serves anything. Without metricsAuth it answers 401 to
+// every request, so a metric that costs work to keep is not kept (Thornswood
+// #3181). Set by main(), before the server's tick loop starts.
+export const metricsServed = (): boolean => metricsAuth !== null;
+
 // An address on this machine: 127.0.0.0/8 or ::1, also as an IPv4 address
 // mapped into IPv6.
 const isLoopback = (address: string | undefined): boolean =>
