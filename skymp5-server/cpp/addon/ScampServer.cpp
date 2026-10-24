@@ -841,7 +841,21 @@ Napi::Value ScampServer::CompareAndSetInventoryImpl(
       for (const auto* snapshot : { &expected, &replacement }) {
         for (const auto& entry : snapshot->entries) {
           const auto base = browser.LookupById(entry.baseId).rec;
-          if (!base || !espm::utils::IsItem(base->GetType())) {
+          // Thornswood #1649: a brewed bottle has no record; it is kept by
+          // its contents under the id those contents give, and each effect
+          // has to be a magic effect record.
+          const bool madeOk = entry.made && !entry.made->effects.empty() &&
+            entry.baseId == Inventory::MadeBaseId(*entry.made) &&
+            std::all_of(entry.made->effects.begin(),
+                        entry.made->effects.end(), [&](const auto& effect) {
+                          const auto mgef =
+                            browser.LookupById(effect.effectId).rec;
+                          return mgef && mgef->GetType() == "MGEF";
+                        });
+          if (entry.made && !madeOk) {
+            throw std::runtime_error("Invalid inventory transaction made item");
+          }
+          if (!madeOk && (!base || !espm::utils::IsItem(base->GetType()))) {
             throw std::runtime_error("Invalid inventory transaction base form");
           }
           for (const auto& field : { std::make_pair(entry.enchantmentId, "ENCH"),

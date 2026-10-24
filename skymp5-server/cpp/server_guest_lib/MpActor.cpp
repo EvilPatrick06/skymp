@@ -809,7 +809,7 @@ bool MpActor::OnEquip(uint32_t baseId)
   auto lookupRes = espm.GetBrowser().LookupById(baseId);
 
   if (!lookupRes.rec) {
-    return false;
+    return OnEquipMade(baseId);
   }
 
   const auto recordType = lookupRes.rec->GetType();
@@ -881,6 +881,51 @@ bool MpActor::OnEquip(uint32_t baseId)
 
   SendPapyrusEvent("OnObjectEquipped", args, std::size(args));
 
+  return true;
+}
+
+bool MpActor::OnEquipMade(uint32_t baseId)
+{
+  /*
+    THORNSWOOD PATCH (Thornswood #1649). Drinking a bottle somebody brewed.
+
+    Before, a brewed bottle was kept under the runtime id the brewing game
+    gave it, and OnEquip found no record for that id and stopped: the bottle
+    stayed in the server's pack however often it was drunk, onEatItem never
+    fired, and nothing it did reached the server. Now the pack holds it by
+    its contents, so the effects are right here.
+  */
+  const Inventory::Entry* held = nullptr;
+  for (const auto& entry : GetInventory().entries) {
+    if (entry.baseId == baseId && entry.made && entry.count > 0) {
+      held = &entry;
+      break;
+    }
+  }
+  if (!held) {
+    return false;
+  }
+
+  Inventory::ExtraData extra;
+  extra.made = held->made;
+  const Inventory::Entry one(baseId, 1, extra);
+
+  if (!held->made->poison) {
+    std::vector<espm::Effects::Effect> effects;
+    for (const auto& e : held->made->effects) {
+      espm::Effects::Effect effect;
+      effect.effectId = e.effectId;
+      effect.magnitude = e.magnitude;
+      effect.areaOfEffect = e.area;
+      effect.duration = e.duration;
+      effects.push_back(effect);
+    }
+    EatItemEvent eatItemEvent(this, baseId, std::move(effects));
+    eatItemEvent.Fire(GetParent());
+  }
+
+  // A poison goes on the blade, not down the throat: it is only spent.
+  RemoveItems({ one });
   return true;
 }
 

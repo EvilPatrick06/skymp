@@ -9,6 +9,7 @@
 #include "libespm/Convert.h"
 #include "libespm/INGR.h"
 #include <algorithm>
+#include <cmath>
 #include <map>
 #include <set>
 #include <fmt/format.h>
@@ -57,9 +58,10 @@ CraftService::CraftService(PartOne& partOne_)
 {
 }
 
-void CraftService::OnCraftItem(const RawMessageData& rawMsgData,
-                               const Inventory& inputObjects,
-                               uint32_t workbenchId, uint32_t resultObjectId)
+void CraftService::OnCraftItem(
+  const RawMessageData& rawMsgData, const Inventory& inputObjects,
+  uint32_t workbenchId, uint32_t resultObjectId,
+  const std::optional<Inventory::Made>& resultPotion)
 {
   spdlog::info("User {} tries to craft {:#x} on workbench {:#x}",
                rawMsgData.userId, resultObjectId, workbenchId);
@@ -136,7 +138,8 @@ void CraftService::OnCraftItem(const RawMessageData& rawMsgData,
   */
   bool crafted = false;
   try {
-    crafted = CraftItem(me, inputObjects, workbenchId, resultObjectId);
+    crafted =
+      CraftItem(me, inputObjects, workbenchId, resultObjectId, resultPotion);
   } catch (const std::exception& e) {
     SendInventoryBack(me, workbenchId, resultObjectId, e.what());
     throw;
@@ -167,8 +170,9 @@ void CraftService::SendInventoryBack(MpActor* me, uint32_t workbenchId,
   }
 }
 
-bool CraftService::CraftItem(MpActor* me, const Inventory& inputObjects,
-                             uint32_t workbenchId, uint32_t resultObjectId)
+bool CraftService::CraftItem(
+  MpActor* me, const Inventory& inputObjects, uint32_t workbenchId,
+  uint32_t resultObjectId, const std::optional<Inventory::Made>& resultPotion)
 {
   auto& workbench =
     partOne.worldState.GetFormAt<MpObjectReference>(workbenchId);
@@ -256,11 +260,43 @@ bool CraftService::CraftItem(MpActor* me, const Inventory& inputObjects,
                    inputObjects.ToJson().dump(), fmt::join(*effects, ","));
     }
 
-    CraftEvent craftEvent(me, resultObjectId, 1, 0, inputObjects.entries,
-                          workbenchId, effects);
+    /*
+      THORNSWOOD PATCH (Thornswood #1649). A brewed bottle is kept as what is
+      in it, never by the id the brewing game gave it.
+
+      resultObjectId is a runtime form (above 0xff000000) that only the
+      brewing client's session has. Kept as it was, the next session's game
+      finds nothing under that id, or some other form it made, and the
+      server, having no record of it, could not tell what drinking it does,
+      so it never took the bottle out of the pack or raised onEatItem. So a
+      brew comes with what the client read off the bottle (resultPotion),
+      MadePotion checks it against the effects worked out above, and the
+      pack gets the bottle by its contents under Inventory::MadeBaseId. A
+      brew without a believable description is refused before the gamemode
+      is asked, the same as any craft that cannot go through: nothing
+      session-only is put in a pack.
+    */
+    std::optional<Inventory::Made> made;
+    uint32_t resultBaseId = resultObjectId;
+    if (effects) {
+      made = MadePotion(br, inputObjects, *effects, resultPotion);
+      if (!made) {
+        spdlog::warn("CraftService - the brew of {} came without a "
+                     "description of the bottle that matches its "
+                     "ingredients, so it is refused",
+                     inputObjects.ToJson().dump());
+        return false;
+      }
+      resultBaseId = Inventory::MadeBaseId(*made);
+      spdlog::info("The bottle {:#x} the client brewed is kept as {:#x}: {}",
+                   resultObjectId, resultBaseId, Inventory::Canonical(*made));
+    }
+
+    CraftEvent craftEvent(me, resultBaseId, 1, 0, inputObjects.entries,
+                          workbenchId, effects, made);
     if (!craftEvent.Fire(me->GetParent())) {
       spdlog::info("The gamemode refused the craft of {:#x} with no recipe",
-                   resultObjectId);
+                   resultBaseId);
       return false;
     }
     return true;
@@ -325,6 +361,65 @@ std::optional<std::vector<uint32_t>> CraftService::BrewEffects(
     }
   }
   return shared;
+}
+
+std::optional<Inventory::Made> CraftService::MadePotion(
+  const espm::CombineBrowser& br, const Inventory& inputObjects,
+  const std::vector<uint32_t>& effects,
+  const std::optional<Inventory::Made>& claimed)
+{
+  if (!claimed || effects.empty() ||
+      claimed->effects.size() != effects.size() ||
+      claimed->name.size() > 256) {
+    return std::nullopt;
+  }
+
+  // The strongest value any ingredient in the brew has for each effect.
+  struct Base
+  {
+    float magnitude = 0.f;
+    uint32_t area = 0;
+    uint32_t duration = 0;
+  };
+  std::map<uint32_t, Base> base;
+  std::set<uint32_t> ingredientsSeen;
+  for (const auto& entry : inputObjects.entries) {
+    if (!ingredientsSeen.insert(entry.baseId).second) {
+      continue;
+    }
+    auto lookup = br.LookupById(entry.baseId);
+    const auto* ingredient = espm::Convert<espm::INGR>(lookup.rec);
+    if (!ingredient) {
+      continue;
+    }
+    for (const auto& effect : ingredient->GetData(cache).effects) {
+      auto& b = base[lookup.ToGlobalId(effect.effectId)];
+      b.magnitude = std::max(b.magnitude, effect.magnitude);
+      b.area = std::max(b.area, effect.areaOfEffect);
+      b.duration = std::max(b.duration, effect.duration);
+    }
+  }
+
+  const std::set<uint32_t> expected(effects.begin(), effects.end());
+  std::set<uint32_t> named;
+  Inventory::Made made = *claimed;
+  for (const auto& effect : made.effects) {
+    if (!expected.count(effect.effectId) ||
+        !named.insert(effect.effectId).second) {
+      return std::nullopt;
+    }
+    const Base& b = base[effect.effectId];
+    const auto limit = [](double value) {
+      return std::max(value, 1.0) * static_cast<double>(kMadeScaleLimit);
+    };
+    if (!std::isfinite(effect.magnitude) || effect.magnitude < 0.f ||
+        effect.magnitude > limit(b.magnitude) ||
+        effect.duration > limit(b.duration) || effect.area > limit(b.area)) {
+      return std::nullopt;
+    }
+  }
+  Inventory::Round(made);
+  return made;
 }
 
 bool CraftService::RecipeItemsMatch(const espm::LookupResult& lookupRes,

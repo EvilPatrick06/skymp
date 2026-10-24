@@ -1,8 +1,11 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
+#include <vector>
 
 #include "GameModeEvent.h"
+#include "libespm/Effects.h"
 
 class MpActor;
 
@@ -11,6 +14,11 @@ class EatItemEvent : public GameModeEvent
 public:
   EatItemEvent(MpActor* actor_, uint32_t baseId_, bool isIngredient_,
                bool isAlchemyItem_);
+
+  // Thornswood #1649. A brewed bottle has no record to read its effects
+  // from; it brings them (Inventory::Made, global MGEF ids).
+  EatItemEvent(MpActor* actor_, uint32_t baseId_,
+               std::vector<espm::Effects::Effect> madeEffects_);
 
   const char* GetName() const override;
 
@@ -34,6 +42,7 @@ private:
   // OnFireSuccess-specific arguments
   bool isIngredient = false;
   bool isAlchemyItem = false;
+  std::optional<std::vector<espm::Effects::Effect>> madeEffects;
 
   float effectScale = 1.f;
 };

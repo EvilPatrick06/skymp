@@ -3,7 +3,7 @@ import { localIdToRemoteId } from "../../view/worldViewMisc";
 
 import { Actor, ContainerChangedEvent } from "skyrimPlatform";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
-import { Inventory } from "../../sync/inventory";
+import { Inventory, readMadePotion } from "../../sync/inventory";
 import { MsgType } from "../../messages";
 import { logTrace, logError } from "../../logging";
 
@@ -94,10 +94,15 @@ export class CraftService extends ClientListener {
 
                 logTrace(this, `Sending craft workbench`, workbench, `resultObjectId`, resultObjectId, `craftInputObjects`, JSON.stringify(craftInputObjects.entries));
 
+                // THORNSWOOD PATCH (Thornswood #1649). A bottle the game
+                // brewed is only good for this session, so what is in it
+                // goes along and the server keeps it by that.
+                const resultPotion = readMadePotion(e.baseObj);
+
                 this.controller.emitter.emit("sendMessage", {
                     message: {
                         t: MsgType.CraftItem,
-                        data: { workbench, craftInputObjects, resultObjectId },
+                        data: { workbench, craftInputObjects, resultObjectId, resultPotion },
                     },
                     reliability: "reliable"
                 });
