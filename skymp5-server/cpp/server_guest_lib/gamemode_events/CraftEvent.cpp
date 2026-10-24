@@ -1,6 +1,9 @@
 #include "CraftEvent.h"
 
 #include "MpActor.h"
+#include <fmt/format.h>
+#include <spdlog/spdlog.h>
+#include <stdexcept>
 
 CraftEvent::CraftEvent(MpActor* actor_, uint32_t craftedItemBaseId_,
                        uint32_t count_, uint32_t recipeId_,
@@ -14,6 +17,8 @@ CraftEvent::CraftEvent(MpActor* actor_, uint32_t craftedItemBaseId_,
   , workbenchId(workbenchId_)
   , effects(std::move(effects_))
   , entries(entries_)
+  , outputBaseId(craftedItemBaseId_)
+  , outputCount(count_)
 {
 }
 
@@ -83,8 +88,74 @@ std::string CraftEvent::GetArgumentsJsonArray() const
   return result;
 }
 
+uint32_t CraftEvent::GetActorId() const
+{
+  return actor ? actor->GetFormId() : 0;
+}
+
+uint32_t CraftEvent::GetCraftedItemBaseId() const
+{
+  return craftedItemBaseId;
+}
+
+uint32_t CraftEvent::GetOutputBaseId() const
+{
+  return outputBaseId;
+}
+
+uint32_t CraftEvent::GetOutputCount() const
+{
+  return outputCount;
+}
+
+void CraftEvent::SetOutput(uint32_t baseId, uint32_t count_)
+{
+  if (baseId == 0 || count_ == 0) {
+    throw std::runtime_error(
+      "A craft's output needs a base id and a count of at least 1");
+  }
+  outputBaseId = baseId;
+  outputCount = count_;
+}
+
+const std::optional<std::string>& CraftEvent::GetOutputName() const
+{
+  return outputName;
+}
+
+void CraftEvent::SetOutputName(std::optional<std::string> name)
+{
+  if (name && name->empty()) {
+    throw std::runtime_error(
+      "A craft's output name needs at least one character; null names none");
+  }
+  outputName = std::move(name);
+}
+
 void CraftEvent::OnFireSuccess(WorldState*)
 {
+  Inventory::ExtraData extraData;
+  extraData.name = outputName;
+  // Refused before the inputs are taken, so a pack that can't hold the
+  // output keeps them.
+  Inventory afterInputs = actor->GetInventory();
+  afterInputs.RemoveItems(entries);
+  if (!afterInputs.CanAddItems(
+        { Inventory::Entry(outputBaseId, outputCount, extraData) })) {
+    throw std::runtime_error(fmt::format(
+      "CraftEvent - actor {:#x} can't take {:#x} x{}: a stack would pass its "
+      "limit",
+      actor->GetFormId(), outputBaseId, outputCount));
+  }
+
   actor->RemoveItems(entries);
-  actor->AddItem(craftedItemBaseId, count);
+  if (outputBaseId != craftedItemBaseId || outputCount != count ||
+      outputName) {
+    spdlog::info("CraftEvent - the gamemode named the output of actor "
+                 "{:#x}'s craft: {:#x} x{}{} in place of {:#x} x{}",
+                 actor->GetFormId(), outputBaseId, outputCount,
+                 outputName ? " '" + *outputName + "'" : std::string(),
+                 craftedItemBaseId, count);
+  }
+  actor->AddItem(outputBaseId, outputCount, extraData);
 }

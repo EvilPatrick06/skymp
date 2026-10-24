@@ -8,6 +8,7 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include "SetInventoryMessage.h"
+#include "gamemode_events/CraftEvent.h"
 #include "gamemode_events/GameModeEvent.h"
 
 using Catch::Matchers::ContainsSubstring;
@@ -951,4 +952,334 @@ TEST_CASE("onCraft's sixth argument names a brew's effects, and a brew off "
     p.DestroyActor(0xff000000);
     DoDisconnect(p, 0);
   }
+}
+
+namespace {
+// THORNSWOOD PATCH (Thornswood #2906). Stands in for a gamemode's onCraft
+// handler setting craftOutput, which reaches the event the same way (the
+// events stack): a cook's burnt meal in place of the dish. Only acts while
+// armed, because PartOne is shared and keeps every listener.
+class NameCraftOutput : public PartOneListener
+{
+public:
+  explicit NameCraftOutput(WorldState& worldState_)
+    : worldState(worldState_)
+  {
+  }
+  void OnConnect(Networking::UserId) override {}
+  void OnDisconnect(Networking::UserId) override {}
+  void OnCustomPacket(Networking::UserId,
+                      const simdjson::dom::element&) override
+  {
+  }
+  bool OnMpApiEvent(const GameModeEvent& event) override
+  {
+    if (!armed || event.GetName() != std::string("onCraft")) {
+      return true;
+    }
+    auto& stack = worldState.currentGameModeEventsStack;
+    auto craft =
+      stack.empty() ? nullptr : dynamic_cast<CraftEvent*>(stack.back());
+    if (craft) {
+      seenBaseId = craft->GetOutputBaseId();
+      seenCount = craft->GetOutputCount();
+      seenName = craft->GetOutputName();
+      craft->SetOutput(baseId, count);
+      if (name) {
+        craft->SetOutputName(*name);
+      }
+    }
+    return allow;
+  }
+
+  bool armed = false;
+  bool allow = true;
+  uint32_t baseId = 0;
+  uint32_t count = 0;
+  // Thornswood #3026: the name to give the entry, when set.
+  std::optional<std::string> name;
+  uint32_t seenBaseId = 0;
+  uint32_t seenCount = 0;
+  std::optional<std::string> seenName;
+
+private:
+  WorldState& worldState;
+};
+}
+
+TEST_CASE("An onCraft handler names what the craft gives (Thornswood #2906)",
+          "[Craft][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto gamemode = std::make_shared<NameCraftOutput>(p.worldState);
+  p.AddListener(gamemode);
+
+  auto& ac = MakeCrafter(p, kForge);
+  const Inventory recipe = Inventory()
+                             .AddItem(kIronIngot, 1)
+                             .AddItem(kLeatherStrips, 3)
+                             .AddItem(kSteelIngot, 4);
+  for (auto& entry : recipe.entries) {
+    ac.AddItem(entry.baseId, entry.count);
+  }
+  // A new actor's pack holds its base record's own items once it is read (an
+  // iron dagger among them, measured on the fork's build), so what the craft
+  // gives is counted from the pack as it was.
+  const Inventory before = ac.GetInventory();
+
+  p.Tick();
+  p.Messages().clear();
+
+  CraftItemMessage msg;
+  msg.data.craftInputObjects = recipe;
+  msg.data.workbench = kForge;
+  msg.data.resultObjectId = kSteelWarhammer;
+  RawMessageData msgData;
+  msgData.userId = 0;
+
+  // The warhammer's recipe, and the handler names two iron daggers instead.
+  gamemode->baseId = kIronDagger;
+  gamemode->count = 2;
+  gamemode->armed = true;
+  p.GetActionListener().OnCraftItem(msgData, msg);
+  gamemode->armed = false;
+
+  // Until it was named the output was the recipe's own.
+  REQUIRE(gamemode->seenBaseId == kSteelWarhammer);
+  REQUIRE(gamemode->seenCount == 1);
+
+  // The inputs are gone, the named item is in the pack and the recipe's
+  // output never was.
+  REQUIRE(ac.GetInventory().GetItemCount(kIronDagger) ==
+          before.GetItemCount(kIronDagger) + 2);
+  REQUIRE(ac.GetInventory().GetItemCount(kSteelWarhammer) ==
+          before.GetItemCount(kSteelWarhammer));
+  REQUIRE(ac.GetInventory().GetItemCount(kIronIngot) == 0);
+  REQUIRE(ac.GetInventory().GetItemCount(kLeatherStrips) == 0);
+  REQUIRE(ac.GetInventory().GetItemCount(kSteelIngot) == 0);
+
+  p.Tick(); // send deferred inventory update messages
+  auto sent = SentInventories(p, 0);
+  REQUIRE(sent.size() == 1);
+  REQUIRE(sent[0] == ac.GetInventory());
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
+
+TEST_CASE("An onCraft handler doubles a batch of the recipe's own output "
+          "(Thornswood #2906)",
+          "[Craft][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto gamemode = std::make_shared<NameCraftOutput>(p.worldState);
+  p.AddListener(gamemode);
+
+  auto& ac = MakeCrafter(p, kForge);
+  const Inventory recipe = Inventory()
+                             .AddItem(kIronIngot, 1)
+                             .AddItem(kLeatherStrips, 3)
+                             .AddItem(kSteelIngot, 4);
+  for (auto& entry : recipe.entries) {
+    ac.AddItem(entry.baseId, entry.count);
+  }
+  const Inventory before = ac.GetInventory();
+
+  CraftItemMessage msg;
+  msg.data.craftInputObjects = recipe;
+  msg.data.workbench = kForge;
+  msg.data.resultObjectId = kSteelWarhammer;
+  RawMessageData msgData;
+  msgData.userId = 0;
+
+  // Grand Chef's rule (cook.md): every batch yields two instead of one.
+  gamemode->baseId = kSteelWarhammer;
+  gamemode->count = 2;
+  gamemode->armed = true;
+  p.GetActionListener().OnCraftItem(msgData, msg);
+  gamemode->armed = false;
+
+  REQUIRE(ac.GetInventory().GetItemCount(kSteelWarhammer) ==
+          before.GetItemCount(kSteelWarhammer) + 2);
+  REQUIRE(ac.GetInventory().GetItemCount(kSteelIngot) == 0);
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
+
+TEST_CASE("A refused craft gives nothing whatever its handler named "
+          "(Thornswood #2906)",
+          "[Craft][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto gamemode = std::make_shared<NameCraftOutput>(p.worldState);
+  p.AddListener(gamemode);
+
+  auto& ac = MakeCrafter(p, kForge);
+  const Inventory recipe = Inventory()
+                             .AddItem(kIronIngot, 1)
+                             .AddItem(kLeatherStrips, 3)
+                             .AddItem(kSteelIngot, 4);
+  for (auto& entry : recipe.entries) {
+    ac.AddItem(entry.baseId, entry.count);
+  }
+  const Inventory before = ac.GetInventory();
+
+  CraftItemMessage msg;
+  msg.data.craftInputObjects = recipe;
+  msg.data.workbench = kForge;
+  msg.data.resultObjectId = kSteelWarhammer;
+  RawMessageData msgData;
+  msgData.userId = 0;
+
+  gamemode->baseId = kIronDagger;
+  gamemode->count = 2;
+  gamemode->allow = false;
+  gamemode->armed = true;
+  p.GetActionListener().OnCraftItem(msgData, msg);
+  gamemode->armed = false;
+
+  REQUIRE(ac.GetInventory() == before);
+  REQUIRE(ac.GetInventory().GetItemCount(kIronDagger) ==
+          before.GetItemCount(kIronDagger));
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
+
+TEST_CASE("A craft's output cannot be named as nothing (Thornswood #2906)",
+          "[Craft]")
+{
+  std::vector<Inventory::Entry> entries;
+  CraftEvent craft(nullptr, kSteelWarhammer, 1, 0, entries);
+  REQUIRE_THROWS(craft.SetOutput(0, 1));
+  REQUIRE_THROWS(craft.SetOutput(kIronDagger, 0));
+  REQUIRE(craft.GetOutputBaseId() == kSteelWarhammer);
+  REQUIRE(craft.GetOutputCount() == 1);
+}
+
+namespace {
+// How many of baseId the pack holds under that name (Thornswood #3026).
+uint32_t NamedCount(const Inventory& inventory, uint32_t baseId,
+                    const std::optional<std::string>& name)
+{
+  uint32_t sum = 0;
+  for (auto& entry : inventory.entries) {
+    if (entry.baseId == baseId && entry.name == name) {
+      sum += entry.count;
+    }
+  }
+  return sum;
+}
+}
+
+TEST_CASE("An onCraft handler names the entry a craft gives (Thornswood "
+          "#3026)",
+          "[Craft][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto gamemode = std::make_shared<NameCraftOutput>(p.worldState);
+  p.AddListener(gamemode);
+
+  auto& ac = MakeCrafter(p, kForge);
+  const Inventory recipe = Inventory()
+                             .AddItem(kIronIngot, 1)
+                             .AddItem(kLeatherStrips, 3)
+                             .AddItem(kSteelIngot, 4);
+  for (auto& entry : recipe.entries) {
+    ac.AddItem(entry.baseId, entry.count);
+  }
+  const Inventory before = ac.GetInventory();
+
+  p.Tick();
+  p.Messages().clear();
+
+  CraftItemMessage msg;
+  msg.data.craftInputObjects = recipe;
+  msg.data.workbench = kForge;
+  msg.data.resultObjectId = kSteelWarhammer;
+  RawMessageData msgData;
+  msgData.userId = 0;
+
+  // A master weaver's mark (tailor.md): the recipe's own output, named.
+  const std::string woven = "Weatherwoven Steel Warhammer";
+  gamemode->baseId = kSteelWarhammer;
+  gamemode->count = 1;
+  gamemode->name = woven;
+  gamemode->armed = true;
+  p.GetActionListener().OnCraftItem(msgData, msg);
+  gamemode->armed = false;
+  gamemode->name.reset();
+
+  // Until it was named the output had no name.
+  REQUIRE(!gamemode->seenName.has_value());
+
+  // The craft added the named entry and no plain one: nothing was added
+  // plain to be renamed afterwards.
+  REQUIRE(NamedCount(ac.GetInventory(), kSteelWarhammer, woven) == 1);
+  REQUIRE(NamedCount(ac.GetInventory(), kSteelWarhammer, std::nullopt) ==
+          NamedCount(before, kSteelWarhammer, std::nullopt));
+  REQUIRE(ac.GetInventory().GetItemCount(kSteelIngot) == 0);
+
+  p.Tick(); // send deferred inventory update messages
+  auto sent = SentInventories(p, 0);
+  REQUIRE(sent.size() == 1);
+  REQUIRE(sent[0] == ac.GetInventory());
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
+
+TEST_CASE("A refused craft gives no named entry (Thornswood #3026)",
+          "[Craft][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto gamemode = std::make_shared<NameCraftOutput>(p.worldState);
+  p.AddListener(gamemode);
+
+  auto& ac = MakeCrafter(p, kForge);
+  const Inventory recipe = Inventory()
+                             .AddItem(kIronIngot, 1)
+                             .AddItem(kLeatherStrips, 3)
+                             .AddItem(kSteelIngot, 4);
+  for (auto& entry : recipe.entries) {
+    ac.AddItem(entry.baseId, entry.count);
+  }
+  const Inventory before = ac.GetInventory();
+
+  CraftItemMessage msg;
+  msg.data.craftInputObjects = recipe;
+  msg.data.workbench = kForge;
+  msg.data.resultObjectId = kSteelWarhammer;
+  RawMessageData msgData;
+  msgData.userId = 0;
+
+  gamemode->baseId = kSteelWarhammer;
+  gamemode->count = 1;
+  gamemode->name = "Weatherwoven Steel Warhammer";
+  gamemode->allow = false;
+  gamemode->armed = true;
+  p.GetActionListener().OnCraftItem(msgData, msg);
+  gamemode->armed = false;
+  gamemode->name.reset();
+
+  REQUIRE(ac.GetInventory() == before);
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
+
+TEST_CASE("A craft's output name cannot be empty, and null names none "
+          "(Thornswood #3026)",
+          "[Craft]")
+{
+  std::vector<Inventory::Entry> entries;
+  CraftEvent craft(nullptr, kSteelWarhammer, 1, 0, entries);
+  REQUIRE(!craft.GetOutputName().has_value());
+  REQUIRE_THROWS(craft.SetOutputName(std::string()));
+  REQUIRE(!craft.GetOutputName().has_value());
+  craft.SetOutputName(std::string("Woven"));
+  REQUIRE(craft.GetOutputName() == std::optional<std::string>("Woven"));
+  craft.SetOutputName(std::nullopt);
+  REQUIRE(!craft.GetOutputName().has_value());
 }

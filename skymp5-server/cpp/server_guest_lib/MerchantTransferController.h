@@ -353,36 +353,50 @@ private:
   friend class WorldState;
   // A receipt alone does not acknowledge the NPC. Only a submitted batch
   // containing BOTH final snapshots may complete this transfer.
-  std::vector<uint64_t> CaptureSubmittedBatch(
+  struct SubmittedTransfer
+  {
+    uint64_t id;
+    int32_t humanProfileId;
+    int32_t merchantProfileId;
+  };
+
+  std::vector<SubmittedTransfer> CaptureSubmittedBatch(
     const std::vector<std::optional<MpChangeForm>>& forms) const
   {
-    std::vector<uint64_t> ids;
+    std::vector<SubmittedTransfer> ids;
     for (const auto& offer : offers) {
       if (offer.finalReceipt.empty() || offer.state != State::AwaitingSave) continue;
       bool humanSaved = false, merchantSaved = false;
+      int32_t merchantProfileId = 0;
       for (const auto& form : forms) {
         if (!form) continue;
         if (form->formDesc == offer.humanDesc && form->profileId == offer.humanProfileId &&
             form->dynamicFields.GetValueDump(MpObjectReference::kInventoryReceiptProperty) == offer.finalReceipt &&
             form->inv.ToJson() == offer.humanAfterCredit.ToJson()) humanSaved = true;
         if (form->formDesc == offer.merchantDesc && form->profileId <= 0 &&
-            form->inv.ToJson() == offer.merchantAfter.ToJson()) merchantSaved = true;
+            form->inv.ToJson() == offer.merchantAfter.ToJson()) {
+          merchantSaved = true;
+          merchantProfileId = form->profileId;
+        }
       }
-      if (humanSaved && merchantSaved) ids.push_back(offer.id);
+      if (humanSaved && merchantSaved) ids.push_back({offer.id, offer.humanProfileId, merchantProfileId});
     }
     return ids;
   }
 
-  void AcknowledgeSubmittedBatch(const std::vector<uint64_t>& ids)
+  void AcknowledgeSubmittedBatch(const std::vector<SubmittedTransfer>& ids)
   {
-    for (auto id : ids) {
-      auto* offer = FindMutable(id);
+    for (const auto& submitted : ids) {
+      auto* offer = FindMutable(submitted.id);
       if (!offer || offer->finalReceipt.empty() || offer->state != State::AwaitingSave) continue;
       auto form = offer->humanIdentity.lock();
       auto human = form ? form->AsActor() : nullptr;
       auto merchantForm = offer->merchantIdentity.lock();
       auto merchant = merchantForm ? merchantForm->AsObjectReference() : nullptr;
-      if (!human || !MatchesHuman(*offer, *human) || !merchant || !MatchesMerchant(*offer, *merchant)) continue;
+      auto merchantActor = merchant ? merchant->AsActor() : nullptr;
+      if (!human || !MatchesHuman(*offer, *human) || !merchant || !MatchesMerchant(*offer, *merchant) ||
+          human->GetProfileId() != submitted.humanProfileId || !merchantActor ||
+          merchantActor->GetProfileId() != submitted.merchantProfileId) continue;
       offer->state = State::Durable;
       UnlockPair(offer->humanFormId, offer->merchantFormId);
     }
@@ -483,7 +497,7 @@ private:
 
   // Adds then removes on a copy of the rules, but removal is applied
   // first so a spent stack cannot fund itself. Metadata stays on the
-  // matched entry. AddItems is not used: it returns after one merge.
+  // matched entry.
   static bool ApplyDelta(Inventory& inventory, const Inventory& add,
                          const Inventory& remove, std::string& reason)
   {
@@ -521,25 +535,12 @@ private:
         reason = "invalid transfer entry";
         return false;
       }
-      bool merged = false;
-      for (auto& have : inventory.entries) {
-        if (!have.EqualExceptCount(gained)) {
-          continue;
-        }
-        uint64_t sum =
-          static_cast<uint64_t>(have.count) + gained.count;
-        if (sum > std::numeric_limits<uint32_t>::max()) {
-          reason = "transfer count overflows";
-          return false;
-        }
-        have.count = static_cast<uint32_t>(sum);
-        merged = true;
-        break;
-      }
-      if (!merged) {
-        inventory.entries.push_back(gained);
-      }
     }
+    if (!inventory.CanAddItems(add.entries)) {
+      reason = "transfer count overflows";
+      return false;
+    }
+    inventory.AddItems(add.entries);
     return true;
   }
 
