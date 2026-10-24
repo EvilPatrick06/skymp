@@ -6,6 +6,7 @@
 #include "papyrus-vm/Structures.h"
 #include "script_classes/PapyrusObjectReference.h"
 #include "script_objects/EspmGameObject.h"
+#include <limits>
 
 using Catch::Matchers::ContainsSubstring;
 
@@ -113,6 +114,43 @@ TEST_CASE("RemoveItem", "[Papyrus][ObjectReference][espm]")
 
   REQUIRE(PapyrusObjectReference().GetItemCount(refr2.ToVarValue(),
                                                 { item }) == VarValue(5));
+}
+
+TEST_CASE("RemoveItems gives the target every entry, one of which stacks",
+          "[ObjectReference]")
+{
+  PartOne p;
+  auto& source = CreateMpObjectReference(p, 0xff000000);
+  auto& target = CreateMpObjectReference(p, 0xff000001);
+  source.AddItems({ { 0xa, 1 }, { 0xb, 1 }, { 0xc, 1 } });
+  target.AddItem(0xa, 1);
+
+  source.RemoveItems({ { 0xa, 1 }, { 0xb, 1 }, { 0xc, 1 } }, &target);
+
+  REQUIRE(source.GetInventory().IsEmpty());
+  REQUIRE(target.GetInventory().GetItemCount(0xa) == 2);
+  REQUIRE(target.GetInventory().GetItemCount(0xb) == 1);
+  REQUIRE(target.GetInventory().GetItemCount(0xc) == 1);
+}
+
+TEST_CASE("RemoveItems to a target that can't take them leaves both as they "
+          "were",
+          "[ObjectReference]")
+{
+  constexpr uint32_t kMax = std::numeric_limits<uint32_t>::max();
+  PartOne p;
+  auto& source = CreateMpObjectReference(p, 0xff000000);
+  auto& target = CreateMpObjectReference(p, 0xff000001);
+  source.AddItems({ { 0xa, 5 }, { 0xb, 1 } });
+  target.AddItem(0xa, kMax - 1);
+  const auto sourceBefore = source.GetInventory();
+  const auto targetBefore = target.GetInventory();
+
+  REQUIRE_THROWS_WITH(source.RemoveItems({ { 0xb, 1 }, { 0xa, 5 } }, &target),
+                      ContainsSubstring("a stack would pass its limit"));
+
+  REQUIRE(source.GetInventory() == sourceBefore);
+  REQUIRE(target.GetInventory() == targetBefore);
 }
 
 TEST_CASE("GetAnimationVariableBool", "[Papyrus][ObjectReference][espm]")

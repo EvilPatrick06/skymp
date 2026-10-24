@@ -71,7 +71,7 @@ function fixture(save = false, options = {}) {
     Game: {getPlayer: () => actor, getFormEx: forms, getModCount: () => 0, getLightModCount: () => 0, showRaceMenu: () => {paused = true; opens++;}},
     Ui: {isMenuOpen: name => name === 'RaceSex Menu' && paused},
     TESModPlatform: {moveRefrToPosition() {if (!firstMoveInventory) firstMoveInventory = inventory(); if (options.moveCell) { if (options.transitionDelay) { if (++moveCalls === 1) jobs.push({at: frame + options.transitionDelay, run: () => {cellId = options.moveCell;}}); } else if (options.moveDelay && ++moveCalls === 1) loadedAt = frame + options.moveDelay; else cellId = options.moveCell; }}},
-    Utility: {wait: seconds => new Promise(resolve => jobs.push({at: frame + Math.max(1, Math.ceil(seconds * 10)), run: resolve}))},
+    Utility: {isInMenuMode: () => false, wait: seconds => new Promise(resolve => jobs.push({at: frame + Math.max(1, Math.ceil(seconds * 10)), run: resolve}))},
     once: (event, fn) => onceHandlers[event].push(fn), on: (event, fn) => { (onHandlers[event] ||= []).push(fn); },
     printConsole() {}
   };
