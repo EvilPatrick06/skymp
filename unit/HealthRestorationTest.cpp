@@ -115,3 +115,67 @@ TEST_CASE("An onEatItem listener scales a potion before it lands",
   REQUIRE(part < full);
   REQUIRE(none == 0.1f);
 }
+
+namespace {
+// Thornswood #1383: counts onEatItem.
+class EatSeenListener : public FakeListener
+{
+public:
+  bool OnMpApiEvent(const GameModeEvent& event) override
+  {
+    if (std::string(event.GetName()) == "onEatItem") {
+      ++seen;
+      args = event.GetArgumentsJsonArray();
+    }
+    return true;
+  }
+
+  int seen = 0;
+  std::string args;
+};
+}
+
+// Thornswood #1383. A brewed bottle is drunk by fork #78 (Thornswood #1649):
+// the pack holds it by its contents and MpActor::OnEquipMade takes one and
+// raises onEatItem once. Equipping any other runtime form, such as a piece
+// enchanted at a bench (the recipeless craft keeps the client's runtime id),
+// is not a drink: nothing is eaten and nothing is taken.
+TEST_CASE("A runtime form that is not a brewed bottle is neither drunk nor "
+          "taken when equipped",
+          "[Restoration]")
+{
+  using namespace std::chrono_literals;
+  PartOne& p = GetPartOne();
+  auto listener = std::make_shared<EatSeenListener>();
+  p.AddListener(listener);
+  DoConnect(p, 0);
+  p.CreateActor(0xff000000, { 0, 0, 0 }, 0, 0x3c);
+  p.SetUserActor(0, 0xff000000);
+
+  auto& ac = p.worldState.GetFormAt<MpActor>(0xff000000);
+  ac.SetLastAttributesPercentagesUpdate(std::chrono::steady_clock::now() -
+                                        10s);
+  constexpr uint32_t kEnchanted = 0xff000123; // a runtime form, not a brew
+  ac.AddItem(kEnchanted, 1);
+  ac.SetPercentages({ 0.5f, 0.f, 0.f });
+
+  RawMessageData rawMsgData;
+  rawMsgData.userId = 0;
+  OnEquipMessage msg;
+  msg.baseId = kEnchanted;
+  p.GetActionListener().OnEquip(rawMsgData, msg);
+
+  REQUIRE(listener->seen == 0);
+  REQUIRE(ac.GetInventory().GetItemCount(kEnchanted) == 1);
+  REQUIRE(ac.GetChangeForm().actorValues.healthPercentage == 0.5f);
+
+  // A runtime id the pack does not hold is not drunk either.
+  msg.baseId = 0xff000456;
+  p.GetActionListener().OnEquip(rawMsgData, msg);
+  REQUIRE(listener->seen == 0);
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+  auto& ls = p.worldState.listeners;
+  ls.erase(std::remove(ls.begin(), ls.end(), listener), ls.end());
+}
