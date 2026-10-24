@@ -17,6 +17,7 @@
 #include "WorldState.h"
 #include "gamemode_events/DeathEvent.h"
 #include "gamemode_events/DropItemEvent.h"
+#include "gamemode_events/DyingEvent.h"
 #include "gamemode_events/EatItemEvent.h"
 #include "gamemode_events/ReadBookEvent.h"
 #include "gamemode_events/RespawnEvent.h"
@@ -283,10 +284,10 @@ void MpActor::UpdateServerMovement(const NiPoint3& pos, const NiPoint3& angle,
     throw std::invalid_argument("Invalid NPC movement; use a bounded local route");
   }
   if (pos != GetPos()) {
-    SetPos(pos, SetPosMode::CalledByUpdateMovement);
+    SetPos(pos, SetPosMode::CalledByServerMovement);
   }
   if (angle != GetAngle()) {
-    SetAngle(angle, SetAngleMode::CalledByUpdateMovement);
+    SetAngle(angle, SetAngleMode::CalledByServerMovement);
   }
   pImpl->serverMovementSpeed = speed;
   SendServerStateToObservers(GetServerMovementMessage(), false);
@@ -1011,9 +1012,23 @@ void MpActor::SetPercentage(espm::ActorValue av, float percentage)
   if (IsDead() || pImpl->isRespawning) {
     return;
   }
+  // Thornswood #1626. The actor's own machine reported this zero, so a death
+  // the gamemode refuses is answered with the health it kept.
+  bool tellKeptHealth = false;
   if (av == espm::ActorValue::Health && percentage <= 0.f) {
-    Kill(nullptr);
-    return;
+    const auto keepAlive = GetParent()->LookupFormById(GetFormId());
+    const auto runtimeIdentity = GetRuntimeIdentity();
+    const auto kept = AskBeforeDeath(nullptr);
+    if (!HasRuntimeIdentity(runtimeIdentity) || IsDead() ||
+        pImpl->isRespawning) {
+      return;
+    }
+    if (!kept) {
+      Kill(nullptr);
+      return;
+    }
+    percentage = *kept;
+    tellKeptHealth = true;
   }
   EditChangeForm([&](MpChangeForm& changeForm) {
     switch (av) {
@@ -1034,6 +1049,13 @@ void MpActor::SetPercentage(espm::ActorValue av, float percentage)
   // Updating timestamp. Note: calling this multiple times for different AVs
   // is fine but might be slightly inefficient if batched.
   SetLastAttributesPercentagesUpdate(std::chrono::steady_clock::now());
+
+  if (tellKeptHealth) {
+    static const std::vector<espm::ActorValue> kHealthAvFilter = {
+      espm::ActorValue::Health
+    };
+    NetSendChangeValues(ChangeForm().actorValues, kHealthAvFilter);
+  }
 }
 
 void MpActor::SetPercentages(const ActorValues& actorValues,
@@ -1042,7 +1064,7 @@ void MpActor::SetPercentages(const ActorValues& actorValues,
   if (IsDead() || pImpl->isRespawning) {
     return;
   }
-  if (actorValues.healthPercentage == 0.f) {
+  if (actorValues.healthPercentage <= 0.f) {
     Kill(aggressor);
     return;
   }
@@ -1109,7 +1131,7 @@ void MpActor::NetSendChangeValues(
 }
 
 void MpActor::NetSetPercentages(
-  const ActorValues& actorValues, MpActor* aggressor,
+  const ActorValues& requestedActorValues, MpActor* aggressor,
   const std::optional<std::vector<espm::ActorValue>>& avFilter)
 {
   const auto keepAlive = GetParent()->LookupFormById(GetFormId());
@@ -1119,6 +1141,18 @@ void MpActor::NetSetPercentages(
     ? aggressor->GetParent()->LookupFormById(aggressor->GetFormId()) : nullptr;
   if (aggressor && keepAggressor.get() != aggressor) return;
   const auto aggressorRuntime = aggressor ? aggressor->GetRuntimeIdentity() : 0;
+  ActorValues actorValues = requestedActorValues;
+  // Thornswood #1626. A write that would kill asks the gamemode first, before
+  // the zero goes to any machine. A refusal sends the health it kept instead.
+  if (actorValues.healthPercentage <= 0.f && !IsDead() &&
+      !pImpl->isRespawning) {
+    const auto kept = AskBeforeDeath(aggressor);
+    if (!HasRuntimeIdentity(runtimeIdentity) ||
+        (aggressor && !aggressor->HasRuntimeIdentity(aggressorRuntime)))
+      return;
+    if (kept)
+      actorValues.healthPercentage = *kept;
+  }
   NetSendChangeValues(actorValues, avFilter);
   if (!HasRuntimeIdentity(runtimeIdentity) ||
       (aggressor && !aggressor->HasRuntimeIdentity(aggressorRuntime))) return;
@@ -1770,6 +1804,25 @@ void MpActor::Init(WorldState* worldState, uint32_t formId, bool hasChangeForm)
     // TODO: implement "gearedUpWeapons" flag
     EquipBestWeapon();
   }
+}
+
+std::optional<float> MpActor::AskBeforeDeath(MpActor* killer)
+{
+  DyingEvent dyingEvent(this, killer,
+                        ChangeForm().actorValues.healthPercentage);
+  if (dyingEvent.Fire(GetParent())) {
+    return std::nullopt;
+  }
+  const float kept = dyingEvent.GetKeptHealthPercentage();
+  if (!(kept > 0.f)) {
+    // Only when the health before the blow was already nothing and the
+    // listener wrote no other: there is no health to keep the actor at.
+    spdlog::warn("MpActor::AskBeforeDeath {:x} - onDying refused the death "
+                 "with no health to keep, so it goes ahead",
+                 GetFormId());
+    return std::nullopt;
+  }
+  return kept;
 }
 
 void MpActor::Kill(MpActor* killer, bool shouldTeleport)

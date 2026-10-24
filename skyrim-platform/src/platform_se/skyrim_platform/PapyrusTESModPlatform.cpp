@@ -444,6 +444,18 @@ void TESModPlatform::ResizeHeadpartsArray(IVM* vm, StackID stackId,
 {
   if (!npc)
     return;
+
+  // A MEASUREMENT FOR THORNSWOOD #2025, not a fix. Quitting to the main menu
+  // crashes as TESNPC::Revert (24779) frees a member of the player's base
+  // record through the game's allocator, and the block's header is one that
+  // allocator never wrote. The suspect is this array: it comes from this
+  // DLL's own operator new, not the game's heap, and the array it replaces
+  // is never freed. This line writes the array's address for each record, so
+  // the address freed in the next crash log's registers can be compared with
+  // it. skyrim-platform.log flushes at info, so the line outlives the crash.
+  // Remove it once #2025 has its answer.
+  const void* before = npc->headParts;
+
   if (newSize <= 0) {
     npc->headParts = nullptr;
     npc->numHeadParts = 0;
@@ -455,6 +467,12 @@ void TESModPlatform::ResizeHeadpartsArray(IVM* vm, StackID stackId,
       npc->headParts[i] = nullptr;
     }
   }
+
+  spdlog::info("[#2025] ResizeHeadpartsArray npc {:08X}: headParts {:#X} -> "
+               "{:#X} (size {})",
+               npc->formID, reinterpret_cast<std::uintptr_t>(before),
+               reinterpret_cast<std::uintptr_t>(npc->headParts),
+               static_cast<int>(newSize));
 }
 
 void TESModPlatform::ResizeTintsArray(IVM* vm, StackID stackId,

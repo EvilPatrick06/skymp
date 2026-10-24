@@ -82,39 +82,30 @@ const setPcInventory = (inv: Inventory): void => {
 };
 
 /*
-  THORNSWOOD PATCH: stop re-applying a difference that is never going to close.
+  THORNSWOOD PATCH (Thornswood #2146). The server's pack is applied every five
+  seconds until the game holds it, and a difference that an apply did not
+  close is written to the log, entry by entry.
 
-  This ran applyInventory every five seconds, for ever, whatever the state of
-  the inventory. That is right when the server has sent something new and the
-  game has not caught up. It is a disaster when the difference CANNOT be
-  resolved, because then it is re-added every five seconds for the rest of the
-  session, and Skyrim announces every single add.
+  This used to stop applying a difference that came back three times in a
+  row (22 September, the boots: "notifications of looting boots keeps popping
+  up"), which hid the difference instead of closing it. What kept it open was
+  found and fixed in sync/inventory.ts: a tempered piece's health compared as
+  two spellings of one number (healthOf), and a piece taken away by a list
+  the game did not hold (takeAway). So every pass applies again, the way any
+  other difference is applied.
 
-  Reported by a tester on 22 September, three separate times and in three
-  different words before anybody connected them:
-    "I just logged back in, not touching a thing, just notifications of
-     looting boots keeps popping up"
-    "exiting the bench caused a whole bunch of notifcations for picking up
-     boots, but my player inventory doesn't show that many boots"
-  and a third clip of the same list scrolling past while standing still. The
-  notifications were real and the items were not: every five seconds the same
-  unresolvable entry was handed over again.
+  Nothing is applied while the game is paused, because TESModPlatform.addItemEx
+  and removeInventoryItems refuse all work then: a pass there would change
+  nothing and be logged as a difference that did not close.
 
-  So the diff is computed first and three things follow from it. Nothing to do
-  means nothing is done, which is the common case and now costs one comparison
-  instead of a full apply. Something to do is done, as before. And THE SAME
-  THING TO DO, three times running, is a difference that applying does not
-  fix: it is reported once and then left alone until it changes.
-
-  Deliberately not a permanent give-up: the signature is compared, so the
-  moment the server sends anything different, or the player picks something
-  up, it starts working again. What it cannot do any more is spend the rest of
-  somebody's evening telling them they found the same boots.
+  Each difference that is still there five seconds after it was applied is
+  written once to skyrim-platform.log (printConsole goes there), the entries
+  in full, so the next cause is a log line and not a guess. The apply goes on
+  regardless.
 */
 let pcInvLastApply = 0;
-let pcInvStuckSig = '';
-let pcInvStuckFor = 0;
-const PC_INV_GIVE_UP_AFTER = 3;
+let pcInvAppliedSig = '';
+let pcInvReportedSig = '';
 
 on('update', () => {
   if (storage['ownerInventorySettling'] === true) { return; }
@@ -122,6 +113,9 @@ on('update', () => {
     return;
   }
   if (Date.now() - pcInvLastApply <= 5000) {
+    return;
+  }
+  if (Utility.isInMenuMode()) {
     return;
   }
   pcInvLastApply = Date.now();
@@ -139,27 +133,20 @@ on('update', () => {
   // equipment sync's business and not this one's.
   const diff = getDiff(pcInv, getInventory(pl), true).entries;
   if (diff.length === 0) {
-    pcInvStuckSig = '';
-    pcInvStuckFor = 0;
+    pcInvAppliedSig = '';
+    pcInvReportedSig = '';
     return;
   }
 
   const sig = JSON.stringify(diff);
-  if (sig === pcInvStuckSig) {
-    pcInvStuckFor++;
-    if (pcInvStuckFor >= PC_INV_GIVE_UP_AFTER) {
-      if (pcInvStuckFor === PC_INV_GIVE_UP_AFTER) {
-        printConsole(
-          `[thornswood] the inventory difference has not closed after ` +
-          `${PC_INV_GIVE_UP_AFTER} tries, so it is left alone until it changes: ${sig}`
-        );
-      }
-      return;
-    }
-  } else {
-    pcInvStuckSig = sig;
-    pcInvStuckFor = 0;
+  if (sig === pcInvAppliedSig && sig !== pcInvReportedSig) {
+    pcInvReportedSig = sig;
+    printConsole(
+      `[thornswood] inventory: this difference was applied five seconds ago ` +
+      `and is still there, applying it again: ${sig}`
+    );
   }
+  pcInvAppliedSig = sig;
 
   applyInventory(pl, pcInv, false, true);
 });
@@ -1396,8 +1383,13 @@ export class RemoteServer extends ClientListener {
 
       const spell = ac.getEquippedSpell(msg.data.castingSource);
       if (spell) {
-        castSpellImmediate(ac.getFormID(), msg.data.castingSource, spell.getFormID(), remoteIdToLocalId(msg.data.target),
-          msg.data.aimAngle, msg.data.aimHeading, actorAnimationVariables);
+        // THORNSWOOD PATCH (Thornswood #2848): the server's answer for how
+        // long this cast's effects hold, on the actors this machine runs. Its
+        // eighth argument is not in the npm typings this client builds
+        // against, hence the cast.
+        const durationMult = typeof msg.data.durationMult === 'number' ? msg.data.durationMult : 1;
+        (castSpellImmediate as any)(ac.getFormID(), msg.data.castingSource, spell.getFormID(), remoteIdToLocalId(msg.data.target),
+          msg.data.aimAngle, msg.data.aimHeading, actorAnimationVariables, durationMult);
       }
     });
   }

@@ -22,6 +22,7 @@ import {
   FormType,
   Form,
   renameInventoryItems,
+  removeInventoryItems,
 } from "skyrimPlatform";
 
 export interface Extra {
@@ -50,6 +51,32 @@ export interface Inventory {
 }
 
 /*
+  THORNSWOOD PATCH (Thornswood #2146). A health is compared as the game's
+  reading of it, on both sides.
+
+  extractExtraData reads the game's ExtraHealth to a tenth and leaves 1 out,
+  so a fine piece reads 1.1. The server keeps health as a float
+  (Inventory::ExtraData in Inventory.h) and the client gets it through
+  nlohmann::json, which writes a float as the double it widens to: 1.1 goes
+  out as 1.100000023841858, 1.2 as 1.2000000476837158 (measured with
+  nlohmann 3.11.3, 22 Oct). The two were compared with ===, so whenever the
+  server held a tempered piece, it never equalled the same piece in the
+  game. Every pass took it away and added it again, the add announced
+  itself, and the next pass found the same difference.
+
+  So both sides go through healthOf, the one reading, before they are
+  compared. What is sent to the game is still the server's own number.
+*/
+const healthOf = (e: Entry): number | undefined => {
+  if (typeof e.health !== "number") {
+    return undefined;
+  }
+  const tenths = Math.round(e.health * 10) / 10;
+  // TESModPlatform::AddItemEx writes no ExtraHealth for 1, so 1 is none
+  return tenths === 1 ? undefined : tenths;
+};
+
+/*
   THORNSWOOD PATCH (Thornswood #1651). What the game adds to a name, and only
   that.
 
@@ -69,7 +96,7 @@ export interface Inventory {
   and applyInventory added nothing until the next login. Now a name equals
   another exactly, or, on a tempered piece, with one level added to it.
 */
-const isTempered = (e: Entry): boolean => (e.health ?? 1) > 1;
+const isTempered = (e: Entry): boolean => (healthOf(e) ?? 1) > 1;
 
 // named is plain with the game's " (...)" level on the end
 const hasLevelAdded = (named: string, plain: string): boolean =>
@@ -123,7 +150,7 @@ const namesEqual = (a: Entry, b: Entry): boolean => {
 
 const extrasEqual = (a: Entry, b: Entry, ignoreWorn = false) => {
   return (
-    a.health === b.health &&
+    healthOf(a) === healthOf(b) &&
     a.enchantmentId === b.enchantmentId &&
     a.maxCharge === b.maxCharge &&
     !!a.removeEnchantmentOnUnequip === !!b.removeEnchantmentOnUnequip &&
@@ -166,10 +193,8 @@ const extractExtraData = (
   (extraList || []).forEach((extra) => {
     switch (extra.type) {
       case "Health":
-        out.health = Math.round((extra as ExtraHealth).health * 10) / 10;
-
-        // TESModPlatform::AddItemEx makes all items at least 1.01 health
-        if (out.health === 1) {
+        out.health = healthOf({ baseId: out.baseId, count: 0, health: (extra as ExtraHealth).health });
+        if (out.health === undefined) {
           delete out.health;
         }
         break;
@@ -355,6 +380,123 @@ export const resetInventoryBase = (refr: ObjectReference): boolean => {
   return false;
 };
 
+/*
+  THORNSWOOD PATCH (Thornswood #2146). What the game holds is taken away from
+  where it lies.
+
+  A piece was taken away by TESModPlatform.addItemEx with a negative count,
+  and the native built a NEW extra list out of the entry (its health, its
+  name and the rest) and handed that to RemoveItem. That list is never one
+  the game holds, so which units RemoveItem took was the game's choice, not
+  the diff's, and nothing checked it. A piece tempered at a bench is where
+  that shows: the temper happens in the game, the server keeps the piece
+  plain (recipelessCraft refuses a temper, #1384), and the game must take
+  away a tempered list that also carries ExtraWorn, which the built list
+  never does. When RemoveItem takes anything else, the pass adds the plain
+  piece the server holds, the add announces itself ("looting boots",
+  22 September), the tempered piece stays, and the difference comes back.
+
+  So the units are picked here, out of the game's own lists as
+  getExtraContainerChanges lists them, and removeInventoryItems takes those
+  lists away by the game's own pointers. Units with no list of their own
+  (the base container's, and those the changes count without a list) go
+  last, for an entry that has no extra. Lists that are not worn go first, so
+  of two equal pieces the one on the body stays.
+*/
+interface InventoryLists {
+  lists: Entry[];
+  plain: number;
+}
+
+const getInventoryLists = (refr: ObjectReference, baseId: number): InventoryLists => {
+  const lists = new Array<Entry>();
+  let plain = 0;
+
+  (getExtraContainerChanges(refr.getFormID()) || []).forEach((changesEntry) => {
+    if (changesEntry.baseId !== baseId) {
+      return;
+    }
+    plain += changesEntry.countDelta;
+    // the native's ListsOf skips an empty one, and so does this
+    (changesEntry.extendDataList || []).forEach((extraList) => {
+      if (!extraList) {
+        return;
+      }
+      const e: Entry = { baseId, count: 1 };
+      extractExtraData(refr, extraList, e);
+      lists.push(e);
+      plain -= e.count;
+    });
+  });
+
+  getBaseContainerAsInventory(refr).entries.forEach((e) => {
+    if (e.baseId === baseId) {
+      plain += e.count;
+    }
+  });
+
+  return { lists, plain: Math.max(0, plain) };
+};
+
+const describeEntry = (e: Entry): string =>
+  `${e.baseId.toString(16)} ${JSON.stringify(e)}`;
+
+const takeAway = (refr: ObjectReference, entries: Entry[]): void => {
+  const baseIds = new Set(entries.map((e) => e.baseId));
+  baseIds.forEach((baseId) => {
+    const { lists, plain } = getInventoryLists(refr, baseId);
+    const left = lists.map((l) => l.count);
+    let plainLeft = plain;
+    let plainCount = 0;
+    const picks = new Map<number, number>();
+
+    const order = lists
+      .map((l, i) => i)
+      .sort((a, b) => Number(!!lists[a].worn || !!lists[a].wornLeft) - Number(!!lists[b].worn || !!lists[b].wornLeft));
+
+    entries.filter((e) => e.baseId === baseId).forEach((e) => {
+      let wanted = -e.count;
+      if (!hasExtras(e)) {
+        const n = Math.min(wanted, plainLeft);
+        plainCount += n;
+        plainLeft -= n;
+        wanted -= n;
+      }
+      order.forEach((i) => {
+        if (wanted === 0 || left[i] === 0 || !inventoryEntriesEqual(lists[i], e, true)) {
+          return;
+        }
+        const n = Math.min(wanted, left[i]);
+        picks.set(i, (picks.get(i) || 0) + n);
+        left[i] -= n;
+        wanted -= n;
+      });
+      if (wanted > 0) {
+        printConsole(
+          `[thornswood] inventory: the game holds ${wanted} fewer than the ` +
+          `difference takes away, of ${describeEntry(e)}`
+        );
+      }
+    });
+
+    const indexes = Array.from(picks.keys());
+    const counts = indexes.map((i) => picks.get(i) as number);
+    if (indexes.length === 0 && plainCount === 0) {
+      return;
+    }
+    printConsole(
+      `removeInventoryItems(${refr.getFormID().toString(16)}, ${baseId.toString(16)}, ` +
+      `${lists.length}, ${JSON.stringify(indexes.map((i, k) => [i, counts[k], lists[i]]))}, ${plainCount})`
+    );
+    if (!removeInventoryItems(refr.getFormID(), baseId, lists.length, indexes, counts, plainCount)) {
+      printConsole(
+        `[thornswood] inventory: the game refused to take away ${baseId.toString(16)} ` +
+        `(paused, or its lists changed since they were read)`
+      );
+    }
+  });
+};
+
 export const applyInventory = (
   refr: ObjectReference,
   newInventory: Inventory,
@@ -417,11 +559,14 @@ export const applyInventory = (
   }
 
   diff.sort((a, b) => (a.count < b.count ? -1 : 1));
-  diff.forEach((e, i) => {
-    if (i > 0 && enableCrashProtection) {
-      res = false;
-      return;
-    }
+  if (enableCrashProtection && diff.length > 1) {
+    res = false;
+    diff = diff.slice(0, 1);
+  }
+
+  takeAway(refr, diff.filter((e) => e.count < 0));
+
+  diff.filter((e) => e.count > 0).forEach((e) => {
     let absCount = Math.abs(e.count);
 
     let queueNiNodeUpdateNeeded = false;
@@ -449,11 +594,6 @@ export const applyInventory = (
       if (absCount > 1000) {
         absCount = 1;
         oneStepCount = 1;
-
-        // Also for arrows with strange count
-        if (worn && e.count < 0) {
-          absCount = 0;
-        }
       }
 
       if (e.count > 1 && Ammo.from(Game.getFormEx(e.baseId))) {
