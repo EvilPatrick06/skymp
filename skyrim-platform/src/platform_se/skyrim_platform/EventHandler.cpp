@@ -1,4 +1,6 @@
 #include "EventHandler.h"
+#include "BrowserApiTilted.h"
+#include "CastDurationsGame.h"
 #include "EventManager.h"
 #include "EventsApi.h"
 #include "JsUtils.h"
@@ -161,6 +163,11 @@ EventResult EventHandler::ProcessEvent(
     for (RE::ActiveEffect* eff :
          *targetActor->AsMagicTarget()->GetActiveEffectList()) {
       if (eff->usUniqueID == event->activeEffectUniqueID) {
+        // THORNSWOOD PATCH (Thornswood #2848): how long it holds, before
+        // it has run (CastDurationsGame.h).
+        if (event->isApplied) {
+          CastDurationsGame::OnEffectStart(targetActor, eff);
+        }
         auto baseMagicEffect = eff->GetBaseObject();
         effectData.baseMagicEffectId =
           baseMagicEffect ? baseMagicEffect->formID : 0;
@@ -1332,8 +1339,15 @@ EventResult EventHandler::ProcessEvent(
   const auto casterId = event->object ? event->object->GetFormID() : 0;
   const auto spellId = event->spell;
 
-  SkyrimPlatform::GetSingleton()->AddUpdateTask([casterId,
-                                                 spellId](Napi::Env env) {
+  // THORNSWOOD PATCH (Thornswood #2848): how long this cast's effects hold,
+  // decided here, while the game is still making the cast
+  // (CastDurationsGame.h). The cast message carries it to the server.
+  const float durationMult = CastDurationsGame::OnOwnCast(
+    event->object ? event->object->As<RE::Actor>() : nullptr,
+    RE::TESForm::LookupByID<RE::SpellItem>(spellId));
+
+  SkyrimPlatform::GetSingleton()->AddUpdateTask(
+    [casterId, spellId, durationMult](Napi::Env env) {
     auto obj = Napi::Object::New(env);
 
     auto* caster = RE::TESForm::LookupByID<RE::Actor>(casterId);
@@ -1402,6 +1416,7 @@ EventResult EventHandler::ProcessEvent(
                    static_cast<uint32_t>(castingSource));
     AddObjProperty(&obj, "aimAngle", caster->GetAimAngle());
     AddObjProperty(&obj, "aimHeading", caster->GetAimHeading());
+    AddObjProperty(&obj, "durationMult", durationMult);
 
     SendEvent("spellCast", obj);
   });
@@ -1833,6 +1848,13 @@ EventResult EventHandler::ProcessEvent(
 
   auto menuName = event->menuName;
   bool opening = event->opening;
+
+  // Thornswood #2384: the browser's cursor is the game's Cursor Menu, and a
+  // close nobody here asked for while the page holds focus is shown again
+  // from this event (CursorFocus.h), not from a watcher in the plugin.
+  if (menuName == RE::CursorMenu::MENU_NAME) {
+    BrowserApiTilted::OnCursorMenu(opening);
+  }
 
   SkyrimPlatform::GetSingleton()->AddUpdateTask(
     [menuName, opening](Napi::Env env) {
