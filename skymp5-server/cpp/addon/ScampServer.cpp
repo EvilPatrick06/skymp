@@ -34,6 +34,8 @@
 #include <cmath>
 #include <database_drivers/DatabaseFactory.h>
 #include <database_drivers/PrivateEconomyLedger.h>
+// After PrivateEconomyLedger.h, which brings in Windows.h on Windows already.
+#include "WholeFileWrite.h"
 #include <limits>
 #include <memory>
 #include <napi.h>
@@ -41,6 +43,7 @@
 #include <save_storages/SaveStorageFactory.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <sstream>
+#include <stdexcept>
 #include <string_view>
 
 enum class CallType
@@ -90,8 +93,10 @@ Napi::Object ScampServer::Init(Napi::Env env, Napi::Object exports)
     env, "ScampServer",
     { InstanceMethod("_setSelf", &ScampServer::_SetSelf),
       InstanceMethod("attachSaveStorage", &ScampServer::AttachSaveStorage),
+      InstanceMethod("completeSavesForShutdown", &ScampServer::CompleteSavesForShutdown),
       InstanceMethod("validateInventoryTransaction", &ScampServer::ValidateInventoryTransaction),
       InstanceMethod("writePrivateEconomyLedger", &ScampServer::WritePrivateEconomyLedger),
+      InstanceMethod("writeFileWhole", &ScampServer::WriteFileWhole),
       InstanceMethod("tick", &ScampServer::Tick),
       InstanceMethod("on", &ScampServer::On),
       InstanceMethod("createActor", &ScampServer::CreateActor),
@@ -553,6 +558,17 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
         (*it).get<std::set<std::string>>());
     }
 
+    if (auto it = serverSettings.find("forbiddenBaseContainer");
+        it != serverSettings.end() && it->is_array()) {
+      auto types = it->get<std::set<std::string>>();
+      partOne->worldState.SetForbiddenBaseContainerTypes(types);
+      for (auto& type : types) {
+        logger->info("'{}' references start with none of their record's "
+                     "contents",
+                     type);
+      }
+    }
+
     if (auto it = serverSettings.find("serverKey");
         it != serverSettings.end()) {
       auto serverKey = it.value();
@@ -615,6 +631,22 @@ Napi::Value ScampServer::WritePrivateEconomyLedger(const Napi::CallbackInfo& inf
     const auto servedDir = std::filesystem::u8path("data");
     ::WritePrivateEconomyLedger(privateDir, servedDir, name, bytes);
     return Napi::Boolean::New(info.Env(), true);
+  } catch (std::exception& e) {
+    throw Napi::Error::New(info.Env(), e.what());
+  }
+}
+
+// mp.writeFileWhole(path, text) (Thornswood #2740): text, as UTF-8, replaces
+// the file at path whole, for files other programs read while the server
+// runs. WholeFileWrite.h says how and why. Throws, and leaves the file as it
+// was, when it cannot.
+Napi::Value ScampServer::WriteFileWhole(const Napi::CallbackInfo& info)
+{
+  try {
+    const auto path = NapiHelper::ExtractString(info[0], "path");
+    const auto text = NapiHelper::ExtractString(info[1], "text");
+    WholeFileWrite::Write(std::filesystem::u8path(path), text);
+    return info.Env().Undefined();
   } catch (std::exception& e) {
     throw Napi::Error::New(info.Env(), e.what());
   }
@@ -878,11 +910,46 @@ Napi::Value ScampServer::GetSavedInventoryReceipt(
   }
 }
 
+Napi::Value ScampServer::CompleteSavesForShutdown(const Napi::CallbackInfo& info)
+{
+  try {
+    if (info.Length() != 1 || !info[0].IsNumber()) {
+      throw std::invalid_argument("Expected one numeric timeoutMs");
+    }
+    const double timeoutMs = info[0].As<Napi::Number>().DoubleValue();
+    if (!std::isfinite(timeoutMs) || std::trunc(timeoutMs) != timeoutMs ||
+        timeoutMs < 1 || timeoutMs > 30000) {
+      throw std::invalid_argument("timeoutMs must be an integer from 1 to 30000");
+    }
+
+    const auto completed = partOne->worldState.CompleteSavesForShutdown(
+      static_cast<uint32_t>(timeoutMs));
+    auto result = Napi::Object::New(info.Env());
+    // Defining own data properties avoids inherited JavaScript setters after
+    // native completion. Allocation failure still leaves the world terminal.
+    result.DefineProperties({
+      Napi::PropertyDescriptor::Value(
+        "phase", Napi::String::New(info.Env(), "writes-completed"),
+        napi_enumerable),
+      Napi::PropertyDescriptor::Value(
+        "supportsDurableUpsert",
+        Napi::Boolean::New(info.Env(), completed.supportsDurableUpsert),
+        napi_enumerable),
+    });
+    return result;
+  } catch (const std::exception& error) {
+    throw Napi::Error::New(info.Env(), error.what());
+  } catch (...) {
+    throw Napi::Error::New(info.Env(), "Native save completion failed");
+  }
+}
+
 Napi::Value ScampServer::Tick(const Napi::CallbackInfo& info)
 {
   ANTIGO_CONTEXT_INIT(ctx);
 
   try {
+    partOne->worldState.EnsureTickAllowed();
     tickEnv = info.Env();
 
     bool tickFinished = false;

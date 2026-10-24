@@ -14,6 +14,7 @@
 #include "WorldState.h"
 #include "gamemode_events/CustomEvent.h"
 #include "gamemode_events/EatItemEvent.h"
+#include "gamemode_events/SpellCastEvent.h"
 #include "gamemode_events/UpdateAppearanceAttemptEvent.h"
 #include "gamemode_events/EquipItemAttemptEvent.h"
 #include "gamemode_events/UpdateEquipmentAttemptEvent.h"
@@ -1301,6 +1302,61 @@ bool ShouldBeBlocked(const MpActor& aggressor, const MpActor& target)
   return angle < 1;
 }
 
+// Whether the server sees the target block this hit: a block raised (the
+// animation events and the movement the target's machine sends), the
+// aggressor in front of it, and a bow or crossbow shot blocked only by a
+// shield. The client's own flag can only add a block to this, never take one
+// away. Decided before the OnHit event, so the event carries the block the
+// damage is worked out with; the gamemode charges a block's stamina from it
+// (Thornswood #1386), and a hit a server NPC lands has no client flag at all.
+bool IsHitBlockedByServer(const MpActor& aggressor, MpActor& targetActor,
+                          const HitData& hitData)
+{
+  if (!targetActor.IsBlockActive() ||
+      !ShouldBeBlocked(aggressor, targetActor)) {
+    return false;
+  }
+
+  bool isRemoteBowAttack = false;
+
+  auto sourceLookupResult =
+    targetActor.GetParent()->GetEspm().GetBrowser().LookupById(hitData.source);
+  if (sourceLookupResult.rec &&
+      sourceLookupResult.rec->GetType() == espm::WEAP::kType) {
+    auto weapData =
+      espm::GetData<espm::WEAP>(hitData.source, targetActor.GetParent());
+    if (weapData.weapDNAM) {
+      if (weapData.weapDNAM->animType == espm::WEAP::AnimType::Bow ||
+          weapData.weapDNAM->animType == espm::WEAP::AnimType::Crossbow) {
+        if (!hitData.isBashAttack) {
+          isRemoteBowAttack = true;
+        }
+      }
+    }
+  }
+
+  bool isBlockingByShield = false;
+
+  auto targetActorEquipmentEntries = targetActor.GetEquipment().inv.entries;
+  for (auto& entry : targetActorEquipmentEntries) {
+    if (entry.GetWorn() != Inventory::Worn::None) {
+      auto res =
+        targetActor.GetParent()->GetEspm().GetBrowser().LookupById(
+          entry.baseId);
+      if (res.rec && res.rec->GetType() == espm::ARMO::kType) {
+        auto data =
+          espm::GetData<espm::ARMO>(entry.baseId, targetActor.GetParent());
+        bool isShield = data.equipSlotId > 0;
+        if (isShield) {
+          isBlockingByShield = isShield;
+        }
+      }
+    }
+  }
+
+  return !isRemoteBowAttack || isBlockingByShield;
+}
+
 // A killing blow may rotate the target's runtime, but not its body identity.
 // Keep both participants alive across Papyrus and network callbacks, and stop
 // the hit if either ownership session or the target body is replaced.
@@ -1579,11 +1635,26 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
     return;
   }
 
-  SendToNeighbours(myActor->idx, rawMsgData);
+  // THORNSWOOD PATCH (Thornswood #2848). Neighbours get the cast as the
+  // client sent it, but with how long its effects hold decided here: the
+  // onSpellCast listeners' answer, the game's own unless one agrees to more
+  // (SpellCastEvent.h). The caster's own machine already gave its own
+  // effects what it asked for. An interrupt has no effects to hold.
+  SpellCastMessage forwarded;
+  forwarded.data = msg.data;
+  forwarded.data.durationMult.reset();
 
   if (spellCastData.interruptCast) {
+    SendToNeighbours(myActor->idx, rawMsgData.userId, forwarded, false);
     return;
   }
+
+  SpellCastEvent spellCastEvent(caster, spellCastData.spell,
+                                msg.data.durationMult.value_or(1.f));
+  spellCastEvent.Fire(&partOne.worldState);
+
+  forwarded.data.durationMult = spellCastEvent.GetDurationMult();
+  SendToNeighbours(myActor->idx, rawMsgData.userId, forwarded, false);
 
   auto& browser = partOne.worldState.GetEspm().GetBrowser();
 
@@ -1672,6 +1743,9 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
   }
   const HitActorLease lease(*aggressor, *targetActorPtr);
   if (!lease.Current()) return;
+  if (IsHitBlockedByServer(*aggressor, *targetActorPtr, hitData)) {
+    hitData.isHitBlocked = true;
+  }
   SendPapyrusOnHitEvent(aggressor, targetRef, hitData);
   if (!lease.Current()) return;
 
@@ -1751,53 +1825,6 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
   ActorValues currentActorValues = targetActor.GetChangeForm().actorValues;
 
   float healthPercentage = currentActorValues.healthPercentage;
-
-  if (targetActor.IsBlockActive()) {
-    if (ShouldBeBlocked(*aggressor, targetActor)) {
-      bool isRemoteBowAttack = false;
-
-      auto sourceLookupResult =
-        targetActor.GetParent()->GetEspm().GetBrowser().LookupById(
-          hitData.source);
-      if (sourceLookupResult.rec &&
-          sourceLookupResult.rec->GetType() == espm::WEAP::kType) {
-        auto weapData =
-          espm::GetData<espm::WEAP>(hitData.source, targetActor.GetParent());
-        if (weapData.weapDNAM) {
-          if (weapData.weapDNAM->animType == espm::WEAP::AnimType::Bow ||
-              weapData.weapDNAM->animType == espm::WEAP::AnimType::Crossbow) {
-            if (!hitData.isBashAttack) {
-              isRemoteBowAttack = true;
-            }
-          }
-        }
-      }
-
-      bool isBlockingByShield = false;
-
-      auto targetActorEquipmentEntries =
-        targetActor.GetEquipment().inv.entries;
-      for (auto& entry : targetActorEquipmentEntries) {
-        if (entry.GetWorn() != Inventory::Worn::None) {
-          auto res =
-            targetActor.GetParent()->GetEspm().GetBrowser().LookupById(
-              entry.baseId);
-          if (res.rec && res.rec->GetType() == espm::ARMO::kType) {
-            auto data =
-              espm::GetData<espm::ARMO>(entry.baseId, targetActor.GetParent());
-            bool isShield = data.equipSlotId > 0;
-            if (isShield) {
-              isBlockingByShield = isShield;
-            }
-          }
-        }
-      }
-
-      if (!isRemoteBowAttack || isBlockingByShield) {
-        hitData.isHitBlocked = true;
-      }
-    }
-  }
 
   float damage = partOne.CalculateDamage(*aggressor, targetActor, hitData);
   damage = damage < 0.f ? 0.f : damage;

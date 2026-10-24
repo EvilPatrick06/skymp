@@ -1,4 +1,5 @@
 #include "PercentagesBinding.h"
+#include "DyingHealthBinding.h"
 #include "MathUtils.h"
 #include "NapiHelper.h"
 #include <cmath>
@@ -43,6 +44,14 @@ void PercentagesBinding::Set(Napi::Env env, ScampServer& scampServer,
   if (scampServer.IsGameModeInsideDeathEventHandler(formId)) {
     spdlog::warn("PercentagesBinding::Set - cannot set percentages during "
                  "death event of the same actor {:x}",
+                 formId);
+    return;
+  }
+  // Thornswood #1626. The write that asked is still under way and decides the
+  // health; a refusal names it through dyingHealth.
+  if (DyingHealthBinding::FindDyingEvent(scampServer, formId)) {
+    spdlog::warn("PercentagesBinding::Set - cannot set percentages during "
+                 "the onDying event of the same actor {:x}, write dyingHealth",
                  formId);
     return;
   }

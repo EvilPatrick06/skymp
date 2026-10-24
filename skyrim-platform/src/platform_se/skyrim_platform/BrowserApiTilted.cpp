@@ -1,12 +1,32 @@
 #include <NirnLabUIPlatformAPI/API.h>
 
 #include "BrowserApiTilted.h"
+#include "CursorFocus.h"
 #include "NullPointerException.h"
 #include "TPOverlayService.h"
 
 namespace {
 
-thread_local bool g_cursorIsOpenByFocus = false;
+// Thornswood #2384: replaces g_cursorIsOpenByFocus, which was set when a show
+// was queued rather than when the menu opened, and was thread_local while the
+// Cursor Menu event arrives on the game's thread.
+CursorFocus g_cursorFocus;
+
+void Queue(CursorFocus::Msg msg)
+{
+  if (msg == CursorFocus::Msg::None) {
+    return;
+  }
+  auto msgQ = RE::UIMessageQueue::GetSingleton();
+  if (!msgQ) {
+    return;
+  }
+  msgQ->AddMessage(RE::CursorMenu::MENU_NAME,
+                   msg == CursorFocus::Msg::Show
+                     ? RE::UI_MESSAGE_TYPE::kShow
+                     : RE::UI_MESSAGE_TYPE::kHide,
+                   NULL);
+}
 
 inline CEFUtils::MyChromiumApp& GetApp()
 {
@@ -49,29 +69,25 @@ Napi::Value BrowserApiTilted::SetFocused(const Napi::CallbackInfo& info)
     v = newFocus;
 
     auto ui = RE::UI::GetSingleton();
-    auto msgQ = RE::UIMessageQueue::GetSingleton();
-
-    if (!ui || !msgQ) {
+    if (!ui) {
       return info.Env().Undefined();
     }
 
-    const bool alreadyOpen = ui->IsMenuOpen(RE::CursorMenu::MENU_NAME);
-
-    if (newFocus) {
-      if (!alreadyOpen) {
-        msgQ->AddMessage(RE::CursorMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kShow,
-                         NULL);
-        g_cursorIsOpenByFocus = true;
-      }
-    } else {
-      if (g_cursorIsOpenByFocus) {
-        msgQ->AddMessage(RE::CursorMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kHide,
-                         NULL);
-        g_cursorIsOpenByFocus = false;
-      }
-    }
+    // Thornswood #2384: the show or hide is queued, not done, so what has
+    // been asked for is kept until the game's Cursor Menu event says it
+    // happened (CursorFocus.h).
+    Queue(g_cursorFocus.OnFocus(newFocus,
+                                ui->IsMenuOpen(RE::CursorMenu::MENU_NAME)));
   }
   return info.Env().Undefined();
+}
+
+void BrowserApiTilted::OnCursorMenu(bool opening)
+{
+  // Thornswood #2384: called from EventHandler's MenuOpenCloseEvent sink, on
+  // the game's thread, when the Cursor Menu itself opens or closes.
+  Queue(g_cursorFocus.OnCursorMenu(opening,
+                                   CEFUtils::DInputHook::ChromeFocus()));
 }
 
 Napi::Value BrowserApiTilted::IsFocused(const Napi::CallbackInfo& info)
