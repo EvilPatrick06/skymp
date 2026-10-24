@@ -253,6 +253,44 @@ TEST_CASE("HumanChangeUsesCompareAndSetInventoryReceiptPair",
   REQUIRE(offer->submittedReceipt == human.GetInventoryReceiptDump());
 }
 
+TEST_CASE("Merchant transfers keep inherited gear separate from assigned stock",
+          "[merchant-transfer][NpcBodyLoot][espm]")
+{
+  PartOne server;
+  auto& human = AddHuman(server, 0xff000abc);
+  auto& merchant = AddMerchant(server, 0xff000def);
+  Inventory::ExtraData origin;
+  origin.npcEquipment = true;
+  Inventory::Entry inherited(kGoods, 1, origin);
+  auto inventory = MerchantStock();
+  inventory.AddItems({inherited});
+  merchant.SetInventory(inventory);
+  const auto before = human.GetInventory();
+  auto& transfers = server.worldState.GetMerchantTransfers();
+  SECTION("The ordinary assigned copy can be sold")
+  {
+    auto began = BeginTransfer(transfers, human, merchant, 10, 1, 1);
+    REQUIRE(began.ok);
+    const auto offer = transfers.Find(began.offerId);
+    REQUIRE(offer);
+    REQUIRE(offer->merchantAfter.GetItemCount(kGoods) == 1);
+    REQUIRE(offer->merchantAfter.entries.back() == inherited);
+    REQUIRE(offer->humanAfterCredit.GetItemCount(kGoods) == 1);
+  }
+  SECTION("A typed request for inherited gear is refused before the debit")
+  {
+    Inventory credit;
+    credit.AddItems({inherited});
+    auto began = transfers.Begin(human, merchant, Purse(10), credit,
+      before, human.GetInventoryReceiptDump(), 1);
+    REQUIRE_FALSE(began.ok);
+    REQUIRE_FALSE(transfers.IsLocked(human.GetFormId()));
+    REQUIRE_FALSE(transfers.IsLocked(merchant.GetFormId()));
+  }
+  REQUIRE(human.GetInventory() == before);
+  REQUIRE(merchant.GetInventory() == inventory);
+}
+
 TEST_CASE("HumanSuccessAckMatchesGetSavedInventoryReceipt",
           "[merchant-transfer]")
 {
