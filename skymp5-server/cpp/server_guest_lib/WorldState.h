@@ -371,6 +371,9 @@ public:
   // update and the rest of it is accepted, which is the difference between
   // wearing everything but the axe and wearing nothing at all.
   bool equipmentInventoryCheckEnabled = true;
+  // THORNSWOOD #2262. Ask the gamemode about each item an equipment update
+  // puts on (onEquipItemAttempt). Off by default.
+  bool equipItemAttemptEnabled = false;
 
   // Races the server refuses to take over. The playable ten are deliberately
   // NOT in this default any more. They were, and since every human, elf, orc,
