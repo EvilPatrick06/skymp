@@ -19,6 +19,20 @@ const auto kExtraWornFalse = [] {
   extra.worn_ = false;
   return extra;
 }();
+
+// THORNSWOOD (#1384): a worn piece whose name carries its condition, the way
+// the gamemode writes it: "Iron Dagger (120%)".
+Inventory::ExtraData WornNamed(const std::string& name, bool left = false)
+{
+  Inventory::ExtraData extra;
+  if (left) {
+    extra.wornLeft = true;
+  } else {
+    extra.worn_ = true;
+  }
+  extra.name = name;
+  return extra;
+}
 }
 
 PartOne& GetPartOne();
@@ -130,6 +144,132 @@ TEST_CASE("Formula is race-dependent for unarmed attack",
     TES5DamageFormula formula{};
     REQUIRE(formula.CalculateDamage(ac, ac, hitData) == 10.0f);
   }
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
+
+TEST_CASE("THORNSWOOD: a weapon at 120% condition does 5% more damage",
+          "[TES5DamageFormula]")
+{
+  PartOne& p = GetPartOne();
+  DoConnect(p, 0);
+  p.CreateActor(0xff000000, { 0, 0, 0 }, 0, 0x3c);
+  p.SetUserActor(0, 0xff000000);
+  auto& ac = p.worldState.GetFormAt<MpActor>(0xff000000);
+
+  HitData hitData;
+  hitData.target = 0x14;
+  hitData.aggressor = 0x14;
+  hitData.source = 0x0001397E; // iron dagger 4 damage
+
+  TES5DamageFormula formula{};
+  auto with = [&](std::vector<Inventory::Entry> entries) {
+    Equipment eq;
+    eq.inv.entries = std::move(entries);
+    ac.SetEquipment(eq);
+    return formula.CalculateDamage(ac, ac, hitData);
+  };
+
+  REQUIRE(with({ Inventory::Entry(0x1397E, 1,
+                                  WornNamed("Iron Dagger (120%)")) }) ==
+          Catch::Approx(4.2f));
+  // Held to 120, the way the gamemode holds it.
+  REQUIRE(with({ Inventory::Entry(0x1397E, 1,
+                                  WornNamed("Iron Dagger (130%)")) }) ==
+          Catch::Approx(4.2f));
+  REQUIRE(with({ Inventory::Entry(0x1397E, 1,
+                                  WornNamed("Iron Dagger (119%)")) }) ==
+          4.0f);
+  REQUIRE(with({ Inventory::Entry(0x1397E, 1, WornNamed("Iron Dagger")) }) ==
+          4.0f);
+  REQUIRE(with({ Inventory::Entry(0x1397E, 1, kExtraWornTrue) }) == 4.0f);
+  REQUIRE(with({ Inventory::Entry(0x1397E, 1,
+                                  WornNamed("Iron Dagger (12a%)")) }) ==
+          4.0f);
+  // Carried and not worn is not the weapon that struck.
+  {
+    Inventory::ExtraData carried;
+    carried.name = "Iron Dagger (120%)";
+    REQUIRE(with({ Inventory::Entry(0x1397E, 1, carried) }) == 4.0f);
+  }
+  // Another weapon at 120% does not lend this one its buff.
+  REQUIRE(with({ Inventory::Entry(0x12EB7, 1,
+                                  WornNamed("Iron Sword (120%)")) }) == 4.0f);
+  // Two of the same dagger, one in each hand: HitData names no hand, so the
+  // buff is given only when both are at 120%.
+  REQUIRE(with({ Inventory::Entry(0x1397E, 1,
+                                  WornNamed("Iron Dagger (120%)")),
+                 Inventory::Entry(0x1397E, 1, WornNamed("Iron Dagger", true)) }) ==
+          4.0f);
+  REQUIRE(with({ Inventory::Entry(0x1397E, 1,
+                                  WornNamed("Iron Dagger (120%)")),
+                 Inventory::Entry(0x1397E, 1,
+                                  WornNamed("Iron Dagger (120%)", true)) }) ==
+          Catch::Approx(4.2f));
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
+
+TEST_CASE("THORNSWOOD: an armour piece at 120% condition gives 5% more of its "
+          "rating",
+          "[TES5DamageFormula]")
+{
+  PartOne& p = GetPartOne();
+  DoConnect(p, 0);
+  p.CreateActor(0xff000000, { 0, 0, 0 }, 0, 0x3c);
+  p.SetUserActor(0, 0xff000000);
+  auto& ac = p.worldState.GetFormAt<MpActor>(0xff000000);
+
+  HitData hitData;
+  hitData.target = 0x14;
+  hitData.aggressor = 0x14;
+  hitData.source = 0x0001397E; // iron dagger 4 damage, carried in no hand
+
+  TES5DamageFormula formula{};
+
+  // 77382 = 0x12e46: Iron Gauntlets, rating = 10
+  // 77387 = 0x12e4b: Iron Boots, rating = 10
+  Equipment plain;
+  plain.inv.entries.push_back(Inventory::Entry(77382, 1, kExtraWornTrue));
+  plain.inv.entries.push_back(Inventory::Entry(77387, 1, kExtraWornTrue));
+  ac.SetEquipment(plain);
+  // 4 * 0.01 * (100 - 20 * .12) = 3.904
+  REQUIRE(formula.CalculateDamage(ac, ac, hitData) == 3.903999805f);
+
+  // The gauntlets at 120%: 10 * 1.05 + 10 = 20.5
+  // 4 * 0.01 * (100 - 20.5 * .12) = 3.9016
+  Equipment one;
+  one.inv.entries.push_back(
+    Inventory::Entry(77382, 1, WornNamed("Iron Gauntlets (120%)")));
+  one.inv.entries.push_back(Inventory::Entry(77387, 1, kExtraWornTrue));
+  ac.SetEquipment(one);
+  REQUIRE(formula.CalculateDamage(ac, ac, hitData) ==
+          Catch::Approx(3.9016f));
+
+  // Both at 120%: 21 -> 4 * 0.01 * (100 - 21 * .12) = 3.8992
+  Equipment both;
+  both.inv.entries.push_back(
+    Inventory::Entry(77382, 1, WornNamed("Iron Gauntlets (120%)")));
+  both.inv.entries.push_back(
+    Inventory::Entry(77387, 1, WornNamed("Iron Boots (120%)")));
+  ac.SetEquipment(both);
+  REQUIRE(formula.CalculateDamage(ac, ac, hitData) ==
+          Catch::Approx(3.8992f));
+
+  // Below 120% is a plain piece, and a piece carried at 120% gives nothing.
+  Equipment worse;
+  worse.inv.entries.push_back(
+    Inventory::Entry(77382, 1, WornNamed("Iron Gauntlets (85%)")));
+  worse.inv.entries.push_back(Inventory::Entry(77387, 1, kExtraWornTrue));
+  {
+    Inventory::ExtraData carried;
+    carried.name = "Iron Helmet (120%)";
+    worse.inv.entries.push_back(Inventory::Entry(77389, 1, carried));
+  }
+  ac.SetEquipment(worse);
+  REQUIRE(formula.CalculateDamage(ac, ac, hitData) == 3.903999805f);
 
   p.DestroyActor(0xff000000);
   DoDisconnect(p, 0);
