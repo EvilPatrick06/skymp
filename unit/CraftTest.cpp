@@ -1586,3 +1586,34 @@ TEST_CASE("The pack is sent with the stock in it while the bench is open, "
   p.DestroyActor(0xff000000);
   DoDisconnect(p, 0);
 }
+
+TEST_CASE("A chest that changes while its bench is open is sent again, and "
+          "not after (Thornswood #3159)",
+          "[Craft][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& ac = MakeCrafter(p, kForge);
+  auto& barrel = p.worldState.GetFormAt<MpObjectReference>(kStockBarrel);
+  barrel.SetInventory(Inventory().AddItem(kSteelIngot, 5));
+  ac.SetBenchStock(MpActor::BenchStock{ kForge, { kStockBarrel } });
+  REQUIRE(ac.OpenBenchStock(kForge));
+  p.Tick();
+  p.Messages().clear();
+
+  // Somebody else takes two out of the chest.
+  barrel.RemoveItems({ Inventory::Entry(kSteelIngot, 2) });
+  p.Tick();
+  auto sent = SentInventories(p, 0);
+  REQUIRE(sent.size() == 1);
+  REQUIRE(sent[0].GetItemCount(kSteelIngot) == 3);
+
+  ac.CloseBenchStock(kForge);
+  p.Tick();
+  p.Messages().clear();
+  barrel.AddItem(kSteelIngot, 4);
+  p.Tick();
+  REQUIRE(SentInventories(p, 0).empty());
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
