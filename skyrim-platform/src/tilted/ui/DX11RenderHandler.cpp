@@ -1,6 +1,7 @@
 #include "DInputHook.hpp"
 #include "TextToDraw.h"
 #include <DX11RenderHandler.h>
+#include <LoadingScreen.h>
 #include <DirectXColors.h>
 #include <DirectXTK/DDSTextureLoader.h>
 #include <DirectXTK/SimpleMath.h>
@@ -57,7 +58,7 @@ void DX11RenderHandler::Render(
   m_pSpriteBatch->Begin(DirectX::SpriteSortMode_Deferred,
                         m_pStates->NonPremultiplied());
 
-  if (Visible()) {
+  if (LoadingScreen::ShouldDraw(Visible(), Loading())) {
     std::unique_lock<std::mutex> _(m_textureLock);
 
     if (m_pTextureView) {

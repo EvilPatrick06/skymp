@@ -99,7 +99,12 @@ export class BrowserService extends ClientListener {
     Menu.Inventory,
     Menu.Journal,
     Menu.Lockpicking,
-    Menu.Loading,
+    // THORNSWOOD #3130. Not Menu.Loading: Thornswood's page covers a load
+    // with its own loading screen, and SkyrimPlatform draws the page while
+    // the Loading Menu is open (LoadingScreen.h). This hid the browser for
+    // it from the first update after the load, and showed it again on the
+    // close, which came up to 90 ms later on dev (22 Oct 2026): the page
+    // blinked out as the load ended.
     Menu.Map,
     Menu.RaceSex,
     Menu.Stats,
