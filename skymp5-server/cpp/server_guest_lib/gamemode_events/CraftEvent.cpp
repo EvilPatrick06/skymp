@@ -29,9 +29,19 @@ const char* CraftEvent::GetName() const
 
 std::string CraftEvent::GetArgumentsJsonArray() const
 {
+  return ArgumentsJsonArray(actor ? actor->GetFormId() : 0, craftedItemBaseId,
+                            count, recipeId, workbenchId, effects, entries);
+}
+
+std::string CraftEvent::ArgumentsJsonArray(
+  uint32_t actorId, uint32_t craftedItemBaseId, uint32_t count,
+  uint32_t recipeId, uint32_t workbenchId,
+  const std::optional<std::vector<uint32_t>>& effects,
+  const std::vector<Inventory::Entry>& entries)
+{
   std::string result;
   result += "[";
-  result += std::to_string(actor->GetFormId());
+  result += std::to_string(actorId);
   result += ",";
   result += std::to_string(craftedItemBaseId);
   result += ",";
