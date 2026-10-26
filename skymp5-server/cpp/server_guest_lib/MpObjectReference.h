@@ -233,6 +233,11 @@ public:
 
   void SendInventoryUpdate();
 
+  // THORNSWOOD PATCH (Thornswood #3159). Whether this container is in the
+  // actor's open bench stock (MpActor::BenchStock), so a change to what it
+  // holds is sent to that actor too. MpActor keeps it in step.
+  void SetBenchStockReader(uint32_t actorId, bool reading);
+
   // The extra (name, enchantment, charge, poison, soul, health) of the entry
   // this reference was dropped as. The pickup adds the item with it, so a
   // piece picked up is the piece that was dropped (Thornswood #1719).
