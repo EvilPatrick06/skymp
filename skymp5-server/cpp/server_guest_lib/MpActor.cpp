@@ -598,8 +598,13 @@ Inventory MpActor::GetInventoryWithBenchStock()
   }
   for (auto container : GetOpenBenchStock(pImpl->benchStock->workbenchId)) {
     for (const auto& entry : container->GetInventory().entries) {
+      // Thornswood #3163: a stack that differs from the plain item only in
+      // its name is one a craft can take (CraftService's PlanInputs), food
+      // carrying its days left in a chest above all, so it is shown too.
+      Inventory::Entry unnamed = entry;
+      unnamed.name.reset();
       if (!entry.count ||
-          !entry.EqualExceptCount(Inventory::Entry(entry.baseId, 1))) {
+          !unnamed.EqualExceptCount(Inventory::Entry(entry.baseId, 1))) {
         continue;
       }
       std::vector<Inventory::Entry> one = { entry };
@@ -983,7 +988,17 @@ bool MpActor::OnEquip(uint32_t baseId)
   }
 
   if (isIngredient || isPotion || spellLearned) {
-    RemoveItem(baseId, 1, nullptr);
+    /*
+      THORNSWOOD PATCH (Thornswood #3163). The client says what was eaten
+      by its base id alone, and food carries its days left on its name
+      ("Venison (6 days left)"), so the one eaten is taken from the plain
+      stack first and then from a stack that differs only in its name
+      (Inventory::ResolveRemoval). RemoveItem matched the plain entry
+      exactly, so eating a named one threw here after its effects had
+      landed and the server kept the food: a meal that cost nothing.
+    */
+    RemoveItems(GetInventory().ResolveRemoval({ Inventory::Entry(baseId, 1) }),
+                nullptr);
   }
 
   const VarValue args[] = {

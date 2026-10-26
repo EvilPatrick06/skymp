@@ -39,18 +39,35 @@ namespace {
   craft as before. OnFireSuccess takes each part from where this says.
 
   What counts is what a removal can take: an entry that carries nothing but
-  a base and a count, because the inputs the client names carry nothing else
-  and Inventory::RemoveItems matches entries exactly. This used to count
-  every entry of the base (Inventory::GetItemCount), so a pack holding only a
-  named or worn one passed here and threw at the removal, after the gamemode
-  had acted, which is the case #1618 closed for a missing input.
+  a base and a count, because the inputs the client names carry nothing else.
+  This used to count every entry of the base (Inventory::GetItemCount), so a
+  pack holding only a worn one passed here and threw at the removal, after
+  the gamemode had acted, which is the case #1618 closed for a missing input.
+
+  THORNSWOOD PATCH (Thornswood #3163). And a stack that differs from the
+  plain item only in its name, which a removal takes too
+  (Inventory::ResolveRemoval). Food carries its days left on its name, so
+  raw meat that has sat a day is "Venison (6 days left)" in a pack and in a
+  chest alike, and the client names an input by its base id alone. The plain
+  stacks go first everywhere, the pack's and then each container's, and only
+  then the named ones in the same order, so a craft the plain stacks cover
+  takes exactly what it took before. A stack that differs in anything but its
+  name (worn, tempered, enchanted) is still never an input. Each draw is the
+  stacks it takes from its container, each with its own name, so onCraft is
+  told which named stack an input comes off (CraftEvent's seventh and eighth
+  arguments) and OnFireSuccess takes exactly those.
 */
-uint64_t PlainCount(const Inventory& inventory, uint32_t baseId)
+uint64_t TakeableCount(const Inventory& inventory, uint32_t baseId, bool named)
 {
   const Inventory::Entry plain(baseId, 1);
   uint64_t sum = 0;
   for (const auto& entry : inventory.entries) {
-    if (entry.EqualExceptCount(plain)) {
+    if (named != entry.name.has_value()) {
+      continue;
+    }
+    Inventory::Entry unnamed = entry;
+    unnamed.name.reset();
+    if (unnamed.EqualExceptCount(plain)) {
       sum += entry.count;
     }
   }
@@ -77,34 +94,79 @@ std::optional<std::vector<CraftEvent::StockDraw>> PlanInputs(
   const auto containers = me.GetOpenBenchStock(workbenchId);
   std::vector<CraftEvent::StockDraw> draws;
   for (const auto& [baseId, count] : needed) {
-    const uint64_t held = PlainCount(me.GetInventory(), baseId);
-    if (held >= count) {
-      continue;
-    }
-    uint64_t lacking = count - held;
-    for (auto container : containers) {
-      if (!lacking) {
-        break;
-      }
-      const uint64_t there = PlainCount(container->GetInventory(), baseId);
-      const uint64_t part = std::min(there, lacking);
-      if (part) {
-        draws.push_back({ container->GetFormId(),
-                          Inventory::Entry(baseId,
-                                           static_cast<uint32_t>(part)) });
+    uint64_t lacking = count;
+    std::vector<uint64_t> parts(containers.size(), 0);
+    for (bool named : { false, true }) {
+      lacking -=
+        std::min(lacking, TakeableCount(me.GetInventory(), baseId, named));
+      for (size_t i = 0; i < containers.size() && lacking; ++i) {
+        const uint64_t part = std::min(
+          lacking,
+          TakeableCount(containers[i]->GetInventory(), baseId, named));
+        parts[i] += part;
         lacking -= part;
       }
     }
     if (lacking) {
-      spdlog::warn("CraftService - actor {:#x} holds {} of {:#x} and the "
-                   "bench's stock {} more, but the craft needs {}, so it is "
-                   "refused without asking the gamemode",
-                   me.GetFormId(), held, baseId, count - held - lacking,
-                   count);
+      spdlog::warn("CraftService - actor {:#x} and the bench's stock hold {} "
+                   "of {:#x}, but the craft needs {}, so it is refused "
+                   "without asking the gamemode",
+                   me.GetFormId(), count - lacking, baseId, count);
       return std::nullopt;
+    }
+    for (size_t i = 0; i < containers.size(); ++i) {
+      if (!parts[i]) {
+        continue;
+      }
+      const Inventory::Entry wanted(baseId, static_cast<uint32_t>(parts[i]));
+      for (auto& piece :
+           containers[i]->GetInventory().ResolveRemoval({ wanted })) {
+        draws.push_back({ containers[i]->GetFormId(), piece });
+      }
     }
   }
   return draws;
+}
+
+/*
+  THORNSWOOD PATCH (Thornswood #3163). Every input the craft takes, by the
+  stack it comes off: the pack's part resolved the way PlanInputs counted it
+  (Inventory::ResolveRemoval, the plain stack first), then each part the
+  bench's stock gives. This is CraftEvent's seventh argument, so a named
+  input reaches the gamemode with its name. nullopt when the pack no longer
+  holds its part, which refuses the craft without asking the gamemode.
+*/
+std::optional<std::vector<Inventory::Entry>> InputsTaken(
+  const MpActor& me, const std::vector<Inventory::Entry>& entries,
+  const std::vector<CraftEvent::StockDraw>& draws)
+{
+  std::map<uint32_t, uint64_t> fromStock;
+  for (const auto& draw : draws) {
+    fromStock[draw.entry.baseId] += draw.entry.count;
+  }
+  std::vector<Inventory::Entry> fromPack;
+  for (const auto& entry : entries) {
+    auto& stock = fromStock[entry.baseId];
+    const uint64_t part = std::min<uint64_t>(entry.count, stock);
+    stock -= part;
+    if (entry.count > part) {
+      Inventory::Entry rest = entry;
+      rest.count = static_cast<uint32_t>(entry.count - part);
+      fromPack.push_back(rest);
+    }
+  }
+  try {
+    auto taken = me.GetInventory().ResolveRemoval(fromPack);
+    for (const auto& draw : draws) {
+      taken.push_back(draw.entry);
+    }
+    return taken;
+  } catch (const std::exception& e) {
+    spdlog::warn("CraftService - actor {:#x} does not hold what the craft "
+                 "needs ({}), so it is refused without asking the gamemode",
+                 me.GetFormId(), e.what());
+    return std::nullopt;
+  }
 }
 }
 
@@ -432,10 +494,14 @@ bool CraftService::CraftItem(MpActor* me, const Inventory& inputObjects,
   if (!stockDraws) {
     return false;
   }
+  auto taken = InputsTaken(*me, craft->entries, *stockDraws);
+  if (!taken) {
+    return false;
+  }
 
   CraftEvent craftEvent(me, craft->outputBaseId, craft->outputCount,
-                        craft->recipeId, craft->entries, workbenchId,
-                        craft->effects, std::move(*stockDraws));
+                        craft->recipeId, *taken, workbenchId, craft->effects,
+                        std::move(*stockDraws));
   if (!craftEvent.Fire(me->GetParent())) {
     // THORNSWOOD PATCH: WorkOut has already logged "crafted" for a recipe by
     // the time the gamemode answers, so the log says when the answer was no.
