@@ -1,3 +1,5 @@
+#include <DX11RenderHandler.h>
+#include <LoadingScreen.h>
 #include <MyLoadHandler.h>
 
 namespace CEFUtils {
@@ -15,6 +17,12 @@ void MyLoadHandler::OnLoadEnd(CefRefPtr<CefBrowser> browser,
 {
   if (frame->IsMain()) {
     m_ready = true;
+    // Thornswood #3130: a page that loaded while the game is loading has not
+    // heard the Loading Menu open, so it is told now.
+    if (DX11RenderHandler::Loading()) {
+      frame->ExecuteJavaScript(LoadingScreen::Script(true), frame->GetURL(),
+                               0);
+    }
   }
 }
 
