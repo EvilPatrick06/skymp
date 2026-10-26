@@ -506,6 +506,11 @@ std::optional<AnimationData> MpActor::GetLastAnimEvent() const
 void MpActor::SetBenchStock(std::optional<BenchStock> stock)
 {
   const bool wasOpen = pImpl->benchStock && pImpl->benchStock->open;
+  if (wasOpen) {
+    for (auto container : GetOpenBenchStock(pImpl->benchStock->workbenchId)) {
+      container->SetBenchStockReader(GetFormId(), false);
+    }
+  }
   pImpl->benchStock = std::move(stock);
   if (pImpl->benchStock) {
     pImpl->benchStock->open = false;
@@ -531,6 +536,9 @@ bool MpActor::OpenBenchStock(uint32_t workbenchId)
     return false;
   }
   stock->open = true;
+  for (auto container : GetOpenBenchStock(workbenchId)) {
+    container->SetBenchStockReader(GetFormId(), true);
+  }
   spdlog::info("MpActor::OpenBenchStock - actor {:#x} took bench {:#x}, "
                "which may draw from {} container(s)",
                GetFormId(), workbenchId, stock->containerIds.size());

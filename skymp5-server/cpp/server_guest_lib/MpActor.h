@@ -275,13 +275,15 @@ public:
   // closes when it leaves it, and it is never saved.
   //
   // While it is open, this actor's own client is sent its pack with the
-  // stock's materials in it (BenchStockEntries, MpObjectReference::
+  // stock's materials in it (GetInventoryWithBenchStock, MpObjectReference::
   // SendInventoryUpdate), because the game's crafting menu only lists what it
-  // can make from the pack. Nothing moves until a craft: CraftService takes
-  // what the pack lacks from the stock's containers, in the same step that
-  // takes the rest from the pack (CraftEvent::OnFireSuccess). The materials
-  // the client was shown and did not use go when the bench closes, because
-  // the server's own inventory is sent then.
+  // can make from the pack, and sent again when one of the containers
+  // changes (MpObjectReference::SetBenchStockReader). Nothing moves until a
+  // craft: CraftService takes what the pack lacks from the stock's
+  // containers, in the same step that takes the rest from the pack
+  // (CraftEvent::OnFireSuccess). The materials the client was shown and did
+  // not use go when the bench closes, because the server's own inventory is
+  // sent then.
   struct BenchStock
   {
     uint32_t workbenchId = 0;
