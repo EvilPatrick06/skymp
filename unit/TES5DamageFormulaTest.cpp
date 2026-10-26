@@ -274,3 +274,117 @@ TEST_CASE("THORNSWOOD: an armour piece at 120% condition gives 5% more of its "
   p.DestroyActor(0xff000000);
   DoDisconnect(p, 0);
 }
+
+TEST_CASE("THORNSWOOD: a crude or masterwork weapon does a tenth less or more "
+          "damage",
+          "[TES5DamageFormula]")
+{
+  PartOne& p = GetPartOne();
+  DoConnect(p, 0);
+  p.CreateActor(0xff000000, { 0, 0, 0 }, 0, 0x3c);
+  p.SetUserActor(0, 0xff000000);
+  auto& ac = p.worldState.GetFormAt<MpActor>(0xff000000);
+
+  HitData hitData;
+  hitData.target = 0x14;
+  hitData.aggressor = 0x14;
+  hitData.source = 0x0001397E; // iron dagger 4 damage
+
+  TES5DamageFormula formula{};
+  auto with = [&](std::vector<Inventory::Entry> entries) {
+    Equipment eq;
+    eq.inv.entries = std::move(entries);
+    ac.SetEquipment(eq);
+    return formula.CalculateDamage(ac, ac, hitData);
+  };
+
+  REQUIRE(with({ Inventory::Entry(0x1397E, 1,
+                                  WornNamed("Iron Dagger (Masterwork)")) }) ==
+          Catch::Approx(4.4f));
+  REQUIRE(
+    with({ Inventory::Entry(0x1397E, 1, WornNamed("Iron Dagger (Crude)")) }) ==
+    Catch::Approx(3.6f));
+  // The condition goes after the quality, and both count.
+  REQUIRE(with({ Inventory::Entry(
+            0x1397E, 1, WornNamed("Iron Dagger (Masterwork) (120%)")) }) ==
+          Catch::Approx(4.62f));
+  REQUIRE(with({ Inventory::Entry(0x1397E, 1,
+                                  WornNamed("Iron Dagger (Crude) (85%)")) }) ==
+          Catch::Approx(3.6f));
+  // A Master Weaver's mark in front changes nothing.
+  REQUIRE(
+    with({ Inventory::Entry(
+      0x1397E, 1, WornNamed("Master-Lined Iron Dagger (Masterwork)")) }) ==
+    Catch::Approx(4.4f));
+  // Only the tier as the gamemode writes it.
+  REQUIRE(with({ Inventory::Entry(
+            0x1397E, 1, WornNamed("Iron Dagger(Masterwork)")) }) == 4.0f);
+  REQUIRE(with({ Inventory::Entry(
+            0x1397E, 1, WornNamed("Iron Dagger (Masterwork) x")) }) == 4.0f);
+  REQUIRE(with({ Inventory::Entry(0x1397E, 1, WornNamed(" (Masterwork)")) }) ==
+          4.0f);
+  // Carried and not worn is not the weapon that struck.
+  {
+    Inventory::ExtraData carried;
+    carried.name = "Iron Dagger (Masterwork)";
+    REQUIRE(with({ Inventory::Entry(0x1397E, 1, carried) }) == 4.0f);
+  }
+  // Two of the same dagger, one in each hand: the hit counts as the weaker.
+  REQUIRE(
+    with({ Inventory::Entry(0x1397E, 1, WornNamed("Iron Dagger (Masterwork)")),
+           Inventory::Entry(0x1397E, 1, WornNamed("Iron Dagger", true)) }) ==
+    4.0f);
+  REQUIRE(
+    with({ Inventory::Entry(0x1397E, 1, WornNamed("Iron Dagger (Masterwork)")),
+           Inventory::Entry(0x1397E, 1,
+                            WornNamed("Iron Dagger (Crude)", true)) }) ==
+    Catch::Approx(3.6f));
+  REQUIRE(
+    with({ Inventory::Entry(0x1397E, 1, WornNamed("Iron Dagger (Masterwork)")),
+           Inventory::Entry(0x1397E, 1,
+                            WornNamed("Iron Dagger (Masterwork)", true)) }) ==
+    Catch::Approx(4.4f));
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
+
+TEST_CASE("THORNSWOOD: a crude or masterwork armour piece gives a tenth less "
+          "or more of its rating",
+          "[TES5DamageFormula]")
+{
+  PartOne& p = GetPartOne();
+  DoConnect(p, 0);
+  p.CreateActor(0xff000000, { 0, 0, 0 }, 0, 0x3c);
+  p.SetUserActor(0, 0xff000000);
+  auto& ac = p.worldState.GetFormAt<MpActor>(0xff000000);
+
+  HitData hitData;
+  hitData.target = 0x14;
+  hitData.aggressor = 0x14;
+  hitData.source = 0x0001397E; // iron dagger 4 damage, carried in no hand
+
+  TES5DamageFormula formula{};
+  auto with = [&](const char* gauntlets) {
+    Equipment eq;
+    // 77382 = 0x12e46: Iron Gauntlets, rating = 10
+    // 77387 = 0x12e4b: Iron Boots, rating = 10
+    eq.inv.entries.push_back(Inventory::Entry(77382, 1, WornNamed(gauntlets)));
+    eq.inv.entries.push_back(Inventory::Entry(77387, 1, kExtraWornTrue));
+    ac.SetEquipment(eq);
+    return formula.CalculateDamage(ac, ac, hitData);
+  };
+
+  // 11 + 10 = 21 -> 4 * 0.01 * (100 - 21 * .12) = 3.8992
+  REQUIRE(with("Iron Gauntlets (Masterwork)") == Catch::Approx(3.8992f));
+  // 9 + 10 = 19 -> 4 * 0.01 * (100 - 19 * .12) = 3.9088
+  REQUIRE(with("Iron Gauntlets (Crude)") == Catch::Approx(3.9088f));
+  // 10 * 1.05 * 1.1 + 10 = 21.55 -> 4 * 0.01 * (100 - 21.55 * .12) = 3.89656
+  REQUIRE(with("Iron Gauntlets (Masterwork) (120%)") ==
+          Catch::Approx(3.89656f));
+  // A plain name is the piece as its record has it.
+  REQUIRE(with("Iron Gauntlets") == 3.903999805f);
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
