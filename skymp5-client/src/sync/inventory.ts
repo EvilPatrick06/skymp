@@ -23,9 +23,37 @@ import {
   Form,
   renameInventoryItems,
   removeInventoryItems,
+  createMadePotion,
 } from "skyrimPlatform";
 
+/*
+  THORNSWOOD PATCH (Thornswood #1649). A brewed bottle, kept as what it is.
+
+  A potion brewed at a lab is a form the brewing game made while it ran,
+  above 0xff000000, so its id means nothing to the next session or to any
+  other client. The server keeps it by its contents instead (Inventory::Made
+  in the fork's server) under an id worked out from them, in the top half of
+  the runtime range (0xff800000 and up), and sends it as an entry carrying
+  `made`. ensureMadePotion builds a potion with exactly that id here
+  (createMadePotion), so the bottle in the game, and everything this client
+  sends about it afterwards (drinking it, putting it in a chest), carry the
+  server's id.
+*/
+export interface MadeEffect {
+  effectId: number; // the magic effect record (MGEF), a global form id
+  magnitude: number;
+  area: number;
+  duration: number;
+}
+
+export interface Made {
+  name: string;
+  poison: boolean;
+  effects: MadeEffect[];
+}
+
 export interface Extra {
+  made?: Made;
   health?: number;
   enchantmentId?: number;
   maxCharge?: number;
@@ -148,8 +176,12 @@ const namesEqual = (a: Entry, b: Entry): boolean => {
   return false;
 };
 
+const madeEqual = (a?: Made, b?: Made): boolean =>
+  (!a && !b) || (!!a && !!b && JSON.stringify(a) === JSON.stringify(b));
+
 const extrasEqual = (a: Entry, b: Entry, ignoreWorn = false) => {
   return (
+    madeEqual(a.made, b.made) &&
     healthOf(a) === healthOf(b) &&
     a.enchantmentId === b.enchantmentId &&
     a.maxCharge === b.maxCharge &&
@@ -174,6 +206,91 @@ export const inventoryEntriesEqualExceptName = (a: Entry, b: Entry, ignoreWorn =
 
 export const hasExtras = (e: Entry): boolean => {
   return !extrasEqual(e, { baseId: 0, count: 0 });
+};
+
+// What this session built under which id (Thornswood #1649). In storage, so
+// a hot reload of the client keeps it, as the game keeps the forms.
+const madePotions = (): Map<number, Made> => {
+  if (!storage) {
+    return new Map<number, Made>();
+  }
+  if (!(storage["thornswoodMadePotions"] instanceof Map)) {
+    storage["thornswoodMadePotions"] = new Map<number, Made>();
+  }
+  return storage["thornswoodMadePotions"] as Map<number, Made>;
+};
+
+const kRuntimeFirst = 0xff000000;
+const kMadeIdFirst = 0xff800000;
+
+// Thornswood #1649. What is in a bottle the game brewed this session, read
+// off the form, for the craft message (craftService.ts). Nothing for a form
+// that is not a runtime potion, or one already built from the server's
+// description (that one is the server's already).
+export const readMadePotion = (form: Form | null): Made | undefined => {
+  const potion = Potion.from(form);
+  if (!form || !potion) {
+    return undefined;
+  }
+  const id = form.getFormID();
+  if (id < kRuntimeFirst || madePotions().has(id)) {
+    return undefined;
+  }
+  const effects: MadeEffect[] = [];
+  const n = potion.getNumEffects();
+  for (let i = 0; i < n; ++i) {
+    const mgef = potion.getNthEffectMagicEffect(i);
+    if (!mgef) {
+      return undefined;
+    }
+    effects.push({
+      effectId: mgef.getFormID(),
+      magnitude: Math.round(potion.getNthEffectMagnitude(i) * 100) / 100,
+      area: Math.round(potion.getNthEffectArea(i)),
+      duration: Math.round(potion.getNthEffectDuration(i)),
+    });
+  }
+  if (!effects.length) {
+    return undefined;
+  }
+  return { name: form.getName(), poison: potion.isPoison(), effects };
+};
+
+// Thornswood #1649. Makes sure this session has the server's bottle `id`,
+// building it from `made` the first time it is seen. False when it cannot:
+// an id outside the made range, a Skyrim Platform without createMadePotion,
+// or another form already under that id (two contents whose ids collide,
+// which the id's 23 bits make rare; the second is then left out and logged,
+// and the first stays right).
+export const ensureMadePotion = (id: number, made: Made): boolean => {
+  const built = madePotions();
+  const had = built.get(id);
+  if (had) {
+    if (!madeEqual(had, made)) {
+      printConsole(`Made potion ${id.toString(16)} is already another brew in this session`);
+      return false;
+    }
+    return true;
+  }
+  if (id < kMadeIdFirst || typeof createMadePotion !== "function") {
+    printConsole(`Unable to build made potion ${id.toString(16)}`);
+    return false;
+  }
+  const ok = createMadePotion(
+    id,
+    made.name || "",
+    !!made.poison,
+    made.effects.map((e) => e.effectId),
+    made.effects.map((e) => e.magnitude),
+    made.effects.map((e) => e.area),
+    made.effects.map((e) => e.duration),
+  );
+  if (!ok) {
+    printConsole(`createMadePotion failed for ${id.toString(16)}`);
+    return false;
+  }
+  built.set(id, JSON.parse(JSON.stringify(made)));
+  return true;
 };
 
 const extractExtraData = (
@@ -270,6 +387,18 @@ const getExtraContainerChangesAsInventory = (
       entries.push(entry);
     }
   });
+
+  // Thornswood #1649: a bottle built from the server's description is that
+  // description, the way the server holds it.
+  const built = madePotions();
+  if (built.size) {
+    entries.forEach((e) => {
+      const made = built.get(e.baseId);
+      if (made) {
+        e.made = JSON.parse(JSON.stringify(made));
+      }
+    });
+  }
 
   let res: Inventory = { entries };
   res = squash(res);
@@ -406,11 +535,16 @@ export const resetInventoryBase = (refr: ObjectReference): boolean => {
 interface InventoryLists {
   lists: Entry[];
   plain: number;
+  made?: Made;
 }
 
 const getInventoryLists = (refr: ObjectReference, baseId: number): InventoryLists => {
   const lists = new Array<Entry>();
   let plain = 0;
+  // Thornswood #1649: a brewed bottle's contents belong to its form, not to
+  // a list, so every unit of it carries them, listed or not, the way
+  // getExtraContainerChangesAsInventory reads them.
+  const made = madePotions().get(baseId);
 
   (getExtraContainerChanges(refr.getFormID()) || []).forEach((changesEntry) => {
     if (changesEntry.baseId !== baseId) {
@@ -424,6 +558,9 @@ const getInventoryLists = (refr: ObjectReference, baseId: number): InventoryList
       }
       const e: Entry = { baseId, count: 1 };
       extractExtraData(refr, extraList, e);
+      if (made) {
+        e.made = JSON.parse(JSON.stringify(made));
+      }
       lists.push(e);
       plain -= e.count;
     });
@@ -435,7 +572,7 @@ const getInventoryLists = (refr: ObjectReference, baseId: number): InventoryList
     }
   });
 
-  return { lists, plain: Math.max(0, plain) };
+  return { lists, plain: Math.max(0, plain), made };
 };
 
 const describeEntry = (e: Entry): string =>
@@ -444,7 +581,7 @@ const describeEntry = (e: Entry): string =>
 const takeAway = (refr: ObjectReference, entries: Entry[]): void => {
   const baseIds = new Set(entries.map((e) => e.baseId));
   baseIds.forEach((baseId) => {
-    const { lists, plain } = getInventoryLists(refr, baseId);
+    const { lists, plain, made } = getInventoryLists(refr, baseId);
     const left = lists.map((l) => l.count);
     let plainLeft = plain;
     let plainCount = 0;
@@ -456,7 +593,8 @@ const takeAway = (refr: ObjectReference, entries: Entry[]): void => {
 
     entries.filter((e) => e.baseId === baseId).forEach((e) => {
       let wanted = -e.count;
-      if (!hasExtras(e)) {
+      // A unit with no list has no extra but the form's own contents (#1649).
+      if (madeEqual(e.made, made) && !hasExtras({ ...e, made: undefined })) {
         const n = Math.min(wanted, plainLeft);
         plainCount += n;
         plainLeft -= n;
@@ -504,6 +642,13 @@ export const applyInventory = (
   ignoreWorn = false
 ): boolean => {
   resetInventoryBase(refr);
+  // Thornswood #1649: every brewed bottle the server sends exists here, under
+  // the server's id, before the pack is compared with it.
+  newInventory.entries.forEach((e) => {
+    if (e.made) {
+      ensureMadePotion(e.baseId, e.made);
+    }
+  });
   const actual = getInventory(refr);
   let diff = getDiff(newInventory, actual, ignoreWorn).entries;
 

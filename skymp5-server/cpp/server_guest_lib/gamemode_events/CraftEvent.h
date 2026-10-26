@@ -15,7 +15,8 @@ public:
              uint32_t recipeId_,
              const std::vector<Inventory::Entry>& entries_,
              uint32_t workbenchId_ = 0,
-             std::optional<std::vector<uint32_t>> effects_ = std::nullopt);
+             std::optional<std::vector<uint32_t>> effects_ = std::nullopt,
+             std::optional<Inventory::Made> made_ = std::nullopt);
 
   const char* GetName() const override;
 
@@ -69,6 +70,11 @@ private:
   // ids a craft with no recipe carries, when the server can work them out (a
   // brew, CraftService::BrewEffects), and null when it cannot.
   std::optional<std::vector<uint32_t>> effects;
+
+  // THORNSWOOD PATCH (Thornswood #1649). A brewed bottle's contents. When
+  // set, craftedItemBaseId is Inventory::MadeBaseId of it and the bottle
+  // goes in the pack as an entry carrying it.
+  std::optional<Inventory::Made> made;
 
   // OnFireSuccess-specific arguments
   const std::vector<Inventory::Entry>& entries;
