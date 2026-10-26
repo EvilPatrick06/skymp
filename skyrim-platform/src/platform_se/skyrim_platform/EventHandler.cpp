@@ -68,6 +68,8 @@ void EventHandler::HandleSKSEMessage(SKSE::MessagingInterface::Message* msg)
 {
   switch (msg->type) {
     case SKSE::MessagingInterface::kDataLoaded: {
+      // Thornswood #3129: plugins run from the first tick after this.
+      logger::info("game data loaded");
       TickHandler::GetSingleton()->Update();
 
       EventManager::Init();
