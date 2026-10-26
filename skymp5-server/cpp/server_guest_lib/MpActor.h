@@ -312,9 +312,10 @@ public:
 
   // What this actor's own client is shown as its pack: the inventory, and
   // while a stock is open, each of its containers' entries that carry
-  // nothing but a base and a count, the only kind a craft's inputs name
-  // (Inventory::RemoveItems matches them exactly). An entry that would take
-  // a stack past what a count holds is left out rather than thrown on.
+  // nothing but a base, a count and perhaps a name, the only kind a craft's
+  // inputs take (Inventory::ResolveRemoval, Thornswood #3163). An entry that
+  // would take a stack past what a count holds is left out rather than
+  // thrown on.
   Inventory GetInventoryWithBenchStock();
 
 private:

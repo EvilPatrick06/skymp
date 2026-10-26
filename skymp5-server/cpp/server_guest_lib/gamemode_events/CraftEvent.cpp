@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <fmt/format.h>
 #include <map>
+#include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 #include <stdexcept>
 
@@ -98,6 +99,14 @@ std::string CraftEvent::ArgumentsJsonArray(
     result += std::to_string(entry.baseId);
     result += ",\"count\":";
     result += std::to_string(entry.count);
+    // Thornswood #3163: an input taken from a named stack (see
+    // Inventory::ResolveRemoval) says which, so the gamemode can tell
+    // "Venison (6 days left)" from a plain one and refuse a stack it does
+    // not want spent this way. A plain input carries no name.
+    if (entry.name) {
+      result += ",\"name\":";
+      result += nlohmann::json(*entry.name).dump();
+    }
     result += "}";
   }
   result += "]";
@@ -108,6 +117,7 @@ std::string CraftEvent::ArgumentsJsonArray(
     Empty when the pack gives it all. The gamemode judges a craft that draws
     on a chest by it (a chest it named when the bench was pressed, which may
     have changed hands since), and a refusal takes nothing from either.
+    A draw off a named stack carries its "name" too (Thornswood #3163).
   */
   if (stockDraws) {
     result += ",[";
@@ -121,6 +131,10 @@ std::string CraftEvent::ArgumentsJsonArray(
       result += std::to_string(draw.entry.baseId);
       result += ",\"count\":";
       result += std::to_string(draw.entry.count);
+      if (draw.entry.name) {
+        result += ",\"name\":";
+        result += nlohmann::json(*draw.entry.name).dump();
+      }
       result += ",\"from\":";
       result += std::to_string(draw.containerId);
       result += "}";
@@ -193,7 +207,9 @@ void CraftEvent::OnFireSuccess(WorldState*)
       if (!left) {
         break;
       }
-      if (entry.baseId == draw.entry.baseId) {
+      // Thornswood #3163: by the stack, name and all, since the seventh
+      // argument holds each draw as it comes off its container.
+      if (entry.EqualExceptCount(draw.entry)) {
         const uint32_t part = std::min(entry.count, left);
         entry.count -= part;
         left -= part;
