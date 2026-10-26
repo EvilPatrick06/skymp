@@ -2,6 +2,7 @@
 
 #include "MpActor.h"
 #include <fmt/format.h>
+#include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 #include <stdexcept>
 
@@ -81,6 +82,14 @@ std::string CraftEvent::GetArgumentsJsonArray() const
     result += std::to_string(entry.baseId);
     result += ",\"count\":";
     result += std::to_string(entry.count);
+    // Thornswood #3163: an input taken from a named stack (see
+    // Inventory::ResolveRemoval) says which, so the gamemode can tell
+    // "Venison (6 days left)" from a plain one and refuse a stack it does
+    // not want spent this way. A plain input carries no name.
+    if (entry.name) {
+      result += ",\"name\":";
+      result += nlohmann::json(*entry.name).dump();
+    }
     result += "}";
   }
   result += "]";
