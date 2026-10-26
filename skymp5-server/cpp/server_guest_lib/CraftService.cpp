@@ -31,10 +31,35 @@ namespace {
   work. So a craft whose inputs the server does not hold is refused here,
   before CraftEvent exists, and the gamemode never hears of it. Counts are
   summed per base id, so a recipe that lists one item twice needs both.
+  THORNSWOOD PATCH (Thornswood #3159). And where each input comes from: the
+  pack first, then the containers of the stock open at this bench
+  (MpActor::BenchStock), in the order the gamemode named them. The answer is
+  the part the containers give, empty when the pack gives it all, and
+  nullopt when the pack and the stock together fall short, which refuses the
+  craft as before. OnFireSuccess takes each part from where this says.
+
+  What counts is what a removal can take: an entry that carries nothing but
+  a base and a count, because the inputs the client names carry nothing else
+  and Inventory::RemoveItems matches entries exactly. This used to count
+  every entry of the base (Inventory::GetItemCount), so a pack holding only a
+  named or worn one passed here and threw at the removal, after the gamemode
+  had acted, which is the case #1618 closed for a missing input.
 */
-bool ActorHoldsEveryInput(const MpActor& me,
-                          const std::vector<Inventory::Entry>& entries,
-                          const std::vector<Inventory::Entry>& heldBack = {})
+uint64_t PlainCount(const Inventory& inventory, uint32_t baseId)
+{
+  const Inventory::Entry plain(baseId, 1);
+  uint64_t sum = 0;
+  for (const auto& entry : inventory.entries) {
+    if (entry.EqualExceptCount(plain)) {
+      sum += entry.count;
+    }
+  }
+  return sum;
+}
+
+std::optional<std::vector<CraftEvent::StockDraw>> PlanInputs(
+  MpActor& me, const std::vector<Inventory::Entry>& entries,
+  uint32_t workbenchId, const std::vector<Inventory::Entry>& heldBack = {})
 {
   // THORNSWOOD PATCH (Thornswood #3161). heldBack is what the person's
   // crafts still being worked will take, so a new order counts only what is
@@ -49,18 +74,37 @@ bool ActorHoldsEveryInput(const MpActor& me,
       it->second += entry.count;
     }
   }
-  const Inventory& inventory = me.GetInventory();
+  const auto containers = me.GetOpenBenchStock(workbenchId);
+  std::vector<CraftEvent::StockDraw> draws;
   for (const auto& [baseId, count] : needed) {
-    const uint64_t held = inventory.GetItemCount(baseId);
-    if (held < count) {
-      spdlog::warn("CraftService - actor {:#x} holds {} of {:#x} but the "
-                   "craft needs {}, so it is refused without asking the "
-                   "gamemode",
-                   me.GetFormId(), held, baseId, count);
-      return false;
+    const uint64_t held = PlainCount(me.GetInventory(), baseId);
+    if (held >= count) {
+      continue;
+    }
+    uint64_t lacking = count - held;
+    for (auto container : containers) {
+      if (!lacking) {
+        break;
+      }
+      const uint64_t there = PlainCount(container->GetInventory(), baseId);
+      const uint64_t part = std::min(there, lacking);
+      if (part) {
+        draws.push_back({ container->GetFormId(),
+                          Inventory::Entry(baseId,
+                                           static_cast<uint32_t>(part)) });
+        lacking -= part;
+      }
+    }
+    if (lacking) {
+      spdlog::warn("CraftService - actor {:#x} holds {} of {:#x} and the "
+                   "bench's stock {} more, but the craft needs {}, so it is "
+                   "refused without asking the gamemode",
+                   me.GetFormId(), held, baseId, count - held - lacking,
+                   count);
+      return std::nullopt;
     }
   }
-  return true;
+  return draws;
 }
 }
 
@@ -226,7 +270,7 @@ std::optional<std::chrono::milliseconds> CraftService::AskWorkTime(
       heldBack.insert(heldBack.end(), order.takes.begin(), order.takes.end());
     }
   }
-  if (!ActorHoldsEveryInput(*me, craft->entries, heldBack)) {
+  if (!PlanInputs(*me, craft->entries, workbenchId, heldBack)) {
     return std::nullopt;
   }
 
@@ -384,13 +428,14 @@ bool CraftService::CraftItem(MpActor* me, const Inventory& inputObjects,
     return false;
   }
 
-  if (!ActorHoldsEveryInput(*me, craft->entries)) {
+  auto stockDraws = PlanInputs(*me, craft->entries, workbenchId);
+  if (!stockDraws) {
     return false;
   }
 
   CraftEvent craftEvent(me, craft->outputBaseId, craft->outputCount,
                         craft->recipeId, craft->entries, workbenchId,
-                        craft->effects);
+                        craft->effects, std::move(*stockDraws));
   if (!craftEvent.Fire(me->GetParent())) {
     // THORNSWOOD PATCH: WorkOut has already logged "crafted" for a recipe by
     // the time the gamemode answers, so the log says when the answer was no.
