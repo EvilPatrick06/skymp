@@ -7,3 +7,58 @@ updates:
     open-pull-requests-limit: 0
     ignore:
       - dependency-name: "*"
+
+  # Thornswood's entries (Thornswood #2759, #3683). Everything above is
+  # upstream's and is left as it is.
+  #
+  # Dependabot reads this file only from the default branch, main, and main is
+  # not what Thornswood builds: its server, client and UI come from
+  # thornswood/engine-changes. So each entry below names that branch as its
+  # target-branch, which makes Dependabot read that branch's lockfile and open
+  # its pull requests there.
+  #
+  # The three directories are the ones whose lockfiles ship: skymp5-server is
+  # bundled by esbuild into dist_back/skymp5-server.js on the game server,
+  # skymp5-client into the client script every install gets, and skymp5-front
+  # into the in-game UI. The tools under skyrim-platform/tools and
+  # misc/prettier are build helpers that ship nothing.
+  #
+  # Security updates and alerts read the default branch only, so they never
+  # see these lockfiles. Version updates are the watch: a fixed release of a
+  # package with an advisory is a newer version, and this opens a pull request
+  # for it. Minor and patch bumps come grouped, one pull request per directory
+  # a week; a major bump comes on its own, because it can change behaviour.
+  # A merged bump reaches Thornswood only through its usual one-engine pull
+  # request (Thornswood engine/README.md, "One engine").
+  - package-ecosystem: "npm"
+    directory: "/skymp5-server"
+    target-branch: "thornswood/engine-changes"
+    schedule:
+      interval: "weekly"
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: "skymp5-server"
+
+  - package-ecosystem: "npm"
+    directory: "/skymp5-client"
+    target-branch: "thornswood/engine-changes"
+    schedule:
+      interval: "weekly"
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: "skymp5-client"
+
+  - package-ecosystem: "npm"
+    directory: "/skymp5-front"
+    target-branch: "thornswood/engine-changes"
+    schedule:
+      interval: "weekly"
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: "skymp5-front"
