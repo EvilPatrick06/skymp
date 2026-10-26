@@ -13,4 +13,6 @@ Napi::Value LoadUrl(const Napi::CallbackInfo& info);
 Napi::Value ExecuteJavaScript(const Napi::CallbackInfo& info);
 // Thornswood #2384: the game's Cursor Menu opened or closed.
 void OnCursorMenu(bool opening);
+// Thornswood #3130: the game's Loading Menu opened or closed.
+void OnLoadingMenu(bool opening);
 }
