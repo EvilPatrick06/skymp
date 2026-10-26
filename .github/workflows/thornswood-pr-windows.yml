@@ -104,15 +104,25 @@ jobs:
             misc/tests/whole_file_write_test.cpp -o "$RUNNER_TEMP/whole-file-write-test"
           mkdir -p "$RUNNER_TEMP/whole-file-write-fixtures"
           "$RUNNER_TEMP/whole-file-write-test" "$RUNNER_TEMP/whole-file-write-fixtures"
-  build:
+  # THE LIBRARY CACHE (Thornswood #2760). vcpkg keeps the libraries it
+  # built in GitHub Packages, so the next build does not build them all
+  # again, and the push build below, the one Thornswood records and ships,
+  # restores them from there. Only that push build may write the cache. A
+  # pull request builds the same steps with a read-only token and a read-only
+  # vcpkg source, so unreviewed code on a branch can never put a library in
+  # the cache the shipped engine is built from. Pull requests from outside
+  # forks get a read-only token from GitHub anyway; a lane's branch in this
+  # repository would get a write token if the job asked for one. The fork's
+  # default token is read only.
+  build-pr:
+    if: github.event_name == 'pull_request'
     runs-on: windows-2022
-    # packages: write lets vcpkg keep the libraries it built in GitHub
-    # Packages, so the next build does not build them all again. The fork's
-    # default token is read only.
     permissions:
       contents: read
-      packages: write
-    steps:
+      packages: read
+    env:
+      VCPKG_BINARY_SOURCES: 'clear;nuget,GitHub,read'
+    steps: &build-steps
       # The header, LINE ENDS AS ONE BUILDS. Before the checkout, so the fork
       # and its submodules (vcpkg among them) are checked out as committed.
       - name: Check out as committed, LF
@@ -223,3 +233,13 @@ jobs:
           # dot included; engine.yml refuses a build missing one.
           include-hidden-files: true
           retention-days: ${{ steps.gather.outputs.days }}
+
+  build:
+    if: github.event_name == 'push'
+    runs-on: windows-2022
+    # The workflow's own VCPKG_BINARY_SOURCES, readwrite: the header above
+    # build-pr, THE LIBRARY CACHE.
+    permissions:
+      contents: read
+      packages: write
+    steps: *build-steps
