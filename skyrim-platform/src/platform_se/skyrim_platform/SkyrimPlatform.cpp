@@ -27,6 +27,8 @@
 
 #include "IPC.h" // IPC::Call
 
+#include <chrono>
+
 CallNativeApi::NativeCallRequirements g_nativeCallRequirements;
 
 namespace {
@@ -124,9 +126,15 @@ private:
     const bool loadNeeded = startupLoad || hotReload;
     if (loadNeeded) {
       ClearState();
+      const auto started = std::chrono::steady_clock::now();
       for (auto& fileDir : fileDirs) {
         LoadFiles(env, GetPathsToLoad(fileDir));
       }
+      logger::info("plugins {} in {} ms",
+                   startupLoad ? "loaded at startup" : "reloaded",
+                   std::chrono::duration_cast<std::chrono::milliseconds>(
+                     std::chrono::steady_clock::now() - started)
+                     .count());
     }
 
     for (auto& monitor : monitors) {
@@ -176,7 +184,14 @@ private:
         continue;
       }
       if (EndsWith(path.wstring(), L".js")) {
+        // Thornswood #3129: what each plugin costs at startup, where the game
+        // stands still until the last one has run.
+        const auto started = std::chrono::steady_clock::now();
         LoadPluginFile(env, path);
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now() - started)
+                          .count();
+        logger::info("plugin {} ran in {} ms", path.filename().string(), ms);
         continue;
       }
       logger::warn("Found unprocessed file: {}", path.string());
