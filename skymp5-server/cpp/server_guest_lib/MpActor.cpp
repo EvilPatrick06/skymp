@@ -37,6 +37,7 @@
 #include <string>
 
 #include "ChangeValuesMessage.h"
+#include "SetInventoryMessage.h"
 #include "TeleportMessage.h"
 #include "UpdateEquipmentMessage.h"
 #include "UpdateMovementMessage.h"
@@ -81,6 +82,8 @@ struct MpActor::Impl
   uint32_t blockActiveCount = 0;
   std::vector<std::pair<uint32_t, MpObjectReference*>> droppedItemsQueue;
   std::optional<AnimationData> animationData;
+  // THORNSWOOD PATCH (Thornswood #3159). See MpActor::BenchStock.
+  std::optional<MpActor::BenchStock> benchStock;
   float serverMovementSpeed = 0;
   uint32_t serverCombatTarget = 0;
   std::chrono::steady_clock::time_point serverCombatUntil{};
@@ -498,6 +501,106 @@ void MpActor::SetLastAnimEvent(
 std::optional<AnimationData> MpActor::GetLastAnimEvent() const
 {
   return pImpl->animationData;
+}
+
+void MpActor::SetBenchStock(std::optional<BenchStock> stock)
+{
+  const bool wasOpen = pImpl->benchStock && pImpl->benchStock->open;
+  pImpl->benchStock = std::move(stock);
+  if (pImpl->benchStock) {
+    pImpl->benchStock->open = false;
+  }
+  if (wasOpen) {
+    SendInventoryUpdate();
+  }
+}
+
+const std::optional<MpActor::BenchStock>& MpActor::GetBenchStock() const
+{
+  return pImpl->benchStock;
+}
+
+bool MpActor::OpenBenchStock(uint32_t workbenchId)
+{
+  auto& stock = pImpl->benchStock;
+  if (!stock) {
+    return false;
+  }
+  if (stock->workbenchId != workbenchId) {
+    SetBenchStock(std::nullopt);
+    return false;
+  }
+  stock->open = true;
+  spdlog::info("MpActor::OpenBenchStock - actor {:#x} took bench {:#x}, "
+               "which may draw from {} container(s)",
+               GetFormId(), workbenchId, stock->containerIds.size());
+
+  /*
+    THE PACK WITH THE STOCK GOES FIRST. The inventory an actor is sent is
+    deferred to the end of the tick (SendInventoryUpdate), and the message
+    that opens the bench (SendOpenContainer) is not, so a deferred one would
+    reach the client after the crafting menu had opened, and the client
+    applies no inventory while that menu is open. So the pack with the stock
+    in it is sent now, before the caller opens the bench. The deferred one is
+    replaced as well, with the same pack, so nothing queued earlier in this
+    tick without the stock lands after it.
+  */
+  SendInventoryUpdate();
+  if (GetUserId() != Networking::InvalidUserId) {
+    SetInventoryMessage message;
+    message.inventory = GetInventoryWithBenchStock();
+    SendToUser(message, true);
+  }
+  return true;
+}
+
+void MpActor::CloseBenchStock(uint32_t workbenchId)
+{
+  if (pImpl->benchStock && pImpl->benchStock->workbenchId == workbenchId) {
+    SetBenchStock(std::nullopt);
+  }
+}
+
+std::vector<MpObjectReference*> MpActor::GetOpenBenchStock(
+  uint32_t workbenchId)
+{
+  std::vector<MpObjectReference*> res;
+  auto& stock = pImpl->benchStock;
+  auto worldState = GetParent();
+  if (!stock || !stock->open || stock->workbenchId != workbenchId ||
+      !worldState) {
+    return res;
+  }
+  for (uint32_t id : stock->containerIds) {
+    auto& form = worldState->LookupFormById(id);
+    auto refr = form ? form->AsObjectReference() : nullptr;
+    if (!refr || refr->IsDeleted() || refr->IsDisabled() || refr == this) {
+      continue;
+    }
+    res.push_back(refr);
+  }
+  return res;
+}
+
+Inventory MpActor::GetInventoryWithBenchStock()
+{
+  Inventory res = GetInventory();
+  if (!pImpl->benchStock || !pImpl->benchStock->open) {
+    return res;
+  }
+  for (auto container : GetOpenBenchStock(pImpl->benchStock->workbenchId)) {
+    for (const auto& entry : container->GetInventory().entries) {
+      if (!entry.count ||
+          !entry.EqualExceptCount(Inventory::Entry(entry.baseId, 1))) {
+        continue;
+      }
+      std::vector<Inventory::Entry> one = { entry };
+      if (res.CanAddItems(one)) {
+        res.AddItems(one);
+      }
+    }
+  }
+  return res;
 }
 
 void MpActor::SetRaceMenuOpen(bool isOpen)
