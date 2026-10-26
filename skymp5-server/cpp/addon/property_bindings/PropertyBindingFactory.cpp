@@ -7,6 +7,7 @@
 #include "ConsoleCommandsAllowedBinding.h"
 #include "CraftOutputBinding.h"
 #include "CraftStockBinding.h"
+#include "CraftWorkBinding.h"
 #include "CustomPropertyBinding.h"
 #include "DyingHealthBinding.h"
 #include "EatItemScaleBinding.h"
@@ -43,6 +44,7 @@ PropertyBindingFactory::CreateStandardPropertyBindings()
   result["craftOutput"] = std::make_shared<CraftOutputBinding>();
   // Thornswood #3159. See CraftStockBinding.h.
   result["craftStock"] = std::make_shared<CraftStockBinding>();
+  result["craftWork"] = std::make_shared<CraftWorkBinding>();
   result["dyingHealth"] = std::make_shared<DyingHealthBinding>();
   result["eatItemScale"] = std::make_shared<EatItemScaleBinding>();
   result["equipment"] = std::make_shared<EquipmentBinding>();
