@@ -29,26 +29,31 @@ namespace {
   work. So a craft whose inputs the server does not hold is refused here,
   before CraftEvent exists, and the gamemode never hears of it. Counts are
   summed per base id, so a recipe that lists one item twice needs both.
+
+  THORNSWOOD PATCH (Thornswood #3163). And which stacks they are taken
+  from (Inventory::ResolveRemoval): the plain stack first, then a stack of
+  the same item that differs only in its name. Food carries its days left
+  on its name, so raw meat that has sat a day is "Venison (6 days left)",
+  and the client names an input by its base id alone. Until this the
+  removal matched the plain entry exactly, so a named stack passed the
+  count here (GetItemCount counts every stack) and threw at the removal
+  after the gamemode had acted, which is the case #1618 closed. What the
+  craft takes is now worked out once, here, before the gamemode is asked;
+  the gamemode is told it (the seventh argument names a named input), and
+  OnFireSuccess takes exactly that. A stack that differs in anything but
+  its name (worn, tempered, enchanted) is still never an input.
 */
-bool ActorHoldsEveryInput(const MpActor& me,
-                          const std::vector<Inventory::Entry>& entries)
+std::optional<std::vector<Inventory::Entry>> InputsTaken(
+  const MpActor& me, const std::vector<Inventory::Entry>& entries)
 {
-  std::map<uint32_t, uint64_t> needed;
-  for (const auto& entry : entries) {
-    needed[entry.baseId] += entry.count;
+  try {
+    return me.GetInventory().ResolveRemoval(entries);
+  } catch (const std::exception& e) {
+    spdlog::warn("CraftService - actor {:#x} does not hold what the craft "
+                 "needs ({}), so it is refused without asking the gamemode",
+                 me.GetFormId(), e.what());
+    return std::nullopt;
   }
-  const Inventory& inventory = me.GetInventory();
-  for (const auto& [baseId, count] : needed) {
-    const uint64_t held = inventory.GetItemCount(baseId);
-    if (held < count) {
-      spdlog::warn("CraftService - actor {:#x} holds {} of {:#x} but the "
-                   "craft needs {}, so it is refused without asking the "
-                   "gamemode",
-                   me.GetFormId(), held, baseId, count);
-      return false;
-    }
-  }
-  return true;
 }
 }
 
@@ -233,7 +238,8 @@ bool CraftService::CraftItem(MpActor* me, const Inventory& inputObjects,
       "workbenchId={:#x}, resultObjectId={:#x}",
       inputObjects.ToJson().dump(), workbenchId, resultObjectId);
 
-    if (!ActorHoldsEveryInput(*me, inputObjects.entries)) {
+    auto taken = InputsTaken(*me, inputObjects.entries);
+    if (!taken) {
       return false;
     }
 
@@ -256,8 +262,8 @@ bool CraftService::CraftItem(MpActor* me, const Inventory& inputObjects,
                    inputObjects.ToJson().dump(), fmt::join(*effects, ","));
     }
 
-    CraftEvent craftEvent(me, resultObjectId, 1, 0, inputObjects.entries,
-                          workbenchId, effects);
+    CraftEvent craftEvent(me, resultObjectId, 1, 0, *taken, workbenchId,
+                          effects);
     if (!craftEvent.Fire(me->GetParent())) {
       spdlog::info("The gamemode refused the craft of {:#x} with no recipe",
                    resultObjectId);
@@ -479,12 +485,13 @@ bool CraftService::UseCraftRecipe(MpActor* me, const espm::COBJ* recipeUsed,
 
   auto recipeId = espm::utils::GetMappedId(recipeUsed->GetId(), *mapping);
 
-  if (!ActorHoldsEveryInput(*me, entries)) {
+  auto taken = InputsTaken(*me, entries);
+  if (!taken) {
     return false;
   }
 
   CraftEvent craftEvent(me, outputFormId, recipeData.outputCount, recipeId,
-                        entries, workbenchId);
+                        *taken, workbenchId);
 
   return craftEvent.Fire(me->GetParent());
 }

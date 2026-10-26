@@ -1283,3 +1283,99 @@ TEST_CASE("A craft's output name cannot be empty, and null names none "
   craft.SetOutputName(std::nullopt);
   REQUIRE(!craft.GetOutputName().has_value());
 }
+
+TEST_CASE("A craft takes an input from a stack that differs only in its "
+          "name, and onCraft names it (Thornswood #3163)",
+          "[Craft][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto gate = SoulGemGate(p);
+  gate->rank = 3;
+  auto& ac = MakeCrafter(p, kForge);
+
+  // Food carries its days left on its name. A steel ingot stands in for it:
+  // the recipe is one the forge already makes.
+  const std::string named = "Steel Ingot (6 days left)";
+  Inventory::ExtraData extra;
+  extra.name = named;
+  ac.AddItem(kIronIngot, 1);
+  ac.AddItem(kLeatherStrips, 3);
+  ac.AddItem(kSteelIngot, 1);
+  ac.AddItems({ Inventory::Entry(kSteelIngot, 3, extra) });
+
+  CraftItemMessage msg;
+  msg.data.craftInputObjects = Inventory()
+                                 .AddItem(kIronIngot, 1)
+                                 .AddItem(kLeatherStrips, 3)
+                                 .AddItem(kSteelIngot, 4);
+  msg.data.workbench = kForge;
+  msg.data.resultObjectId = kSteelWarhammer;
+  RawMessageData msgData;
+  msgData.userId = 0;
+
+  gate->armed = true;
+  p.GetActionListener().OnCraftItem(msgData, msg);
+  gate->armed = false;
+
+  REQUIRE(gate->asked == 1);
+  // The plain ingot first, then three from the named stack, each said.
+  uint32_t plain = 0, fromNamed = 0;
+  for (auto& entry : gate->inputs) {
+    if (entry.at("baseId").get<uint32_t>() != kSteelIngot) {
+      REQUIRE(!entry.contains("name"));
+      continue;
+    }
+    if (entry.contains("name")) {
+      REQUIRE(entry.at("name").get<std::string>() == named);
+      fromNamed += entry.at("count").get<uint32_t>();
+    } else {
+      plain += entry.at("count").get<uint32_t>();
+    }
+  }
+  REQUIRE(plain == 1);
+  REQUIRE(fromNamed == 3);
+
+  REQUIRE(ac.GetInventory().GetItemCount(kSteelIngot) == 0);
+  REQUIRE(ac.GetInventory().GetItemCount(kSteelWarhammer) == 1);
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
+
+TEST_CASE("A craft never takes an input from a stack that differs in more "
+          "than its name, and the gamemode is not asked (Thornswood #3163)",
+          "[Craft][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto gate = SoulGemGate(p);
+  gate->rank = 3;
+  auto& ac = MakeCrafter(p, kForge);
+
+  // Tempered: health is not the name, so it is not the plain ingot.
+  Inventory::ExtraData extra;
+  extra.health = 1.1f;
+  ac.AddItem(kIronIngot, 1);
+  ac.AddItem(kLeatherStrips, 3);
+  ac.AddItems({ Inventory::Entry(kSteelIngot, 4, extra) });
+  const Inventory before = ac.GetInventory();
+
+  CraftItemMessage msg;
+  msg.data.craftInputObjects = Inventory()
+                                 .AddItem(kIronIngot, 1)
+                                 .AddItem(kLeatherStrips, 3)
+                                 .AddItem(kSteelIngot, 4);
+  msg.data.workbench = kForge;
+  msg.data.resultObjectId = kSteelWarhammer;
+  RawMessageData msgData;
+  msgData.userId = 0;
+
+  gate->armed = true;
+  p.GetActionListener().OnCraftItem(msgData, msg);
+  gate->armed = false;
+
+  REQUIRE(gate->asked == 0);
+  REQUIRE(ac.GetInventory() == before);
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
