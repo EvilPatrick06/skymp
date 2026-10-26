@@ -1889,13 +1889,16 @@ TEST_CASE("The pack is sent with the stock in it while the bench is open, "
   auto& barrel = p.worldState.GetFormAt<MpObjectReference>(kStockBarrel);
   ac.AddItem(kIronIngot, 1);
 
-  // A named piece is not something a craft can take (the inputs the client
-  // names carry no name), so it is not shown either.
+  // A tempered piece is not something a craft can take, so it is not shown
+  // either. One that differs only in its name is (Thornswood #3163).
+  Inventory::ExtraData tempered;
+  tempered.health = 1.1f;
   Inventory::ExtraData named;
-  named.name = "Grandfather's Ingot";
+  named.name = "Steel Ingot (6 days left)";
   Inventory stock;
   stock.AddItem(kSteelIngot, 5);
-  stock.AddItems({ Inventory::Entry(kIronIngot, 1, named) });
+  stock.AddItems({ Inventory::Entry(kIronIngot, 1, tempered),
+                   Inventory::Entry(kSteelIngot, 1, named) });
   barrel.SetInventory(stock);
 
   ac.SetBenchStock(MpActor::BenchStock{ kForge, { kStockBarrel } });
@@ -1908,7 +1911,7 @@ TEST_CASE("The pack is sent with the stock in it while the bench is open, "
   auto sent = SentInventories(p, 0);
   REQUIRE(sent.size() == 1);
   REQUIRE(sent[0].GetItemCount(kIronIngot) == 1);
-  REQUIRE(sent[0].GetItemCount(kSteelIngot) == 5);
+  REQUIRE(sent[0].GetItemCount(kSteelIngot) == 6);
   REQUIRE(sent[0] == ac.GetInventoryWithBenchStock());
   REQUIRE(ac.GetInventory().GetItemCount(kSteelIngot) == 0);
 
@@ -1956,6 +1959,196 @@ TEST_CASE("A chest that changes while its bench is open is sent again, and "
   barrel.AddItem(kSteelIngot, 4);
   p.Tick();
   REQUIRE(SentInventories(p, 0).empty());
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
+
+TEST_CASE("A craft takes an input from a stack that differs only in its "
+          "name, and onCraft names it (Thornswood #3163)",
+          "[Craft][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto gate = SoulGemGate(p);
+  gate->rank = 3;
+  auto& ac = MakeCrafter(p, kForge);
+
+  // Food carries its days left on its name. A steel ingot stands in for it:
+  // the recipe is one the forge already makes.
+  const std::string named = "Steel Ingot (6 days left)";
+  Inventory::ExtraData extra;
+  extra.name = named;
+  ac.AddItem(kIronIngot, 1);
+  ac.AddItem(kLeatherStrips, 3);
+  ac.AddItem(kSteelIngot, 1);
+  ac.AddItems({ Inventory::Entry(kSteelIngot, 3, extra) });
+
+  CraftItemMessage msg;
+  msg.data.craftInputObjects = Inventory()
+                                 .AddItem(kIronIngot, 1)
+                                 .AddItem(kLeatherStrips, 3)
+                                 .AddItem(kSteelIngot, 4);
+  msg.data.workbench = kForge;
+  msg.data.resultObjectId = kSteelWarhammer;
+  RawMessageData msgData;
+  msgData.userId = 0;
+
+  gate->armed = true;
+  p.GetActionListener().OnCraftItem(msgData, msg);
+  gate->armed = false;
+
+  REQUIRE(gate->asked == 1);
+  // The plain ingot first, then three from the named stack, each said.
+  uint32_t plain = 0, fromNamed = 0;
+  for (auto& entry : gate->inputs) {
+    if (entry.at("baseId").get<uint32_t>() != kSteelIngot) {
+      REQUIRE(!entry.contains("name"));
+      continue;
+    }
+    if (entry.contains("name")) {
+      REQUIRE(entry.at("name").get<std::string>() == named);
+      fromNamed += entry.at("count").get<uint32_t>();
+    } else {
+      plain += entry.at("count").get<uint32_t>();
+    }
+  }
+  REQUIRE(plain == 1);
+  REQUIRE(fromNamed == 3);
+
+  REQUIRE(ac.GetInventory().GetItemCount(kSteelIngot) == 0);
+  REQUIRE(ac.GetInventory().GetItemCount(kSteelWarhammer) == 1);
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
+
+TEST_CASE("A craft never takes an input from a stack that differs in more "
+          "than its name, and the gamemode is not asked (Thornswood #3163)",
+          "[Craft][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto gate = SoulGemGate(p);
+  gate->rank = 3;
+  auto& ac = MakeCrafter(p, kForge);
+
+  // Tempered: health is not the name, so it is not the plain ingot.
+  Inventory::ExtraData extra;
+  extra.health = 1.1f;
+  ac.AddItem(kIronIngot, 1);
+  ac.AddItem(kLeatherStrips, 3);
+  ac.AddItems({ Inventory::Entry(kSteelIngot, 4, extra) });
+  const Inventory before = ac.GetInventory();
+
+  CraftItemMessage msg;
+  msg.data.craftInputObjects = Inventory()
+                                 .AddItem(kIronIngot, 1)
+                                 .AddItem(kLeatherStrips, 3)
+                                 .AddItem(kSteelIngot, 4);
+  msg.data.workbench = kForge;
+  msg.data.resultObjectId = kSteelWarhammer;
+  RawMessageData msgData;
+  msgData.userId = 0;
+
+  gate->armed = true;
+  p.GetActionListener().OnCraftItem(msgData, msg);
+  gate->armed = false;
+
+  REQUIRE(gate->asked == 0);
+  REQUIRE(ac.GetInventory() == before);
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
+
+TEST_CASE("A craft takes the plain stacks of the pack and the bench's stock "
+          "before a named one, and names each (Thornswood #3163)",
+          "[Craft][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto gamemode = RecordCrafts(p);
+  auto& ac = MakeCrafter(p, kForge);
+  auto& barrel = p.worldState.GetFormAt<MpObjectReference>(kStockBarrel);
+
+  Inventory::ExtraData extra;
+  extra.name = "Steel Ingot (6 days left)";
+  ac.AddItem(kIronIngot, 1);
+  ac.AddItem(kLeatherStrips, 3);
+  ac.AddItem(kSteelIngot, 1);
+  ac.AddItems({ Inventory::Entry(kSteelIngot, 2, extra) });
+  barrel.SetInventory(Inventory().AddItem(kSteelIngot, 2).AddItems(
+    { Inventory::Entry(kSteelIngot, 1, extra) }));
+
+  ac.SetBenchStock(MpActor::BenchStock{ kForge, { kStockBarrel } });
+  REQUIRE(ac.OpenBenchStock(kForge));
+
+  RawMessageData msgData;
+  msgData.userId = 0;
+  gamemode->armed = true;
+  p.GetActionListener().OnCraftItem(msgData, Warhammer());
+  gamemode->armed = false;
+
+  // Four steel: the pack's plain one, the barrel's two plain ones, and then
+  // one of the pack's named ones. The barrel's named one is left.
+  REQUIRE(gamemode->asked == 1);
+  auto& draws = gamemode->args.at(7);
+  REQUIRE(draws.size() == 1);
+  REQUIRE(draws[0].at("count").get<uint32_t>() == 2);
+  REQUIRE(!draws[0].contains("name"));
+  uint32_t named = 0;
+  for (auto& entry : gamemode->args.at(6)) {
+    if (entry.contains("name")) {
+      REQUIRE(entry.at("name").get<std::string>() == *extra.name);
+      named += entry.at("count").get<uint32_t>();
+    }
+  }
+  REQUIRE(named == 1);
+
+  REQUIRE(ac.GetInventory().GetItemCount(kSteelWarhammer) == 1);
+  REQUIRE(ac.GetInventory().GetItemCount(kSteelIngot) == 1);
+  REQUIRE(barrel.GetInventory().GetItemCount(kSteelIngot) == 1);
+  REQUIRE(barrel.GetInventory().entries.size() == 1);
+  REQUIRE(barrel.GetInventory().entries[0].name == extra.name);
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
+
+TEST_CASE("A named stack in the bench's stock is drawn when nothing plain is "
+          "left, and the eighth argument names it (Thornswood #3163)",
+          "[Craft][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto gamemode = RecordCrafts(p);
+  auto& ac = MakeCrafter(p, kForge);
+  auto& barrel = p.worldState.GetFormAt<MpObjectReference>(kStockBarrel);
+
+  Inventory::ExtraData extra;
+  extra.name = "Steel Ingot (6 days left)";
+  ac.AddItem(kIronIngot, 1);
+  ac.AddItem(kLeatherStrips, 3);
+  ac.AddItem(kSteelIngot, 1);
+  barrel.SetInventory(
+    Inventory().AddItems({ Inventory::Entry(kSteelIngot, 3, extra) }));
+
+  ac.SetBenchStock(MpActor::BenchStock{ kForge, { kStockBarrel } });
+  REQUIRE(ac.OpenBenchStock(kForge));
+
+  RawMessageData msgData;
+  msgData.userId = 0;
+  gamemode->armed = true;
+  p.GetActionListener().OnCraftItem(msgData, Warhammer());
+  gamemode->armed = false;
+
+  REQUIRE(gamemode->asked == 1);
+  auto& draws = gamemode->args.at(7);
+  REQUIRE(draws.size() == 1);
+  REQUIRE(draws[0].at("count").get<uint32_t>() == 3);
+  REQUIRE(draws[0].at("name").get<std::string>() == *extra.name);
+  REQUIRE(draws[0].at("from").get<uint32_t>() == kStockBarrel);
+
+  REQUIRE(ac.GetInventory().GetItemCount(kSteelWarhammer) == 1);
+  REQUIRE(ac.GetInventory().GetItemCount(kSteelIngot) == 0);
+  REQUIRE(barrel.GetInventory().GetItemCount(kSteelIngot) == 0);
 
   p.DestroyActor(0xff000000);
   DoDisconnect(p, 0);
