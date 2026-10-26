@@ -68,6 +68,8 @@ void EventHandler::HandleSKSEMessage(SKSE::MessagingInterface::Message* msg)
 {
   switch (msg->type) {
     case SKSE::MessagingInterface::kDataLoaded: {
+      // Thornswood #3129: plugins run from the first tick after this.
+      logger::info("game data loaded");
       TickHandler::GetSingleton()->Update();
 
       EventManager::Init();
@@ -1854,6 +1856,13 @@ EventResult EventHandler::ProcessEvent(
   // from this event (CursorFocus.h), not from a watcher in the plugin.
   if (menuName == RE::CursorMenu::MENU_NAME) {
     BrowserApiTilted::OnCursorMenu(opening);
+  }
+
+  // Thornswood #3130: the page is told the moment a load starts and ends,
+  // from here. The menuOpen and menuClose below reach the plugins only on
+  // the next update, and no update runs while the game loads.
+  if (menuName == RE::LoadingMenu::MENU_NAME) {
+    BrowserApiTilted::OnLoadingMenu(opening);
   }
 
   SkyrimPlatform::GetSingleton()->AddUpdateTask(

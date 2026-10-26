@@ -34,9 +34,21 @@ const char* CraftEvent::GetName() const
 
 std::string CraftEvent::GetArgumentsJsonArray() const
 {
+  return ArgumentsJsonArray(actor ? actor->GetFormId() : 0, craftedItemBaseId,
+                            count, recipeId, workbenchId, effects, entries,
+                            &stockDraws);
+}
+
+std::string CraftEvent::ArgumentsJsonArray(
+  uint32_t actorId, uint32_t craftedItemBaseId, uint32_t count,
+  uint32_t recipeId, uint32_t workbenchId,
+  const std::optional<std::vector<uint32_t>>& effects,
+  const std::vector<Inventory::Entry>& entries,
+  const std::vector<StockDraw>* stockDraws)
+{
   std::string result;
   result += "[";
-  result += std::to_string(actor->GetFormId());
+  result += std::to_string(actorId);
   result += ",";
   result += std::to_string(craftedItemBaseId);
   result += ",";
@@ -97,22 +109,24 @@ std::string CraftEvent::GetArgumentsJsonArray() const
     on a chest by it (a chest it named when the bench was pressed, which may
     have changed hands since), and a refusal takes nothing from either.
   */
-  result += ",[";
-  first = true;
-  for (auto& draw : stockDraws) {
-    if (!first) {
-      result += ",";
+  if (stockDraws) {
+    result += ",[";
+    first = true;
+    for (auto& draw : *stockDraws) {
+      if (!first) {
+        result += ",";
+      }
+      first = false;
+      result += "{\"baseId\":";
+      result += std::to_string(draw.entry.baseId);
+      result += ",\"count\":";
+      result += std::to_string(draw.entry.count);
+      result += ",\"from\":";
+      result += std::to_string(draw.containerId);
+      result += "}";
     }
-    first = false;
-    result += "{\"baseId\":";
-    result += std::to_string(draw.entry.baseId);
-    result += ",\"count\":";
-    result += std::to_string(draw.entry.count);
-    result += ",\"from\":";
-    result += std::to_string(draw.containerId);
-    result += "}";
+    result += "]";
   }
-  result += "]";
   result += "]";
   return result;
 }
