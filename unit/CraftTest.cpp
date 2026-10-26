@@ -1372,6 +1372,9 @@ public:
     for (auto& entry : WarhammerMakings().entries) {
       Crafter().AddItem(entry.baseId, entry.count);
     }
+    // AddItem leaves an inventory update deferred to the next tick. Send it
+    // now, so the inventories a test counts are only the ones the craft sent.
+    p.Tick();
   }
 
   static Inventory WarhammerMakings()
