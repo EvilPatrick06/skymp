@@ -148,6 +148,16 @@ void ActionListener::OnCustomPacket(const RawMessageData& rawMsgData,
 {
   simdjson::dom::parser parser;
   auto content = parser.parse(msg.contentJsonDump).value();
+
+  // THORNSWOOD PATCH (Thornswood #3161). The client says the person got up
+  // from a bench: its menu closed. The crafts still being worked for them
+  // stop. See CraftService::OnCraftItem.
+  auto packetType = content["customPacketType"].get_string();
+  if (!packetType.error() && packetType.value() == "craftLeave") {
+    craftService->StopWork(rawMsgData.userId);
+    return;
+  }
+
   for (auto& listener : partOne.GetListeners()) {
     listener->OnCustomPacket(rawMsgData.userId, content);
   }

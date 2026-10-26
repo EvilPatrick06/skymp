@@ -1,6 +1,7 @@
 #include "TPOverlayService.h"
 
 #include "BrowserApi.h"
+#include "BrowserApiTilted.h"
 #include "Settings.h"
 #include "TPRenderSystemD3D11.h"
 
@@ -64,6 +65,14 @@ void OverlayService::Create(RenderSystemD3D11* apRenderSystem)
   overlay->Initialize(BrowserApi::GetBackend() ==
                       BrowserApi::Backend::kTilted);
   overlay->GetClient()->Create();
+
+  // Thornswood #3129: the page starts loading here, so it is shown from here
+  // and not from the first plugin tick after the game's data has loaded.
+  if (BrowserApi::GetBackend() == BrowserApi::Backend::kTilted &&
+      BrowserApi::ShowAtStart()) {
+    BrowserApiTilted::ShowAtStart();
+    logger::info("browser (tilted): shown and focused at start");
+  }
 }
 
 void OverlayService::Render() const
