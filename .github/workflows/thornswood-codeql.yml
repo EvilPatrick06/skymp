@@ -1,0 +1,63 @@
+# Code scanning for the code Thornswood ships (Thornswood #3691, Patrick's
+# B of 26 Oct on q-3691-sec-codescan).
+#
+# WHY A WORKFLOW AND NOT DEFAULT SETUP. GitHub's default setup scans the
+# repository's default branch, which in this fork is main: upstream's code as
+# it was, not thornswood/engine-changes, the branch Thornswood builds and
+# ships. This scans every push to thornswood/engine-changes and every pull
+# request into it, so what ships is what is scanned.
+#
+# WHAT IT SCANS. GitHub Actions workflows, C/C++ and JavaScript/TypeScript,
+# each with build-mode none: CodeQL reads the source without building it, so
+# no vcpkg, no Windows image and no game data. Submodules are not checked
+# out; vcpkg and the other vendored trees are not Thornswood's or upstream's
+# code. Findings go to this repository's Security tab, which only people with
+# write access read.
+#
+# WHAT IT RUNS ON. GitHub's hosted runner, whose minutes cost nothing in this
+# public repository. Never a self-hosted runner, and no secret: a pull
+# request from another repository runs this with a read-only token, and
+# GitHub takes its results without one. The actions are pinned by commit
+# (Thornswood #2761).
+
+name: Thornswood CodeQL
+
+on:
+  pull_request:
+    branches: [ thornswood/engine-changes ]
+  push:
+    branches: [ thornswood/engine-changes ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'push' && github.sha || 'pr' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: CodeQL (${{ matrix.language }})
+    if: github.repository == 'EvilPatrick06/skymp'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [ actions, c-cpp, javascript-typescript ]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          submodules: false
+          persist-credentials: false
+      - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+      - uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          category: /language:${{ matrix.language }}
