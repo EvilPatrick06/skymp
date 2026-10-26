@@ -32,6 +32,18 @@ public:
 
   std::string GetArgumentsJsonArray() const override;
 
+  // THORNSWOOD PATCH (Thornswood #3161). onCraft's seven arguments, which
+  // onCraftWork (CraftWorkEvent.h) is asked with too, so a gamemode reads
+  // both the same way. onCraft adds an eighth, what the bench's stock gives
+  // (Thornswood #3159), when stockDraws is passed; onCraftWork is asked
+  // before anything is drawn and has none.
+  static std::string ArgumentsJsonArray(
+    uint32_t actorId, uint32_t craftedItemBaseId, uint32_t count,
+    uint32_t recipeId, uint32_t workbenchId,
+    const std::optional<std::vector<uint32_t>>& effects,
+    const std::vector<Inventory::Entry>& entries,
+    const std::vector<StockDraw>* stockDraws = nullptr);
+
   // THORNSWOOD PATCH (Thornswood #2906). An onCraft listener may name what
   // this craft gives in place of the recipe's output: a cook's burnt meal or
   // fine dish, or a master's double batch. The default is the second and
