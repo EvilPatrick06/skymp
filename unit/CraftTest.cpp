@@ -7,13 +7,16 @@
 #include <map>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include "CustomPacketMessage.h"
 #include "SetInventoryMessage.h"
 #include "gamemode_events/CraftEvent.h"
+#include "gamemode_events/CraftWorkEvent.h"
 #include "gamemode_events/GameModeEvent.h"
 
 using Catch::Matchers::ContainsSubstring;
 
 PartOne& GetPartOne();
+extern espm::Loader& GetEspmLoader();
 
 namespace {
 // THORNSWOOD PATCH. The gamemode's part in a craft with no recipe.
@@ -661,7 +664,7 @@ TEST_CASE("onCraft carries the craft's inputs as its seventh argument "
   gate->armed = false;
 
   REQUIRE(gate->asked == 1);
-  REQUIRE(gate->argCount == 7);
+  REQUIRE(gate->argCount == 8);
   REQUIRE(gate->effectsWasNull);
   REQUIRE(gate->inputs.is_array());
   REQUIRE(gate->inputs.size() == 2);
@@ -899,7 +902,7 @@ TEST_CASE("onCraft's sixth argument names a brew's effects, and a brew off "
     gate->armed = false;
 
     REQUIRE(gate->asked == 1);
-    REQUIRE(gate->argCount == 7);
+    REQUIRE(gate->argCount == 8);
     REQUIRE(gate->effects ==
             nlohmann::json::array({ kRestoreHealth, kFortifyHealth }));
     CHECK(gate->refused == 0);
@@ -1284,6 +1287,683 @@ TEST_CASE("A craft's output name cannot be empty, and null names none "
   REQUIRE(!craft.GetOutputName().has_value());
 }
 
+namespace {
+// THORNSWOOD PATCH (Thornswood #3161). Stands in for a gamemode's onCraftWork
+// handler naming how long a craft takes, the way setting craftWork does (the
+// events stack), and counts what it and onCraft are asked.
+class TimeCraftWork : public PartOneListener
+{
+public:
+  explicit TimeCraftWork(WorldState& worldState_)
+    : worldState(worldState_)
+  {
+  }
+  void OnConnect(Networking::UserId) override {}
+  void OnDisconnect(Networking::UserId) override {}
+  void OnCustomPacket(Networking::UserId,
+                      const simdjson::dom::element&) override
+  {
+  }
+  bool OnMpApiEvent(const GameModeEvent& event) override
+  {
+    const std::string name = event.GetName();
+    if (name == "onCraft") {
+      crafts++;
+      return true;
+    }
+    if (name != "onCraftWork") {
+      return true;
+    }
+    asked++;
+    auto args = nlohmann::json::parse(event.GetArgumentsJsonArray());
+    askedResult = args.at(1).get<uint32_t>();
+    askedRecipe = args.at(3).get<uint32_t>();
+    askedBench = args.at(4).get<uint32_t>();
+    auto& stack = worldState.currentGameModeEventsStack;
+    auto work =
+      stack.empty() ? nullptr : dynamic_cast<CraftWorkEvent*>(stack.back());
+    if (work) {
+      work->SetWorkTime(time);
+    }
+    return allow;
+  }
+
+  std::chrono::milliseconds time{ 0 };
+  bool allow = true;
+  int asked = 0;
+  int crafts = 0;
+  uint32_t askedResult = 0;
+  uint32_t askedRecipe = 0;
+  uint32_t askedBench = 0;
+
+private:
+  WorldState& worldState;
+};
+
+// A server of its own, with a clock the test moves, so a craft's time is up
+// when the test says and not when the machine gets there.
+class WorkBench
+{
+public:
+  WorkBench()
+  {
+    p.AttachEspm(&GetEspmLoader());
+    p.worldState.SetTimerClock([this] { return now; });
+    gamemode = std::make_shared<TimeCraftWork>(p.worldState);
+    p.AddListener(gamemode);
+
+    auto& forge = p.worldState.GetFormAt<MpObjectReference>(kForge);
+    DoConnect(p, 0);
+    p.CreateActor(0xff000000, forge.GetPos(), 0,
+                  forge.GetCellOrWorld().ToFormId(p.worldState.espmFiles));
+    p.SetUserActor(0, 0xff000000);
+  }
+
+  ~WorkBench()
+  {
+    p.DestroyActor(0xff000000);
+    DoDisconnect(p, 0);
+  }
+
+  MpActor& Crafter() { return p.worldState.GetFormAt<MpActor>(0xff000000); }
+
+  void GiveWarhammerMakings()
+  {
+    for (auto& entry : WarhammerMakings().entries) {
+      Crafter().AddItem(entry.baseId, entry.count);
+    }
+    // AddItem leaves an inventory update deferred to the next tick. Send it
+    // now, so the inventories a test counts are only the ones the craft sent.
+    p.Tick();
+  }
+
+  static Inventory WarhammerMakings()
+  {
+    return Inventory()
+      .AddItem(kIronIngot, 1)
+      .AddItem(kLeatherStrips, 3)
+      .AddItem(kSteelIngot, 4);
+  }
+
+  void CraftWarhammer()
+  {
+    CraftItemMessage msg;
+    msg.data.craftInputObjects = WarhammerMakings();
+    msg.data.workbench = kForge;
+    msg.data.resultObjectId = kSteelWarhammer;
+    RawMessageData msgData;
+    msgData.userId = 0;
+    p.GetActionListener().OnCraftItem(msgData, msg);
+  }
+
+  void Leave()
+  {
+    CustomPacketMessage msg;
+    msg.contentJsonDump = R"({"customPacketType":"craftLeave"})";
+    RawMessageData msgData;
+    msgData.userId = 0;
+    p.GetActionListener().OnCustomPacket(msgData, msg);
+  }
+
+  void Pass(std::chrono::milliseconds time)
+  {
+    now += time;
+    p.Tick();
+  }
+
+  size_t Working()
+  {
+    return p.GetActionListener().GetCraftService()->GetWorkCount(0xff000000);
+  }
+
+  // The "craftMade" packets sent to the crafter, as { baseId, count }.
+  std::vector<std::pair<uint32_t, uint32_t>> Made()
+  {
+    std::vector<std::pair<uint32_t, uint32_t>> res;
+    for (auto& m : p.Messages()) {
+      auto packet = dynamic_cast<CustomPacketMessage*>(m.message.get());
+      if (!packet || m.userId != 0) {
+        continue;
+      }
+      auto content = nlohmann::json::parse(packet->contentJsonDump);
+      if (content.value("customPacketType", "") == "craftMade") {
+        res.push_back({ content.at("baseId").get<uint32_t>(),
+                        content.at("count").get<uint32_t>() });
+      }
+    }
+    return res;
+  }
+
+  PartOne p;
+  std::chrono::system_clock::time_point now = std::chrono::system_clock::now();
+  std::shared_ptr<TimeCraftWork> gamemode;
+};
+}
+
+TEST_CASE("A craft with a work time is made only when its time is up "
+          "(Thornswood #3161)",
+          "[Craft][espm]")
+{
+  WorkBench bench;
+  bench.GiveWarhammerMakings();
+  const Inventory before = bench.Crafter().GetInventory();
+
+  bench.gamemode->time = std::chrono::milliseconds(15000);
+  bench.CraftWarhammer();
+
+  // onCraftWork was asked with onCraft's own arguments, and onCraft was not.
+  REQUIRE(bench.gamemode->asked == 1);
+  REQUIRE(bench.gamemode->askedResult == kSteelWarhammer);
+  REQUIRE(bench.gamemode->askedRecipe != 0);
+  REQUIRE(bench.gamemode->askedBench == kForge);
+  REQUIRE(bench.gamemode->crafts == 0);
+  REQUIRE(bench.Working() == 1);
+  REQUIRE(bench.Crafter().GetInventory() == before);
+
+  bench.Pass(std::chrono::milliseconds(14999));
+  REQUIRE(bench.gamemode->crafts == 0);
+  REQUIRE(bench.Crafter().GetInventory() == before);
+  REQUIRE(bench.Made().empty());
+
+  bench.Pass(std::chrono::milliseconds(1));
+  REQUIRE(bench.gamemode->crafts == 1);
+  REQUIRE(bench.Working() == 0);
+  REQUIRE(bench.Crafter().GetInventory().GetItemCount(kSteelWarhammer) ==
+          before.GetItemCount(kSteelWarhammer) + 1);
+  REQUIRE(bench.Crafter().GetInventory().GetItemCount(kIronIngot) == 0);
+  REQUIRE(bench.Crafter().GetInventory().GetItemCount(kSteelIngot) == 0);
+  auto made = bench.Made();
+  REQUIRE(made.size() == 1);
+  REQUIRE(made[0] == std::make_pair(kSteelWarhammer, 1u));
+}
+
+TEST_CASE("Leaving the bench stops the work and takes nothing (Thornswood "
+          "#3161)",
+          "[Craft][espm]")
+{
+  WorkBench bench;
+  bench.GiveWarhammerMakings();
+  const Inventory before = bench.Crafter().GetInventory();
+
+  bench.gamemode->time = std::chrono::milliseconds(5000);
+  bench.CraftWarhammer();
+  REQUIRE(bench.Working() == 1);
+
+  bench.Leave();
+  REQUIRE(bench.Working() == 0);
+
+  bench.Pass(std::chrono::milliseconds(6000));
+  REQUIRE(bench.gamemode->crafts == 0);
+  REQUIRE(bench.Crafter().GetInventory() == before);
+  REQUIRE(bench.Made().empty());
+}
+
+TEST_CASE("Moving away from the bench stops the work and takes nothing "
+          "(Thornswood #3161)",
+          "[Craft][espm]")
+{
+  WorkBench bench;
+  bench.GiveWarhammerMakings();
+  const Inventory before = bench.Crafter().GetInventory();
+
+  bench.gamemode->time = std::chrono::milliseconds(5000);
+  bench.CraftWarhammer();
+  REQUIRE(bench.Working() == 1);
+
+  auto& forge = bench.p.worldState.GetFormAt<MpObjectReference>(kForge);
+  bench.Crafter().SetPos(forge.GetPos() +
+                         NiPoint3(CraftService::kWorkReach + 100.f, 0, 0));
+  bench.p.Messages().clear();
+
+  bench.Pass(std::chrono::milliseconds(5000));
+  REQUIRE(bench.gamemode->crafts == 0);
+  REQUIRE(bench.Working() == 0);
+  REQUIRE(bench.Crafter().GetInventory() == before);
+  REQUIRE(bench.Made().empty());
+
+  bench.p.Tick(); // send deferred inventory update messages
+  auto sent = SentInventories(bench.p, 0);
+  REQUIRE(sent.size() == 1);
+  REQUIRE(sent[0] == before);
+}
+
+TEST_CASE("Crafts are worked one after another, and two cannot count the "
+          "same materials (Thornswood #3161)",
+          "[Craft][espm]")
+{
+  WorkBench bench;
+  bench.gamemode->time = std::chrono::milliseconds(5000);
+
+  // Makings for one warhammer, and two pressed: the second finds the first's
+  // held back and is refused before onCraftWork is asked.
+  bench.GiveWarhammerMakings();
+  const Inventory before = bench.Crafter().GetInventory();
+  bench.CraftWarhammer();
+  bench.CraftWarhammer();
+  REQUIRE(bench.gamemode->asked == 1);
+  REQUIRE(bench.Working() == 1);
+
+  // Makings for a second, and a second pressed: it waits its turn.
+  bench.GiveWarhammerMakings();
+  bench.CraftWarhammer();
+  REQUIRE(bench.gamemode->asked == 2);
+  REQUIRE(bench.Working() == 2);
+
+  bench.Pass(std::chrono::milliseconds(5000));
+  REQUIRE(bench.gamemode->crafts == 1);
+  REQUIRE(bench.Working() == 1);
+  REQUIRE(bench.Crafter().GetInventory().GetItemCount(kSteelWarhammer) ==
+          before.GetItemCount(kSteelWarhammer) + 1);
+
+  bench.Pass(std::chrono::milliseconds(4999));
+  REQUIRE(bench.gamemode->crafts == 1);
+
+  bench.Pass(std::chrono::milliseconds(1));
+  REQUIRE(bench.gamemode->crafts == 2);
+  REQUIRE(bench.Working() == 0);
+  REQUIRE(bench.Crafter().GetInventory().GetItemCount(kSteelWarhammer) ==
+          before.GetItemCount(kSteelWarhammer) + 2);
+  REQUIRE(bench.Made().size() == 2);
+}
+
+TEST_CASE("A craft the gamemode names no time for is made at once, and the "
+          "client is told (Thornswood #3161)",
+          "[Craft][espm]")
+{
+  WorkBench bench;
+  bench.GiveWarhammerMakings();
+  const Inventory before = bench.Crafter().GetInventory();
+
+  bench.CraftWarhammer();
+  REQUIRE(bench.gamemode->asked == 1);
+  REQUIRE(bench.gamemode->crafts == 1);
+  REQUIRE(bench.Working() == 0);
+  REQUIRE(bench.Crafter().GetInventory().GetItemCount(kSteelWarhammer) ==
+          before.GetItemCount(kSteelWarhammer) + 1);
+  auto made = bench.Made();
+  REQUIRE(made.size() == 1);
+  REQUIRE(made[0] == std::make_pair(kSteelWarhammer, 1u));
+}
+
+TEST_CASE("onCraftWork refusing a craft refuses it before any time passes "
+          "(Thornswood #3161)",
+          "[Craft][espm]")
+{
+  WorkBench bench;
+  bench.GiveWarhammerMakings();
+  const Inventory before = bench.Crafter().GetInventory();
+
+  bench.gamemode->time = std::chrono::milliseconds(5000);
+  bench.gamemode->allow = false;
+  bench.p.Messages().clear();
+  bench.CraftWarhammer();
+
+  REQUIRE(bench.gamemode->asked == 1);
+  REQUIRE(bench.gamemode->crafts == 0);
+  REQUIRE(bench.Working() == 0);
+  REQUIRE(bench.Crafter().GetInventory() == before);
+  REQUIRE(bench.Made().empty());
+
+  bench.p.Tick(); // send deferred inventory update messages
+  auto sent = SentInventories(bench.p, 0);
+  REQUIRE(sent.size() == 1);
+  REQUIRE(sent[0] == before);
+}
+
+TEST_CASE("A craft's work time is 0 to ten minutes (Thornswood #3161)",
+          "[Craft]")
+{
+  std::vector<Inventory::Entry> entries;
+  std::optional<std::vector<uint32_t>> effects;
+  CraftWorkEvent work(nullptr, kSteelWarhammer, 1, 0, entries, 0, effects);
+  REQUIRE(work.GetWorkTime().count() == 0);
+  work.SetWorkTime(std::chrono::milliseconds(15000));
+  REQUIRE(work.GetWorkTime().count() == 15000);
+  REQUIRE_THROWS(work.SetWorkTime(CraftWorkEvent::kMaxWorkTime +
+                                  std::chrono::milliseconds(1)));
+  REQUIRE_THROWS(work.SetWorkTime(std::chrono::milliseconds(-1)));
+  REQUIRE(work.GetWorkTime().count() == 15000);
+  work.SetWorkTime(CraftWorkEvent::kMaxWorkTime);
+  REQUIRE(work.GetWorkTime() == CraftWorkEvent::kMaxWorkTime);
+}
+
+/*
+  THORNSWOOD PATCH (Thornswood #3159). A bench in a building takes what its
+  owner's chests hold. The gamemode names the chests when the bench is
+  pressed (the craftStock property, MpActor::SetBenchStock), they open as the
+  bench is taken, and a craft takes from the pack first and from them for the
+  rest.
+*/
+namespace {
+const uint32_t kStockBarrel = ToUnderlying(Constants::kBarrelInWhiterun);
+
+// Records the arguments of the last onCraft it was asked about while armed,
+// and allows it unless `allow` is false. With `emptyBarrel` set it empties
+// kStockBarrel first, the way a craft and somebody at the chest can meet in
+// one tick.
+class RecordCraft : public PartOneListener
+{
+public:
+  RecordCraft(PartOne& p_)
+    : p(p_)
+  {
+  }
+  void OnConnect(Networking::UserId) override {}
+  void OnDisconnect(Networking::UserId) override {}
+  void OnCustomPacket(Networking::UserId,
+                      const simdjson::dom::element&) override
+  {
+  }
+  bool OnMpApiEvent(const GameModeEvent& event) override
+  {
+    if (!armed || event.GetName() != std::string("onCraft")) {
+      return true;
+    }
+    asked++;
+    args = nlohmann::json::parse(event.GetArgumentsJsonArray());
+    if (emptyBarrel) {
+      p.worldState.GetFormAt<MpObjectReference>(kStockBarrel)
+        .SetInventory(Inventory());
+    }
+    return allow;
+  }
+
+  PartOne& p;
+  bool armed = false;
+  bool allow = true;
+  bool emptyBarrel = false;
+  int asked = 0;
+  nlohmann::json args;
+};
+
+std::shared_ptr<RecordCraft> RecordCrafts(PartOne& p)
+{
+  auto res = std::make_shared<RecordCraft>(p);
+  p.AddListener(res);
+  return res;
+}
+
+// The steel warhammer's inputs. The pack holds all of them but three of the
+// four steel ingots, and the barrel holds five.
+void StockForWarhammer(PartOne& p, MpActor& ac)
+{
+  ac.AddItem(kIronIngot, 1);
+  ac.AddItem(kLeatherStrips, 3);
+  ac.AddItem(kSteelIngot, 1);
+  p.worldState.GetFormAt<MpObjectReference>(kStockBarrel)
+    .SetInventory(Inventory().AddItem(kSteelIngot, 5));
+}
+
+CraftItemMessage Warhammer()
+{
+  CraftItemMessage msg;
+  msg.data.craftInputObjects = Inventory()
+                                 .AddItem(kIronIngot, 1)
+                                 .AddItem(kLeatherStrips, 3)
+                                 .AddItem(kSteelIngot, 4);
+  msg.data.workbench = kForge;
+  msg.data.resultObjectId = kSteelWarhammer;
+  return msg;
+}
+}
+
+TEST_CASE("A bench's open stock gives what the pack lacks, and onCraft "
+          "names it as its eighth argument (Thornswood #3159)",
+          "[Craft][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto gamemode = RecordCrafts(p);
+  auto& ac = MakeCrafter(p, kForge);
+  auto& barrel = p.worldState.GetFormAt<MpObjectReference>(kStockBarrel);
+  StockForWarhammer(p, ac);
+
+  ac.SetBenchStock(MpActor::BenchStock{ kForge, { kStockBarrel } });
+  REQUIRE(ac.OpenBenchStock(kForge));
+
+  RawMessageData msgData;
+  msgData.userId = 0;
+  gamemode->armed = true;
+  p.GetActionListener().OnCraftItem(msgData, Warhammer());
+  gamemode->armed = false;
+
+  REQUIRE(gamemode->asked == 1);
+  REQUIRE(gamemode->args.size() == 8);
+  auto& draws = gamemode->args.at(7);
+  REQUIRE(draws.is_array());
+  REQUIRE(draws.size() == 1);
+  REQUIRE(draws[0].at("baseId").get<uint32_t>() == kSteelIngot);
+  REQUIRE(draws[0].at("count").get<uint32_t>() == 3);
+  REQUIRE(draws[0].at("from").get<uint32_t>() == kStockBarrel);
+
+  REQUIRE(ac.GetInventory().GetItemCount(kSteelWarhammer) == 1);
+  REQUIRE(ac.GetInventory().GetItemCount(kSteelIngot) == 0);
+  REQUIRE(ac.GetInventory().GetItemCount(kIronIngot) == 0);
+  REQUIRE(ac.GetInventory().GetItemCount(kLeatherStrips) == 0);
+  REQUIRE(barrel.GetInventory().GetItemCount(kSteelIngot) == 2);
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
+
+TEST_CASE("A craft the pack gives in full draws nothing from the stock "
+          "(Thornswood #3159)",
+          "[Craft][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto gamemode = RecordCrafts(p);
+  auto& ac = MakeCrafter(p, kForge);
+  auto& barrel = p.worldState.GetFormAt<MpObjectReference>(kStockBarrel);
+  StockForWarhammer(p, ac);
+  ac.AddItem(kSteelIngot, 3);
+
+  ac.SetBenchStock(MpActor::BenchStock{ kForge, { kStockBarrel } });
+  REQUIRE(ac.OpenBenchStock(kForge));
+
+  RawMessageData msgData;
+  msgData.userId = 0;
+  gamemode->armed = true;
+  p.GetActionListener().OnCraftItem(msgData, Warhammer());
+  gamemode->armed = false;
+
+  REQUIRE(gamemode->asked == 1);
+  REQUIRE(gamemode->args.at(7).empty());
+  REQUIRE(ac.GetInventory().GetItemCount(kSteelWarhammer) == 1);
+  REQUIRE(ac.GetInventory().GetItemCount(kSteelIngot) == 0);
+  REQUIRE(barrel.GetInventory().GetItemCount(kSteelIngot) == 5);
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
+
+TEST_CASE("A stock that is not open, or is another bench's, gives nothing "
+          "(Thornswood #3159)",
+          "[Craft][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto gamemode = RecordCrafts(p);
+  auto& ac = MakeCrafter(p, kForge);
+  auto& barrel = p.worldState.GetFormAt<MpObjectReference>(kStockBarrel);
+  StockForWarhammer(p, ac);
+  const Inventory before = ac.GetInventory();
+
+  RawMessageData msgData;
+  msgData.userId = 0;
+  gamemode->armed = true;
+
+  SECTION("named but the bench not taken")
+  {
+    ac.SetBenchStock(MpActor::BenchStock{ kForge, { kStockBarrel } });
+  }
+  SECTION("open at another bench")
+  {
+    const uint32_t otherBench = 0xbbcf1;
+    ac.SetBenchStock(MpActor::BenchStock{ otherBench, { kStockBarrel } });
+    REQUIRE(ac.OpenBenchStock(otherBench));
+  }
+  SECTION("named for this bench, then another bench taken")
+  {
+    ac.SetBenchStock(MpActor::BenchStock{ kForge, { kStockBarrel } });
+    REQUIRE(!ac.OpenBenchStock(0xbbcf1));
+    REQUIRE(!ac.GetBenchStock());
+  }
+  SECTION("open, then the bench left")
+  {
+    ac.SetBenchStock(MpActor::BenchStock{ kForge, { kStockBarrel } });
+    REQUIRE(ac.OpenBenchStock(kForge));
+    ac.CloseBenchStock(kForge);
+    REQUIRE(!ac.GetBenchStock());
+  }
+
+  REQUIRE_NOTHROW(p.GetActionListener().OnCraftItem(msgData, Warhammer()));
+  gamemode->armed = false;
+
+  REQUIRE(gamemode->asked == 0);
+  REQUIRE(ac.GetInventory() == before);
+  REQUIRE(barrel.GetInventory().GetItemCount(kSteelIngot) == 5);
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
+
+TEST_CASE("A refused craft takes nothing from the stock (Thornswood #3159)",
+          "[Craft][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto gamemode = RecordCrafts(p);
+  auto& ac = MakeCrafter(p, kForge);
+  auto& barrel = p.worldState.GetFormAt<MpObjectReference>(kStockBarrel);
+  StockForWarhammer(p, ac);
+  const Inventory before = ac.GetInventory();
+  ac.SetBenchStock(MpActor::BenchStock{ kForge, { kStockBarrel } });
+  REQUIRE(ac.OpenBenchStock(kForge));
+
+  RawMessageData msgData;
+  msgData.userId = 0;
+  gamemode->allow = false;
+  gamemode->armed = true;
+  REQUIRE_NOTHROW(p.GetActionListener().OnCraftItem(msgData, Warhammer()));
+  gamemode->armed = false;
+
+  REQUIRE(gamemode->asked == 1);
+  REQUIRE(ac.GetInventory() == before);
+  REQUIRE(barrel.GetInventory().GetItemCount(kSteelIngot) == 5);
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
+
+TEST_CASE("A chest emptied while the craft is asked about refuses it with "
+          "nothing moved (Thornswood #3159)",
+          "[Craft][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto gamemode = RecordCrafts(p);
+  auto& ac = MakeCrafter(p, kForge);
+  auto& barrel = p.worldState.GetFormAt<MpObjectReference>(kStockBarrel);
+  StockForWarhammer(p, ac);
+  const Inventory before = ac.GetInventory();
+  ac.SetBenchStock(MpActor::BenchStock{ kForge, { kStockBarrel } });
+  REQUIRE(ac.OpenBenchStock(kForge));
+
+  RawMessageData msgData;
+  msgData.userId = 0;
+  gamemode->emptyBarrel = true;
+  gamemode->armed = true;
+  REQUIRE_THROWS(p.GetActionListener().OnCraftItem(msgData, Warhammer()));
+  gamemode->armed = false;
+
+  REQUIRE(gamemode->asked == 1);
+  REQUIRE(ac.GetInventory() == before);
+  REQUIRE(barrel.GetInventory().IsEmpty());
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
+
+TEST_CASE("The pack is sent with the stock in it while the bench is open, "
+          "and without it after (Thornswood #3159)",
+          "[Craft][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& ac = MakeCrafter(p, kForge);
+  auto& barrel = p.worldState.GetFormAt<MpObjectReference>(kStockBarrel);
+  ac.AddItem(kIronIngot, 1);
+
+  // A tempered piece is not something a craft can take, so it is not shown
+  // either. One that differs only in its name is (Thornswood #3163).
+  Inventory::ExtraData tempered;
+  tempered.health = 1.1f;
+  Inventory::ExtraData named;
+  named.name = "Steel Ingot (6 days left)";
+  Inventory stock;
+  stock.AddItem(kSteelIngot, 5);
+  stock.AddItems({ Inventory::Entry(kIronIngot, 1, tempered),
+                   Inventory::Entry(kSteelIngot, 1, named) });
+  barrel.SetInventory(stock);
+
+  ac.SetBenchStock(MpActor::BenchStock{ kForge, { kStockBarrel } });
+  p.Tick();
+  p.Messages().clear();
+
+  REQUIRE(ac.OpenBenchStock(kForge));
+
+  // Sent at once, not at the end of the tick.
+  auto sent = SentInventories(p, 0);
+  REQUIRE(sent.size() == 1);
+  REQUIRE(sent[0].GetItemCount(kIronIngot) == 1);
+  REQUIRE(sent[0].GetItemCount(kSteelIngot) == 6);
+  REQUIRE(sent[0] == ac.GetInventoryWithBenchStock());
+  REQUIRE(ac.GetInventory().GetItemCount(kSteelIngot) == 0);
+
+  // And the one at the end of the tick says the same.
+  p.Tick();
+  sent = SentInventories(p, 0);
+  REQUIRE(sent.size() == 2);
+  REQUIRE(sent[1] == sent[0]);
+
+  p.Messages().clear();
+  ac.CloseBenchStock(kForge);
+  p.Tick();
+  sent = SentInventories(p, 0);
+  REQUIRE(sent.size() == 1);
+  REQUIRE(sent[0] == ac.GetInventory());
+  REQUIRE(sent[0].GetItemCount(kSteelIngot) == 0);
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
+
+TEST_CASE("A chest that changes while its bench is open is sent again, and "
+          "not after (Thornswood #3159)",
+          "[Craft][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& ac = MakeCrafter(p, kForge);
+  auto& barrel = p.worldState.GetFormAt<MpObjectReference>(kStockBarrel);
+  barrel.SetInventory(Inventory().AddItem(kSteelIngot, 5));
+  ac.SetBenchStock(MpActor::BenchStock{ kForge, { kStockBarrel } });
+  REQUIRE(ac.OpenBenchStock(kForge));
+  p.Tick();
+  p.Messages().clear();
+
+  // Somebody else takes two out of the chest.
+  barrel.RemoveItems({ Inventory::Entry(kSteelIngot, 2) });
+  p.Tick();
+  auto sent = SentInventories(p, 0);
+  REQUIRE(sent.size() == 1);
+  REQUIRE(sent[0].GetItemCount(kSteelIngot) == 3);
+
+  ac.CloseBenchStock(kForge);
+  p.Tick();
+  p.Messages().clear();
+  barrel.AddItem(kSteelIngot, 4);
+  p.Tick();
+  REQUIRE(SentInventories(p, 0).empty());
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
+
 TEST_CASE("A craft takes an input from a stack that differs only in its "
           "name, and onCraft names it (Thornswood #3163)",
           "[Craft][espm]")
@@ -1375,6 +2055,100 @@ TEST_CASE("A craft never takes an input from a stack that differs in more "
 
   REQUIRE(gate->asked == 0);
   REQUIRE(ac.GetInventory() == before);
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
+
+TEST_CASE("A craft takes the plain stacks of the pack and the bench's stock "
+          "before a named one, and names each (Thornswood #3163)",
+          "[Craft][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto gamemode = RecordCrafts(p);
+  auto& ac = MakeCrafter(p, kForge);
+  auto& barrel = p.worldState.GetFormAt<MpObjectReference>(kStockBarrel);
+
+  Inventory::ExtraData extra;
+  extra.name = "Steel Ingot (6 days left)";
+  ac.AddItem(kIronIngot, 1);
+  ac.AddItem(kLeatherStrips, 3);
+  ac.AddItem(kSteelIngot, 1);
+  ac.AddItems({ Inventory::Entry(kSteelIngot, 2, extra) });
+  barrel.SetInventory(Inventory().AddItem(kSteelIngot, 2).AddItems(
+    { Inventory::Entry(kSteelIngot, 1, extra) }));
+
+  ac.SetBenchStock(MpActor::BenchStock{ kForge, { kStockBarrel } });
+  REQUIRE(ac.OpenBenchStock(kForge));
+
+  RawMessageData msgData;
+  msgData.userId = 0;
+  gamemode->armed = true;
+  p.GetActionListener().OnCraftItem(msgData, Warhammer());
+  gamemode->armed = false;
+
+  // Four steel: the pack's plain one, the barrel's two plain ones, and then
+  // one of the pack's named ones. The barrel's named one is left.
+  REQUIRE(gamemode->asked == 1);
+  auto& draws = gamemode->args.at(7);
+  REQUIRE(draws.size() == 1);
+  REQUIRE(draws[0].at("count").get<uint32_t>() == 2);
+  REQUIRE(!draws[0].contains("name"));
+  uint32_t named = 0;
+  for (auto& entry : gamemode->args.at(6)) {
+    if (entry.contains("name")) {
+      REQUIRE(entry.at("name").get<std::string>() == *extra.name);
+      named += entry.at("count").get<uint32_t>();
+    }
+  }
+  REQUIRE(named == 1);
+
+  REQUIRE(ac.GetInventory().GetItemCount(kSteelWarhammer) == 1);
+  REQUIRE(ac.GetInventory().GetItemCount(kSteelIngot) == 1);
+  REQUIRE(barrel.GetInventory().GetItemCount(kSteelIngot) == 1);
+  REQUIRE(barrel.GetInventory().entries.size() == 1);
+  REQUIRE(barrel.GetInventory().entries[0].name == extra.name);
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
+
+TEST_CASE("A named stack in the bench's stock is drawn when nothing plain is "
+          "left, and the eighth argument names it (Thornswood #3163)",
+          "[Craft][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto gamemode = RecordCrafts(p);
+  auto& ac = MakeCrafter(p, kForge);
+  auto& barrel = p.worldState.GetFormAt<MpObjectReference>(kStockBarrel);
+
+  Inventory::ExtraData extra;
+  extra.name = "Steel Ingot (6 days left)";
+  ac.AddItem(kIronIngot, 1);
+  ac.AddItem(kLeatherStrips, 3);
+  ac.AddItem(kSteelIngot, 1);
+  barrel.SetInventory(
+    Inventory().AddItems({ Inventory::Entry(kSteelIngot, 3, extra) }));
+
+  ac.SetBenchStock(MpActor::BenchStock{ kForge, { kStockBarrel } });
+  REQUIRE(ac.OpenBenchStock(kForge));
+
+  RawMessageData msgData;
+  msgData.userId = 0;
+  gamemode->armed = true;
+  p.GetActionListener().OnCraftItem(msgData, Warhammer());
+  gamemode->armed = false;
+
+  REQUIRE(gamemode->asked == 1);
+  auto& draws = gamemode->args.at(7);
+  REQUIRE(draws.size() == 1);
+  REQUIRE(draws[0].at("count").get<uint32_t>() == 3);
+  REQUIRE(draws[0].at("name").get<std::string>() == *extra.name);
+  REQUIRE(draws[0].at("from").get<uint32_t>() == kStockBarrel);
+
+  REQUIRE(ac.GetInventory().GetItemCount(kSteelWarhammer) == 1);
+  REQUIRE(ac.GetInventory().GetItemCount(kSteelIngot) == 0);
+  REQUIRE(barrel.GetInventory().GetItemCount(kSteelIngot) == 0);
 
   p.DestroyActor(0xff000000);
   DoDisconnect(p, 0);
