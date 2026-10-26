@@ -101,6 +101,9 @@ public:
     if (untrustedRefPtr->occupant == &actor) {
       untrustedRefPtr->SetOpen(false);
       untrustedRefPtr->occupant = nullptr;
+      // THORNSWOOD PATCH (Thornswood #3159). An occupant that goes without
+      // leaving the bench closes its stock all the same.
+      actor.CloseBenchStock(refId);
     }
   }
 
@@ -135,6 +138,9 @@ public:
     if (untrustedRefPtr->occupant == &actor) {
       untrustedRefPtr->SetOpen(false);
       untrustedRefPtr->occupant = nullptr;
+      // THORNSWOOD PATCH (Thornswood #3159). An occupant that goes without
+      // leaving the bench closes its stock all the same.
+      actor.CloseBenchStock(refId);
     }
   }
 
@@ -1741,6 +1747,15 @@ void MpObjectReference::ProcessActivateNormal(
         this->occupant->RemoveEventSink(this->occupantDisableSink);
       }
 
+      // THORNSWOOD PATCH (Thornswood #3159). A bench's stock opens as the
+      // bench is taken, and its pack is sent before the bench is opened on
+      // the client. Somebody else who held the bench until now has left it,
+      // so theirs closes. See MpActor::BenchStock.
+      if (this->occupant && this->occupant != actorActivator) {
+        this->occupant->CloseBenchStock(GetFormId());
+      }
+      actorActivator->OpenBenchStock(GetFormId());
+
       // SendOpenContainer being used to activate the object
       // TODO: rename SendOpenContainer to SendActivate
       activationSource.SendOpenContainer(GetFormId());
@@ -1788,6 +1803,9 @@ bool MpObjectReference::ProcessActivateSecond(
     if (this->occupant == &activationSource) {
       this->occupant->RemoveEventSink(this->occupantDestroySink);
       this->occupant = nullptr;
+      // THORNSWOOD PATCH (Thornswood #3159). Leaving the bench closes its
+      // stock. See MpActor::BenchStock.
+      actorActivator->CloseBenchStock(GetFormId());
       return true;
     }
   }
@@ -2048,7 +2066,9 @@ void MpObjectReference::SendInventoryUpdate()
   auto actor = AsActor();
   if (actor) {
     SetInventoryMessage message;
-    message.inventory = actor->GetInventory();
+    // THORNSWOOD PATCH (Thornswood #3159): with a bench's stock in it while
+    // one is open. See MpActor::BenchStock.
+    message.inventory = actor->GetInventoryWithBenchStock();
     actor->SendToUserDeferred(message, true, kChannelSetInventory, true);
   }
 }

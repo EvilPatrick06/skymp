@@ -11,11 +11,22 @@ class MpActor;
 class CraftEvent : public GameModeEvent
 {
 public:
+  // THORNSWOOD PATCH (Thornswood #3159). An input the pack lacks, taken from
+  // a container of the bench's open stock (MpActor::BenchStock). The craft's
+  // entries are what it takes in all; these are the part of them that comes
+  // out of a container, and the pack gives the rest.
+  struct StockDraw
+  {
+    uint32_t containerId = 0;
+    Inventory::Entry entry;
+  };
+
   CraftEvent(MpActor* actor_, uint32_t craftedItemBaseId_, uint32_t count_,
              uint32_t recipeId_,
              const std::vector<Inventory::Entry>& entries_,
              uint32_t workbenchId_ = 0,
-             std::optional<std::vector<uint32_t>> effects_ = std::nullopt);
+             std::optional<std::vector<uint32_t>> effects_ = std::nullopt,
+             std::vector<StockDraw> stockDraws_ = {});
 
   const char* GetName() const override;
 
@@ -72,6 +83,10 @@ private:
 
   // OnFireSuccess-specific arguments
   const std::vector<Inventory::Entry>& entries;
+
+  // THORNSWOOD PATCH (Thornswood #3159). The part of entries that comes out
+  // of the bench's stock, and the eighth argument. See StockDraw.
+  std::vector<StockDraw> stockDraws;
 
   // What OnFireSuccess adds (Thornswood #2906): the recipe's output unless a
   // listener named another.
