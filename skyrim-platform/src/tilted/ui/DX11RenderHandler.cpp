@@ -227,6 +227,15 @@ void DX11RenderHandler::OnPaint(CefRefPtr<CefBrowser> browser,
       const auto pDest = static_cast<uint8_t*>(mappedResource.pData);
       std::memcpy(pDest, buffer, width * height * 4);
       m_pContext->Unmap(m_pTexture.Get(), 0);
+      // Thornswood #3129: when the page first has a picture to draw, so the
+      // log says how long the game's own menu picture was the only one up.
+      static bool firstPictureTold = false;
+      if (!firstPictureTold) {
+        firstPictureTold = true;
+        spdlog::info("browser (tilted): the page drew its first picture "
+                     "({}x{}), shown: {}",
+                     width, height, Visible() ? "yes" : "no");
+      }
     } else {
       // We got no mapping, let's drop the context and reset the texture so
       // that we attempt to create a new one during the next frame

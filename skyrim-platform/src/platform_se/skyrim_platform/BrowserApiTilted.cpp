@@ -61,16 +61,16 @@ bool BrowserApiTilted::IsVisible()
   return CEFUtils::DX11RenderHandler::Visible();
 }
 
-Napi::Value BrowserApiTilted::SetFocused(const Napi::CallbackInfo& info)
+namespace {
+void SetFocusedImpl(bool newFocus)
 {
   bool& v = CEFUtils::DInputHook::ChromeFocus();
-  bool newFocus = NapiHelper::ExtractBoolean(info[0], "focused");
   if (v != newFocus) {
     v = newFocus;
 
     auto ui = RE::UI::GetSingleton();
     if (!ui) {
-      return info.Env().Undefined();
+      return;
     }
 
     // Thornswood #2384: the show or hide is queued, not done, so what has
@@ -79,7 +79,19 @@ Napi::Value BrowserApiTilted::SetFocused(const Napi::CallbackInfo& info)
     Queue(g_cursorFocus.OnFocus(newFocus,
                                 ui->IsMenuOpen(RE::CursorMenu::MENU_NAME)));
   }
+}
+}
+
+Napi::Value BrowserApiTilted::SetFocused(const Napi::CallbackInfo& info)
+{
+  SetFocusedImpl(NapiHelper::ExtractBoolean(info[0], "focused"));
   return info.Env().Undefined();
+}
+
+void BrowserApiTilted::ShowAtStart()
+{
+  CEFUtils::DX11RenderHandler::Visible() = true;
+  SetFocusedImpl(true);
 }
 
 void BrowserApiTilted::OnCursorMenu(bool opening)
