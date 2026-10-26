@@ -147,8 +147,16 @@ TEST_CASE("Eating a potion off a stack that differs only in its name takes "
 
   ac.AddItem(0x3EAE3, 1);
   p.GetActionListener().OnEquip(rawMsgData, msg);
-  REQUIRE(ac.GetInventory().entries.size() == 1);
-  REQUIRE(ac.GetInventory().entries[0] == Inventory::Entry(0x3EAE3, 1, extra));
+  // The actor's record gives it an outfit too, so only the potion's own
+  // entries are looked at.
+  std::vector<Inventory::Entry> potions;
+  for (auto& entry : ac.GetInventory().entries) {
+    if (entry.baseId == 0x3EAE3) {
+      potions.push_back(entry);
+    }
+  }
+  REQUIRE(potions.size() == 1);
+  REQUIRE(potions[0] == Inventory::Entry(0x3EAE3, 1, extra));
 
   p.DestroyActor(0xff000000);
   DoDisconnect(p, 0);
