@@ -6,10 +6,12 @@
 #include "RawMessageData.h"
 #include "WorldState.h"
 #include "gamemode_events/CraftEvent.h"
+#include "gamemode_events/CraftWorkEvent.h"
 #include "libespm/Convert.h"
 #include "libespm/INGR.h"
 #include <algorithm>
 #include <map>
+#include <nlohmann/json.hpp>
 #include <set>
 #include <fmt/format.h>
 #include <fmt/ranges.h>
@@ -31,11 +33,21 @@ namespace {
   summed per base id, so a recipe that lists one item twice needs both.
 */
 bool ActorHoldsEveryInput(const MpActor& me,
-                          const std::vector<Inventory::Entry>& entries)
+                          const std::vector<Inventory::Entry>& entries,
+                          const std::vector<Inventory::Entry>& heldBack = {})
 {
+  // THORNSWOOD PATCH (Thornswood #3161). heldBack is what the person's
+  // crafts still being worked will take, so a new order counts only what is
+  // left over after them.
   std::map<uint32_t, uint64_t> needed;
   for (const auto& entry : entries) {
     needed[entry.baseId] += entry.count;
+  }
+  for (const auto& entry : heldBack) {
+    auto it = needed.find(entry.baseId);
+    if (it != needed.end()) {
+      it->second += entry.count;
+    }
   }
   const Inventory& inventory = me.GetInventory();
   for (const auto& [baseId, count] : needed) {
@@ -134,9 +146,57 @@ void CraftService::OnCraftItem(const RawMessageData& rawMsgData,
     is applied after the menu closes and is not read as a craft, in the
     short case or the long one.
   */
+  /*
+    THORNSWOOD PATCH (Thornswood #3161). A CRAFT TAKES TIME AT THE BENCH.
+
+    Patrick, 22 Oct 2026: small 1 s, medium 5 s, large 15 s, with an
+    animation, and moving away stops it. onCraftWork is asked first, with
+    onCraft's own arguments, and names the time. The craft is then held:
+    the bench's own working animation plays while the person stays in its
+    menu, and when the time is up onCraft is asked, the inputs are taken and
+    the output given, all in CraftItem, exactly as a craft made at once. A
+    person's crafts are worked one after another, in the order pressed.
+
+    The client hides the item it made the moment the craft is sent (the
+    client's craftService.ts), so nothing appears before it is made, and puts
+    it back when this says it was made (SendMade). Leaving the bench closes
+    its menu, which the client says (StopWork); the crafts still being worked
+    stop there, and since nothing was taken the person's inventory, sent
+    back once the menu is closed, still holds every input.
+
+    No time named, which is every craft under a gamemode with no onCraftWork
+    handler, is a craft made now, as it always was.
+  */
   bool crafted = false;
+  Made made;
   try {
-    crafted = CraftItem(me, inputObjects, workbenchId, resultObjectId);
+    std::vector<Inventory::Entry> takes;
+    auto time =
+      AskWorkTime(me, inputObjects, workbenchId, resultObjectId, takes);
+    if (time && time->count() > 0) {
+      auto& orders = work[me->GetFormId()];
+      Order order;
+      order.id = nextOrderId++;
+      order.userId = rawMsgData.userId;
+      order.inputObjects = inputObjects;
+      order.workbenchId = workbenchId;
+      order.resultObjectId = resultObjectId;
+      order.time = *time;
+      order.takes = std::move(takes);
+      orders.push_back(std::move(order));
+      spdlog::info("CraftService::OnCraftItem - actor {:#x}'s craft of {:#x} "
+                   "takes {} ms, {} craft(s) before it",
+                   me->GetFormId(), resultObjectId, time->count(),
+                   orders.size() - 1);
+      if (orders.size() == 1) {
+        StartNextOrder(me->GetFormId());
+      }
+      return;
+    }
+    if (time) {
+      crafted =
+        CraftItem(me, inputObjects, workbenchId, resultObjectId, &made);
+    }
   } catch (const std::exception& e) {
     SendInventoryBack(me, workbenchId, resultObjectId, e.what());
     throw;
@@ -144,7 +204,155 @@ void CraftService::OnCraftItem(const RawMessageData& rawMsgData,
 
   if (!crafted) {
     SendInventoryBack(me, workbenchId, resultObjectId, "it was refused");
+    return;
   }
+  SendMade(rawMsgData.userId, made);
+}
+
+std::optional<std::chrono::milliseconds> CraftService::AskWorkTime(
+  MpActor* me, const Inventory& inputObjects, uint32_t workbenchId,
+  uint32_t resultObjectId, std::vector<Inventory::Entry>& takes)
+{
+  auto craft = WorkOut(me, inputObjects, workbenchId, resultObjectId);
+  if (!craft) {
+    return std::nullopt;
+  }
+
+  // What the person's earlier crafts, still being worked, will take.
+  std::vector<Inventory::Entry> heldBack;
+  auto it = work.find(me->GetFormId());
+  if (it != work.end()) {
+    for (const auto& order : it->second) {
+      heldBack.insert(heldBack.end(), order.takes.begin(), order.takes.end());
+    }
+  }
+  if (!ActorHoldsEveryInput(*me, craft->entries, heldBack)) {
+    return std::nullopt;
+  }
+
+  CraftWorkEvent workEvent(me, craft->outputBaseId, craft->outputCount,
+                           craft->recipeId, craft->entries, workbenchId,
+                           craft->effects);
+  if (!workEvent.Fire(me->GetParent())) {
+    spdlog::info("The gamemode refused to start the craft of {:#x}",
+                 resultObjectId);
+    return std::nullopt;
+  }
+  takes = craft->entries;
+  return workEvent.GetWorkTime();
+}
+
+void CraftService::StartNextOrder(uint32_t actorId)
+{
+  auto it = work.find(actorId);
+  if (it == work.end()) {
+    return;
+  }
+  if (it->second.empty()) {
+    work.erase(it);
+    return;
+  }
+  const Order& order = it->second.front();
+  const uint64_t orderId = order.id;
+  partOne.worldState.SetTimer(order.time).Then(
+    [this, actorId, orderId](Viet::Void) { FinishOrder(actorId, orderId); });
+}
+
+void CraftService::FinishOrder(uint32_t actorId, uint64_t orderId)
+{
+  auto it = work.find(actorId);
+  if (it == work.end() || it->second.empty() ||
+      it->second.front().id != orderId) {
+    // Stopped (StopWork) before its time was up.
+    return;
+  }
+  Order order = std::move(it->second.front());
+  it->second.pop_front();
+
+  MpActor* me = partOne.serverState.ActorByUser(order.userId);
+  if (!me || me->GetFormId() != actorId) {
+    spdlog::info("CraftService::FinishOrder - actor {:#x} is no longer "
+                 "user {}'s, so their crafts stop",
+                 actorId, order.userId);
+    work.erase(actorId);
+    return;
+  }
+
+  bool crafted = false;
+  Made made;
+  try {
+    if (!AtBench(*me, order.workbenchId)) {
+      spdlog::info("CraftService::FinishOrder - actor {:#x} moved away from "
+                   "bench {:#x}, so {} craft(s) stop and nothing is taken",
+                   actorId, order.workbenchId, it->second.size() + 1);
+      work.erase(actorId);
+      SendInventoryBack(me, order.workbenchId, order.resultObjectId,
+                        "they moved away from the bench");
+      return;
+    }
+    crafted = CraftItem(me, order.inputObjects, order.workbenchId,
+                        order.resultObjectId, &made);
+  } catch (const std::exception& e) {
+    // A timer has nobody above it to throw to, so this is where the reason
+    // is said; the inventory goes back as for any craft that failed.
+    spdlog::error("CraftService::FinishOrder - the craft of {:#x} on "
+                  "workbench {:#x} threw: {}",
+                  order.resultObjectId, order.workbenchId, e.what());
+  }
+
+  if (crafted) {
+    SendMade(order.userId, made);
+  } else {
+    SendInventoryBack(me, order.workbenchId, order.resultObjectId,
+                      "it was refused when its time was up");
+  }
+
+  // The gamemode's onCraft may have done anything, StopWork included, so the
+  // queue is looked up again rather than trusted.
+  StartNextOrder(actorId);
+}
+
+bool CraftService::AtBench(const MpActor& me, uint32_t workbenchId)
+{
+  auto& form = partOne.worldState.LookupFormById(workbenchId);
+  auto bench = dynamic_cast<MpObjectReference*>(form.get());
+  if (!bench) {
+    return false;
+  }
+  if (bench->GetCellOrWorld() != me.GetCellOrWorld()) {
+    return false;
+  }
+  return (bench->GetPos() - me.GetPos()).Length() <= kWorkReach;
+}
+
+void CraftService::StopWork(Networking::UserId userId)
+{
+  MpActor* me = partOne.serverState.ActorByUser(userId);
+  if (!me) {
+    return;
+  }
+  auto it = work.find(me->GetFormId());
+  if (it == work.end()) {
+    return;
+  }
+  spdlog::info("CraftService::StopWork - actor {:#x} left the bench, so {} "
+               "craft(s) stop and nothing is taken",
+               me->GetFormId(), it->second.size());
+  work.erase(it);
+}
+
+size_t CraftService::GetWorkCount(uint32_t actorId) const
+{
+  auto it = work.find(actorId);
+  return it == work.end() ? 0 : it->second.size();
+}
+
+void CraftService::SendMade(Networking::UserId userId, const Made& made)
+{
+  nlohmann::json content{ { "customPacketType", "craftMade" },
+                          { "baseId", made.baseId },
+                          { "count", made.count } };
+  partOne.SendCustomPacket(userId, content.dump());
 }
 
 void CraftService::SendInventoryBack(MpActor* me, uint32_t workbenchId,
@@ -168,7 +376,42 @@ void CraftService::SendInventoryBack(MpActor* me, uint32_t workbenchId,
 }
 
 bool CraftService::CraftItem(MpActor* me, const Inventory& inputObjects,
-                             uint32_t workbenchId, uint32_t resultObjectId)
+                             uint32_t workbenchId, uint32_t resultObjectId,
+                             Made* made)
+{
+  auto craft = WorkOut(me, inputObjects, workbenchId, resultObjectId);
+  if (!craft) {
+    return false;
+  }
+
+  if (!ActorHoldsEveryInput(*me, craft->entries)) {
+    return false;
+  }
+
+  CraftEvent craftEvent(me, craft->outputBaseId, craft->outputCount,
+                        craft->recipeId, craft->entries, workbenchId,
+                        craft->effects);
+  if (!craftEvent.Fire(me->GetParent())) {
+    // THORNSWOOD PATCH: WorkOut has already logged "crafted" for a recipe by
+    // the time the gamemode answers, so the log says when the answer was no.
+    if (craft->recipeId) {
+      spdlog::info("The gamemode refused the craft of {:#x}", resultObjectId);
+    } else {
+      spdlog::info("The gamemode refused the craft of {:#x} with no recipe",
+                   resultObjectId);
+    }
+    return false;
+  }
+  if (made) {
+    made->baseId = craftEvent.GetOutputBaseId();
+    made->count = craftEvent.GetOutputCount();
+  }
+  return true;
+}
+
+std::optional<CraftService::Craft> CraftService::WorkOut(
+  MpActor* me, const Inventory& inputObjects, uint32_t workbenchId,
+  uint32_t resultObjectId)
 {
   auto& workbench =
     partOne.worldState.GetFormAt<MpObjectReference>(workbenchId);
@@ -183,7 +426,7 @@ bool CraftService::CraftItem(MpActor* me, const Inventory& inputObjects,
   if (!workbenchBase.rec) {
     spdlog::error("Workbench ref without base object {:x}",
                   workbench.GetFormId());
-    return false;
+    return std::nullopt;
   }
 
   bool isFurnitureOrActivator = workbenchBase.rec->GetType() == "FURN" ||
@@ -191,7 +434,7 @@ bool CraftService::CraftItem(MpActor* me, const Inventory& inputObjects,
   if (!isFurnitureOrActivator) {
     spdlog::error("Unable to use {} as workbench",
                   workbenchBase.rec->GetType().ToString());
-    return false;
+    return std::nullopt;
   }
 
   std::vector<uint32_t> workbenchKeywordIds =
@@ -233,10 +476,6 @@ bool CraftService::CraftItem(MpActor* me, const Inventory& inputObjects,
       "workbenchId={:#x}, resultObjectId={:#x}",
       inputObjects.ToJson().dump(), workbenchId, resultObjectId);
 
-    if (!ActorHoldsEveryInput(*me, inputObjects.entries)) {
-      return false;
-    }
-
     /*
       THORNSWOOD PATCH (Thornswood #1389). A brew names its effects.
 
@@ -248,7 +487,9 @@ bool CraftService::CraftItem(MpActor* me, const Inventory& inputObjects,
       check above has just found in the server's own inventory, by the game's
       rule. So they are worked out here and handed over as the sixth
       argument. An enchantment has no ingredient in it and stays "not named"
-      until the client can say what went on the piece.
+      until the client can say what went on the piece. The ingredients are
+      found in the server's inventory by CraftItem and AskWorkTime, before
+      the gamemode hears of the brew.
     */
     auto effects = BrewEffects(br, inputObjects);
     if (effects) {
@@ -256,14 +497,13 @@ bool CraftService::CraftItem(MpActor* me, const Inventory& inputObjects,
                    inputObjects.ToJson().dump(), fmt::join(*effects, ","));
     }
 
-    CraftEvent craftEvent(me, resultObjectId, 1, 0, inputObjects.entries,
-                          workbenchId, effects);
-    if (!craftEvent.Fire(me->GetParent())) {
-      spdlog::info("The gamemode refused the craft of {:#x} with no recipe",
-                   resultObjectId);
-      return false;
-    }
-    return true;
+    Craft craft;
+    craft.entries = inputObjects.entries;
+    craft.outputBaseId = resultObjectId;
+    craft.outputCount = 1;
+    craft.recipeId = 0;
+    craft.effects = std::move(effects);
+    return craft;
   }
 
   if (recipesList.size() > 1) {
@@ -271,15 +511,9 @@ bool CraftService::CraftItem(MpActor* me, const Inventory& inputObjects,
                  recipesList.size());
   }
 
-  if (!UseCraftRecipe(me,
-                      reinterpret_cast<const espm::COBJ*>(recipesList[0].rec),
-                      cache, br, recipesList[0].fileIdx, workbenchId)) {
-    // THORNSWOOD PATCH: UseCraftRecipe has already logged "crafted" by the
-    // time the gamemode answers, so the log says when the answer was no.
-    spdlog::info("The gamemode refused the craft of {:#x}", resultObjectId);
-    return false;
-  }
-  return true;
+  return CraftFromRecipe(
+    me, reinterpret_cast<const espm::COBJ*>(recipesList[0].rec), cache, br,
+    recipesList[0].fileIdx);
 }
 
 std::optional<std::vector<uint32_t>> CraftService::BrewEffects(
@@ -448,10 +682,10 @@ bool CraftService::ConsiderRecipeCandidate(
   return finalConsiderationResult;
 }
 
-bool CraftService::UseCraftRecipe(MpActor* me, const espm::COBJ* recipeUsed,
-                                  espm::CompressedFieldsCache& cache,
-                                  const espm::CombineBrowser& br, int espmIdx,
-                                  uint32_t workbenchId)
+CraftService::Craft CraftService::CraftFromRecipe(
+  MpActor* me, const espm::COBJ* recipeUsed,
+  espm::CompressedFieldsCache& cache, const espm::CombineBrowser& br,
+  int espmIdx)
 {
   auto recipeData = recipeUsed->GetData(cache);
   auto mapping = br.GetCombMapping(espmIdx);
@@ -459,34 +693,27 @@ bool CraftService::UseCraftRecipe(MpActor* me, const espm::COBJ* recipeUsed,
   spdlog::info("Using craft recipe with EDID {} from espm file with index {}",
                recipeUsed->GetEditorId(cache), espmIdx);
 
-  std::vector<Inventory::Entry> entries;
+  Craft craft;
   for (auto& entry : recipeData.inputObjects) {
     auto formId = espm::utils::GetMappedId(entry.formId, *mapping);
-    entries.push_back({ formId, entry.count });
+    craft.entries.push_back({ formId, entry.count });
   }
 
-  auto outputFormId =
+  craft.outputBaseId =
     espm::utils::GetMappedId(recipeData.outputObjectFormId, *mapping);
+  craft.outputCount = recipeData.outputCount;
 
   if (spdlog::should_log(spdlog::level::info)) {
     std::string s = fmt::format("User formId={:#x} crafted", me->GetFormId());
-    for (const auto& entry : entries) {
+    for (const auto& entry : craft.entries) {
       s += fmt::format(" -{:#x} x{}", entry.baseId, entry.count);
     }
-    s += fmt::format(" +{:#x} x{}", outputFormId, recipeData.outputCount);
+    s += fmt::format(" +{:#x} x{}", craft.outputBaseId, craft.outputCount);
     spdlog::info("{}", s);
   }
 
-  auto recipeId = espm::utils::GetMappedId(recipeUsed->GetId(), *mapping);
-
-  if (!ActorHoldsEveryInput(*me, entries)) {
-    return false;
-  }
-
-  CraftEvent craftEvent(me, outputFormId, recipeData.outputCount, recipeId,
-                        entries, workbenchId);
-
-  return craftEvent.Fire(me->GetParent());
+  craft.recipeId = espm::utils::GetMappedId(recipeUsed->GetId(), *mapping);
+  return craft;
 }
 
 bool CraftService::EvaluateCraftRecipeConditions(
