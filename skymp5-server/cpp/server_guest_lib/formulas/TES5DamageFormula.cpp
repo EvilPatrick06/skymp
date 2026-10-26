@@ -35,29 +35,42 @@ constexpr uint32_t kThornswoodConditionSound = 100;
 constexpr uint32_t kThornswoodConditionHighest = 120;
 constexpr float kThornswoodHighestConditionMult = 1.05f;
 
+// Where " (NN%)" starts on the end of a name, one to three digits, or npos
+// when the name does not end in one.
+size_t ThornswoodConditionSuffixAt(const std::string& name)
+{
+  if (name.size() < 5 || name.compare(name.size() - 2, 2, "%)") != 0) {
+    return std::string::npos;
+  }
+  const size_t open = name.rfind(" (");
+  if (open == std::string::npos) {
+    return std::string::npos;
+  }
+  const size_t first = open + 2;
+  const size_t last = name.size() - 2; // one past the last digit
+  if (last <= first || last - first > 3) {
+    return std::string::npos;
+  }
+  for (size_t i = first; i < last; ++i) {
+    if (name[i] < '0' || name[i] > '9') {
+      return std::string::npos;
+    }
+  }
+  return open;
+}
+
 uint32_t ThornswoodConditionOf(const Inventory::Entry& entry)
 {
   if (!entry.name) {
     return kThornswoodConditionSound;
   }
   const std::string& name = *entry.name;
-  if (name.size() < 5 || name.compare(name.size() - 2, 2, "%)") != 0) {
-    return kThornswoodConditionSound;
-  }
-  const size_t open = name.rfind(" (");
+  const size_t open = ThornswoodConditionSuffixAt(name);
   if (open == std::string::npos) {
     return kThornswoodConditionSound;
   }
-  const size_t first = open + 2;
-  const size_t last = name.size() - 2; // one past the last digit
-  if (last <= first || last - first > 3) {
-    return kThornswoodConditionSound;
-  }
   uint32_t value = 0;
-  for (size_t i = first; i < last; ++i) {
-    if (name[i] < '0' || name[i] > '9') {
-      return kThornswoodConditionSound;
-    }
+  for (size_t i = open + 2; i < name.size() - 2; ++i) {
     value = value * 10 + static_cast<uint32_t>(name[i] - '0');
   }
   return std::min(value, kThornswoodConditionHighest);
@@ -66,6 +79,53 @@ uint32_t ThornswoodConditionOf(const Inventory::Entry& entry)
 bool ThornswoodAtHighestCondition(const Inventory::Entry& entry)
 {
   return ThornswoodConditionOf(entry) >= kThornswoodConditionHighest;
+}
+
+/*
+  THORNSWOOD PATCH (#3151). A CRAFTED PIECE IS CRUDE, FINE OR MASTERWORK.
+
+  Patrick, 22 October 2026: crafted things come in three tiers, crude, fine
+  and masterwork, at minus or plus 10%. Thornswood's gamemode rolls the tier
+  at the bench and writes it on the piece's name through craftOutput, right
+  before any condition: "Iron Sword (Masterwork)", "Iron Sword (Crude) (85%)"
+  (CRAFT_QUALITY in its gamemode.js; docs/systems/professions.md). Fine is
+  the piece as its record has it and carries nothing. Crude is a tenth less of
+  a weapon's damage or an armour piece's own rating, masterwork a tenth more.
+*/
+constexpr float kThornswoodCrudeMult = 0.9f;
+constexpr float kThornswoodMasterworkMult = 1.1f;
+
+float ThornswoodQualityMultOf(const Inventory::Entry& entry)
+{
+  if (!entry.name) {
+    return 1.f;
+  }
+  std::string name = *entry.name;
+  const size_t condition = ThornswoodConditionSuffixAt(name);
+  if (condition != std::string::npos) {
+    name.resize(condition);
+  }
+  auto endsWith = [&name](const char* tail) {
+    const std::string t(tail);
+    return name.size() > t.size() &&
+      name.compare(name.size() - t.size(), t.size(), t) == 0;
+  };
+  if (endsWith(" (Masterwork)")) {
+    return kThornswoodMasterworkMult;
+  }
+  if (endsWith(" (Crude)")) {
+    return kThornswoodCrudeMult;
+  }
+  return 1.f;
+}
+
+// What a piece's name does to its one number: its condition at 120% and its
+// quality, together.
+float ThornswoodPieceMultOf(const Inventory::Entry& entry)
+{
+  return (ThornswoodAtHighestCondition(entry) ? kThornswoodHighestConditionMult
+                                              : 1.f) *
+    ThornswoodQualityMultOf(entry);
 }
 
 // Clothing carries no buff. BOD2 holds the armour type (0 light, 1 heavy,
@@ -95,7 +155,7 @@ private:
 
 private:
   [[nodiscard]] float GetBaseWeaponDamage() const;
-  [[nodiscard]] float CalcWeaponConditionMult() const;
+  [[nodiscard]] float CalcWeaponPieceMult() const;
   [[nodiscard]] float CalcWeaponRating() const;
   [[nodiscard]] float CalcArmorRatingComponent(
     const Inventory::Entry& opponentEquipmentEntry) const;
@@ -127,32 +187,32 @@ float TES5DamageFormulaImpl::GetBaseWeaponDamage() const
   return weapData.weapData->damage;
 }
 
-// THORNSWOOD PATCH (#1384). The weapon the hit was landed with is the
+// THORNSWOOD PATCH (#1384, #3151). The weapon the hit was landed with is the
 // aggressor's worn entry of hitData.source. HitData carries no hand, so when
-// both hands hold that same weapon the buff is given only when both are at
-// 120%: it is never given for a piece that may not be the one that struck.
-float TES5DamageFormulaImpl::CalcWeaponConditionMult() const
+// both hands hold that same weapon the hit counts as the weaker of the two:
+// a buff is never given for a piece that may not be the one that struck, so
+// 120% needs both hands at 120%, and masterwork both hands masterwork.
+float TES5DamageFormulaImpl::CalcWeaponPieceMult() const
 {
   bool worn = false;
-  bool allHighest = true;
+  float weakest = 1.f;
   const auto eq = aggressor.GetEquipment();
   for (const auto& entry : eq.inv.entries) {
     if (entry.baseId != hitData.source ||
         entry.GetWorn() == Inventory::Worn::None) {
       continue;
     }
+    const float mult = ThornswoodPieceMultOf(entry);
+    weakest = worn ? std::min(weakest, mult) : mult;
     worn = true;
-    if (!ThornswoodAtHighestCondition(entry)) {
-      allHighest = false;
-    }
   }
-  return worn && allHighest ? kThornswoodHighestConditionMult : 1.f;
+  return worn ? weakest : 1.f;
 }
 
 float TES5DamageFormulaImpl::CalcWeaponRating() const
 {
   // TODO(#457): take other components into account
-  return GetBaseWeaponDamage() * CalcWeaponConditionMult();
+  return GetBaseWeaponDamage() * CalcWeaponPieceMult();
 }
 
 float TES5DamageFormulaImpl::CalcMagicEffects(const Effects& effects) const
@@ -178,11 +238,11 @@ float TES5DamageFormulaImpl::CalcArmorRatingComponent(
       espm::GetData<espm::ARMO>(opponentEquipmentEntry.baseId, espmProvider);
     // TODO(#458): take other components into account
     auto ac = static_cast<float>(armorData.baseRatingX100) / 100;
-    // THORNSWOOD PATCH (#1384): 5% more of this piece's own rating at 120%
-    // condition. The enchantment below is not the piece's rating.
-    if (ThornswoodAtHighestCondition(opponentEquipmentEntry) &&
-        !ThornswoodIsClothing(armorData)) {
-      ac *= kThornswoodHighestConditionMult;
+    // THORNSWOOD PATCH (#1384, #3151): 5% more of this piece's own rating at
+    // 120% condition, and a tenth less or more for crude or masterwork. The
+    // enchantment below is not the piece's rating.
+    if (!ThornswoodIsClothing(armorData)) {
+      ac *= ThornswoodPieceMultOf(opponentEquipmentEntry);
     }
     if (armorData.enchantmentFormId) {
       // TODO(#632) refactor this effect with actor effect system
