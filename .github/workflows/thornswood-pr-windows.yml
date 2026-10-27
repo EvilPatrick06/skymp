@@ -88,6 +88,14 @@
 # package.json, yarn.lock and bundle are those bytes; measured 17 Oct, the
 # pull request build's package.json was 1,561 bytes with CR LF, the recorded
 # one 1,517. So this checks out with core.autocrlf false, the way One does.
+#
+# EVERY ACTION BY COMMIT (Thornswood #2761). A tag on an action can be
+# repointed at any commit by whoever owns it, and this job builds the server
+# and the client Thornswood ships. So every `uses:` in every workflow here and
+# in pr_base names a full length commit SHA with its tag in a comment, and
+# misc\thornswood\Test-ActionPins.ps1, a step of this build, fails on one that
+# does not. Dependabot's github-actions entry (dependabot.yml on main) moves
+# the pins, one grouped pull request a month.
 
 name: Thornswood PR Windows
 
@@ -115,7 +123,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: false
       - name: Check POSIX directory initialization
@@ -158,10 +166,15 @@ jobs:
       - name: Check out as committed, LF
         shell: pwsh
         run: git config --global core.autocrlf false
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
           submodules: 'true'
+      # The header, EVERY ACTION BY COMMIT. Before the build, so a tag pin
+      # fails in seconds rather than after it.
+      - name: Every action is pinned by commit
+        shell: pwsh
+        run: .\misc\thornswood\Test-ActionPins.ps1
       - uses: ./.github/actions/pr_base
         with:
           DESCRIPTION: 'Flatrim'
@@ -256,7 +269,7 @@ jobs:
           Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value ('days=' + $(if ($env:EVENT -eq 'push') { '90' } else { '14' }))
 
       - name: Keep the build Thornswood records
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: thornswood-engine-${{ github.sha }}
           path: ${{ steps.gather.outputs.dir }}

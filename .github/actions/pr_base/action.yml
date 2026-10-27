@@ -77,7 +77,7 @@ runs:
   steps:  
     - name: Gather PRs
       if: ${{ inputs.DEPLOY_BRANCH != '' }}
-      uses: Pospelove/auto-merge-action@main
+      uses: Pospelove/auto-merge-action@c869e8eeb50ef5acf58a5a35a1812f602ada5b4c # main
       with:
         path: ${{github.workspace}}
         generate-build-metadata: true
@@ -122,7 +122,7 @@ runs:
 
     - name: Check and install OpenCppCoverage using github-script
       if: ${{ runner.os == 'Windows' && inputs.COVERAGE == 'true' }}
-      uses: actions/github-script@v6
+      uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6.4.1
       with:
         script: |
           const { execSync } = require('child_process');
@@ -150,7 +150,7 @@ runs:
 
     - name: Move vcpkg submodule to a larger drive using github-script
       if: runner.os == 'Windows'
-      uses: actions/github-script@v6
+      uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6.4.1
       with:
         script: |
           const fs = require('fs');
@@ -224,7 +224,7 @@ runs:
       run: Get-PSDrive
       shell: powershell
 
-    - uses: actions/github-script@v6
+    - uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6.4.1
       with:
         script: |
           core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
@@ -314,7 +314,7 @@ runs:
 
     - name: Upload vcpkg logs (non-Windows)
       if: ${{ always() && runner.os != 'Windows' }}
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: vcpkg_logs
         path: |
@@ -344,7 +344,7 @@ runs:
 
     - name: Upload vcpkg logs (Windows)
       if: ${{ always() && runner.os == 'Windows' }}
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: vcpkg_logs
         path: |
@@ -352,14 +352,14 @@ runs:
           ${{github.workspace}}/vcpkg_logs
         retention-days: ${{ inputs.ARTIFACT_RETENTION_DAYS }}
 
-    - uses: actions/upload-artifact@v7
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: cmake-profiling-output (${{ inputs.DESCRIPTION }})
         path: cmake-profiling-output
         retention-days: ${{ inputs.ARTIFACT_RETENTION_DAYS }}
 
     - name: BEFORE BUILD
-      uses: actions/github-script@v6
+      uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6.4.1
       with:
         script: |
           console.log("!!! BEFORE BUILD !!!")
@@ -368,7 +368,7 @@ runs:
       run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}}
       shell: powershell
     - name: AFTER BUILD
-      uses: actions/github-script@v6
+      uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6.4.1
       with:
         script: |
           console.log("!!! AFTER BUILD !!!")
@@ -376,7 +376,7 @@ runs:
     # before running tests, because of dist check test
     - name: Compile metadata into public format
       if: ${{ runner.os == 'Windows' }}
-      uses: actions/github-script@v6
+      uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6.4.1
       with:
         script: |
           const deployBranch = "${{ inputs.DEPLOY_BRANCH }}";
@@ -407,7 +407,7 @@ runs:
       run: ctest -C ${{env.BUILD_TYPE}} --verbose # --output-on-failure
       shell: powershell
 
-    - uses: actions/upload-artifact@v7
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       if: ${{ inputs.UPLOAD_BUILD == 'true' }}
       with:
         name: ${{ inputs.DIST_ARTIFACT_NAME }}
@@ -428,21 +428,21 @@ runs:
 
     - name: Upload client
       if: ${{ inputs.UPLOAD_BUILD == 'true' }}
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: ${{ inputs.DESCRIPTION }}_skymp5-client.js
         path: ${{ github.workspace }}/build/dist/client/Data/Platform/Plugins/${{ inputs.DESCRIPTION }}_skymp5-client.js
         archive: false
         retention-days: ${{ inputs.ARTIFACT_RETENTION_DAYS }}
 
-    - uses: actions/upload-artifact@v7
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       if: ${{ inputs.UPLOAD_BUILD == 'true' }}
       with:
         name: ${{ inputs.SERVER_DIST_ARTIFACT_NAME }}
         path: ${{github.workspace}}/build/dist/server
         retention-days: ${{ inputs.ARTIFACT_RETENTION_DAYS }}
 
-    - uses: actions/upload-artifact@v7
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       if: ${{ inputs.COVERAGE == 'true' }}
       with:
         name: coverage (${{ inputs.DESCRIPTION }})
@@ -464,7 +464,7 @@ runs:
         echo "SP_NEXUS_ARTIFACT_NAME=$artifactName" | Out-File -Append -FilePath $env:GITHUB_ENV
       shell: powershell
       
-    - uses: actions/upload-artifact@v7
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       if: ${{ inputs.SP_NEXUS_ARTIFACT_NAME != 'nope' }}
       with:
         name: ${{ env.SP_NEXUS_ARTIFACT_NAME }}
@@ -472,7 +472,7 @@ runs:
         path: ${{github.workspace}}/build/nexus/sp/data/*
         retention-days: ${{ inputs.ARTIFACT_RETENTION_DAYS }}
 
-    - uses: actions/upload-artifact@v7
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       if: ${{ inputs.UPLOAD_BUILD == 'true' }}
       with:
         name: papyrus-vm-nexus (${{ inputs.DESCRIPTION }})
@@ -485,7 +485,7 @@ runs:
       run: Get-PSDrive
       shell: powershell
 
-    - uses: actions/upload-artifact@v7
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: msbuild_files (${{ inputs.DESCRIPTION }})
         path: |
