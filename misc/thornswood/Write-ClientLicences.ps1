@@ -32,13 +32,32 @@
 
   WHAT IT WRITES, into -Out (build\licences):
     <port>.txt       the port's share\<port>\copyright, byte for byte
+    <library>.txt    each library's text (below)
     licences.json    the commit, the triplet, the llvm-pdbutil that read it,
                      each client file with the ports in it and the other
-                     libraries it took modules from, and each port with its
+                     libraries it took modules from, each port with its
                      version, the licence its vcpkg.json declares, the files
-                     it is in, and its text's name, size and sha256
+                     it is in, and its text's name, size and sha256, and each
+                     library the same way, with where it is from
   A port in a client file with no copyright text stops it: that notice is
   owed and there is nothing to give.
+
+  THE CODE THAT DOES NOT COME THROUGH VCPKG (Thornswood #3751). Some of the
+  fork's own folders carry a notice of their own, not the GPL or AGPL text
+  that already goes with the files: skyrim-platform\src\tilted (Tilted
+  Phoques' TiltedUI, TiltedCore, TiltedHooks and TiltedReverse, whose notice
+  is in THIRD_PARTY_LICENSES), and papyrus-vm, viet and libespm (each MIT by
+  its LICENSE). The same source files read above say which client file has
+  code from which, by path under this clone ($ForkLibraries). Code from a
+  folder of the fork that is neither one of those nor one of the GPL and AGPL
+  folders ($ForkOwnFolders) stops it, so a new folder cannot go out unread.
+  skymp5-client.js is webpack's development build of skymp5-client, which
+  names every module it holds; each npm package among them is read from
+  skymp5-client\node_modules, with the licence its package.json declares and
+  the licence file it carries. Each of these is a library in licences.json,
+  beside the ports, and its text is <name>.txt: tilted.txt is the Tilted
+  sections of THIRD_PARTY_LICENSES as they stand, the others their own
+  files byte for byte. A package with no licence file stops it.
 
   Thornswood's engine.yml records licences.json and the texts with the client
   build (its scripts\release\New-ClientLicenceRecord.ps1), and every download
@@ -71,6 +90,110 @@ $ClientFiles = @(
   'Data/Platform/Distribution/RuntimeDependencies/SkyrimPlatformImpl.dll',
   'Data/Platform/Distribution/RuntimeDependencies/SkyrimPlatformCEF.exe.hidden'
 )
+# The webpack build of the six, and the folder its node_modules are in.
+$ClientBundle = 'Data/Platform/Plugins/skymp5-client.js'
+$ClientBundleFrom = 'skymp5-client'
+
+# The fork's folders whose code goes out under a notice of its own (#3751),
+# by path under the clone, first match wins. Text is the file under the
+# clone that holds the notice; Sections, when given, keeps only the sections
+# of it that start so; Says, when given, is what its first line must be, so
+# the licence named here stays the one the file gives.
+$ForkLibraries = [ordered]@{
+  'tilted'     = @{ Path = 'skyrim-platform/src/tilted/'; Licence = $null; Text = 'THIRD_PARTY_LICENSES'; Sections = '^This software uses Tilted' }
+  'papyrus-vm' = @{ Path = 'papyrus-vm/'; Licence = 'MIT'; Text = 'papyrus-vm/LICENSE'; Says = 'MIT License' }
+  'viet'       = @{ Path = 'viet/';       Licence = 'MIT'; Text = 'viet/LICENSE';       Says = 'MIT License' }
+  'libespm'    = @{ Path = 'libespm/';    Licence = 'MIT'; Text = 'libespm/LICENSE';    Says = 'MIT License' }
+}
+# The fork's folders whose code goes out under the GPL and AGPL texts that
+# already go with the files (skymp5-server's LICENSE is the AGPL, the others'
+# the GPL), and serialization, SkyMP's own with no licence file of its own.
+$ForkOwnFolders = @('skymp5-server/', 'skyrim-platform/', 'skymp5-client/', 'savefile/', 'serialization/')
+
+$ForkRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).ProviderPath
+$forkPrefix = $ForkRoot.Replace('\', '/').TrimEnd('/') + '/'
+$buildPrefix = $Build.Replace('\', '/').TrimEnd('/') + '/'
+
+# A source path's place in the clone: a library's name, 'own', or $null when
+# it is not under the clone or is under the build folder (what the build
+# generated) or vcpkg. Throws for a folder neither table names.
+function Get-ForkPathLibrary([string]$Path) {
+  $p = $Path.Replace('\', '/')
+  if ($p.StartsWith($buildPrefix, [StringComparison]::OrdinalIgnoreCase)) { return $null }
+  if (-not $p.StartsWith($forkPrefix, [StringComparison]::OrdinalIgnoreCase)) { return $null }
+  $rel = $p.Substring($forkPrefix.Length)
+  if ($rel.StartsWith('vcpkg/', [StringComparison]::OrdinalIgnoreCase)) { return $null }
+  foreach ($n in $ForkLibraries.Keys) { if ($rel.StartsWith($ForkLibraries[$n].Path, [StringComparison]::OrdinalIgnoreCase)) { return $n } }
+  foreach ($f in $ForkOwnFolders) { if ($rel.StartsWith($f, [StringComparison]::OrdinalIgnoreCase)) { return 'own' } }
+  throw "$rel has code in a client file, and its folder is neither one whose notice is recorded here (`$ForkLibraries) nor one under the GPL or AGPL (`$ForkOwnFolders). Read its licence and add it to one of the two."
+}
+
+# A library's text, as bytes.
+function Get-ForkLibraryText([string]$Name) {
+  $lib = $ForkLibraries[$Name]
+  $p = Join-Path $ForkRoot $lib.Text
+  if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { throw "$($lib.Text) is not in the clone, and it is $Name's notice" }
+  $bytes = [IO.File]::ReadAllBytes($p)
+  $t = [Text.UTF8Encoding]::new($false).GetString($bytes)
+  if ($lib.Says -and ($t -split "\r?\n", 2)[0].Trim() -ne $lib.Says) { throw "$($lib.Text) no longer starts '$($lib.Says)', so $Name's licence is not the one named here" }
+  if (-not $lib.Sections) { return ,$bytes }
+  # THIRD_PARTY_LICENSES: sections between lines of dashes. The ones kept,
+  # as they stand, with the line that parted them.
+  $parts = [regex]::Split($t, '((?:\r?\n)+-{20,}(?:\r?\n)+)')
+  $keep = @(); $sep = $null
+  for ($i = 0; $i -lt $parts.Count; $i += 2) {
+    if ($parts[$i].Trim() -match $lib.Sections) { $keep += $parts[$i]; if (-not $sep -and $i + 1 -lt $parts.Count) { $sep = $parts[$i + 1] } }
+  }
+  if (-not $keep.Count) { throw "$($lib.Text) has no section starting '$($lib.Sections)', and it held $Name's notice" }
+  $nl = $(if ($t.Contains("`r`n")) { "`r`n" } else { "`n" })
+  return ,([Text.UTF8Encoding]::new($false).GetBytes(($keep -join $sep) + $nl))
+}
+
+# The npm packages in a webpack development build, as their folders under
+# the folder it was built in. That build names each module it holds on a
+# line of its own, /***/ "<loaders>!<path>":, and a production build names
+# none, so a bundle that names no module at all stops this.
+function Get-BundlePackages([string]$Bundle) {
+  $dirs = New-Object System.Collections.Generic.SortedSet[string] ([StringComparer]::Ordinal)
+  $modules = 0
+  foreach ($line in [IO.File]::ReadLines($Bundle)) {
+    if ($line -notmatch '^/\*\*\*/ "(.+)":\s*$') { continue }
+    $modules++
+    $id = $Matches[1]
+    $res = $id.Substring($id.LastIndexOf('!') + 1)
+    if ($res -match '^\./(.*node_modules/(?:@[^/]+/)?[^/]+)/') { $null = $dirs.Add($Matches[1]) }
+  }
+  if (-not $modules) { throw "$Bundle names no module, so it is not a webpack development build and its packages cannot be read from it" }
+  return @($dirs)
+}
+
+# A package's name, version, declared licence and licence text, from its
+# folder. A package with several licence files gives them all, each under a
+# line naming it; one with none stops this.
+function Get-PackageNotice([string]$Dir) {
+  $pj = Join-Path $Dir 'package.json'
+  if (-not (Test-Path -LiteralPath $pj -PathType Leaf)) { throw "$Dir has no package.json" }
+  $j = [IO.File]::ReadAllText($pj) | ConvertFrom-Json
+  $lic = $null
+  if ($j.license -is [string]) { $lic = $j.license }
+  elseif ($j.license -and $j.license.type) { $lic = [string]$j.license.type }
+  elseif ($j.licenses) { $lic = (@($j.licenses | ForEach-Object { if ($_ -is [string]) { $_ } else { [string]$_.type } }) -join ' OR ') }
+  $files = @(Get-ChildItem -LiteralPath $Dir -File | Where-Object { $_.Name -match '(?i)^(licen[cs]e|copying)([.-].*)?$' } | Sort-Object Name)
+  if (-not $files.Count) { throw "$($j.name) $($j.version) is in $ClientBundle and carries no licence file in $Dir. The notice is owed and there is nothing to give." }
+  if ($files.Count -eq 1) { $bytes = [IO.File]::ReadAllBytes($files[0].FullName) }
+  else {
+    $utf8 = [Text.UTF8Encoding]::new($false)
+    $ms = New-Object IO.MemoryStream
+    foreach ($f in $files) {
+      $h = $utf8.GetBytes("==> $($f.Name) <==`n")
+      $ms.Write($h, 0, $h.Length)
+      $b = [IO.File]::ReadAllBytes($f.FullName); $ms.Write($b, 0, $b.Length)
+      $ms.Write($utf8.GetBytes("`n"), 0, 1)
+    }
+    $bytes = $ms.ToArray()
+  }
+  return [pscustomobject]@{ Name = [string]$j.name; Version = [string]$j.version; Licence = $lic; Bytes = $bytes }
+}
 
 $installed = Join-Path $Build ('vcpkg_installed\' + $Triplet)
 $info = Join-Path $Build 'vcpkg_installed\vcpkg\info'
@@ -167,6 +290,7 @@ $null = New-Item -ItemType Directory -Force -Path $Out
 
 $fileRecord = [ordered]@{}
 $inFiles = @{}
+$libIn = @{}    # each library of the fork's, or npm package, to the files it is in (#3751)
 foreach ($rel in $ClientFiles) {
   $bin = Join-Path $Build ('dist\client\' + $rel.Replace('/', '\'))
   if (-not (Test-Path -LiteralPath $bin -PathType Leaf)) { throw "the build has no dist/client/$rel" }
@@ -203,11 +327,25 @@ foreach ($rel in $ClientFiles) {
     if ($line -match '^\s*0x[0-9A-Fa-f]+\s*\|\s*\d+\s*\|\s*(.+?) \((?:MD5|SHA-?1|SHA-?256|None)[^)]*\)\s*$') { $null = $sources.Add($Matches[1]) }
   }
   $headerFiles = @{}
+  $libFiles = @{}   # the fork's libraries with code in the file (#3751)
+  $ownFiles = 0
   foreach ($s in $sources) {
     $port = Get-PathPort $s
-    if (-not $port) { continue }
-    $why[$port] = $true
-    $headerFiles[$port] = 1 + [int]$headerFiles[$port]
+    if ($port) {
+      $why[$port] = $true
+      $headerFiles[$port] = 1 + [int]$headerFiles[$port]
+      continue
+    }
+    $lib = Get-ForkPathLibrary $s
+    if ($lib -eq 'own') { $ownFiles++ }
+    elseif ($lib) { $libFiles[$lib] = 1 + [int]$libFiles[$lib] }
+  }
+  # Every one of these files is built from the fork's own folders, so a
+  # file with none of its sources under this clone was built from another.
+  if (-not $ownFiles -and -not $libFiles.Count) { throw "no source file with code in $rel is under $ForkRoot, so this is not this clone's build" }
+  foreach ($n in @($libFiles.Keys | Sort-Object)) {
+    if (-not $libIn.ContainsKey($n)) { $libIn[$n] = @() }
+    $libIn[$n] += $rel
   }
 
   $names = @($why.Keys | Sort-Object)
@@ -221,8 +359,28 @@ foreach ($rel in $ClientFiles) {
   foreach ($n in $names) {
     Write-Host ("  {0,-34} {1,5} module(s) from its library, {2,5} source file(s) with code" -f $n, [int]$libModules[$n], [int]$headerFiles[$n])
   }
+  foreach ($n in @($libFiles.Keys | Sort-Object)) {
+    Write-Host ("  {0,-34} the fork's {1}, {2,5} source file(s) with code" -f $n, $ForkLibraries[$n].Path, [int]$libFiles[$n])
+  }
+  Write-Host ("  the fork's own folders: {0} source file(s) with code" -f $ownFiles)
   Write-Host ("  other libraries it took modules from: {0}" -f (@($other) -join ', '))
 }
+
+# The npm packages webpack put in skymp5-client.js (#3751).
+$bundle = Join-Path $Build ('dist\client\' + $ClientBundle.Replace('/', '\'))
+if (-not (Test-Path -LiteralPath $bundle -PathType Leaf)) { throw "the build has no dist/client/$ClientBundle" }
+$npm = [ordered]@{}
+foreach ($d in (Get-BundlePackages $bundle)) {
+  $pkg = Get-PackageNotice (Join-Path (Join-Path $ForkRoot $ClientBundleFrom) $d.Replace('/', '\'))
+  $n = 'npm-' + ($pkg.Name.TrimStart('@').Replace('/', '-')) + '-' + $pkg.Version
+  if ($n -notmatch '^[a-z0-9][a-z0-9._-]*$') { throw "$($pkg.Name) $($pkg.Version) in $ClientBundle makes the name $n, which is not one a text can be named" }
+  if ($npm.Contains($n)) { continue }
+  $npm[$n] = [ordered]@{ Package = $pkg; From = ($ClientBundleFrom + '/' + $d) }
+  if (-not $libIn.ContainsKey($n)) { $libIn[$n] = @() }
+  $libIn[$n] += $ClientBundle
+}
+Write-Host ("{0}: {1} npm package(s), read from its modules" -f $ClientBundle, $npm.Count)
+foreach ($n in $npm.Keys) { Write-Host ("  {0,-34} {1,-10} {2}" -f $npm[$n].Package.Name, $npm[$n].Package.Version, $npm[$n].From) }
 
 $portRecord = [ordered]@{}
 $missing = @()
@@ -251,21 +409,53 @@ foreach ($n in @($inFiles.Keys | Sort-Object)) {
 }
 if ($missing.Count) { throw ("these ports are in a client file and vcpkg installed no copyright text for them: {0}. The notice is owed; give the port its text (vcpkg_install_copyright in its portfile)." -f ($missing -join ', ')) }
 
+# The fork's libraries and the npm packages, each with its text (#3751).
+$libRecord = [ordered]@{}
+foreach ($n in @($libIn.Keys | Sort-Object)) {
+  if ($portRecord.Contains($n)) { throw "$n is both a vcpkg port and a library here, and the two texts would share one name" }
+  if ($ForkLibraries.Contains($n)) {
+    $bytes = Get-ForkLibraryText $n
+    $kind = 'fork'; $version = $null; $licence = $ForkLibraries[$n].Licence; $from = $ForkLibraries[$n].Text
+  } else {
+    $p = $npm[$n].Package
+    $bytes = $p.Bytes
+    $kind = 'npm'; $version = $p.Version; $licence = $p.Licence; $from = $npm[$n].From
+  }
+  $to = Join-Path $Out ($n + '.txt')
+  [IO.File]::WriteAllBytes($to, $bytes)
+  $libRecord[$n] = [ordered]@{
+    kind = $kind
+    version = $version
+    licence = $licence
+    from = $from
+    in = @($libIn[$n])
+    text = ($n + '.txt')
+    bytes = (Get-Item -LiteralPath $to).Length
+    sha256 = (Get-FileHash -LiteralPath $to -Algorithm SHA256).Hash.ToLowerInvariant()
+  }
+}
+
 $commit = ''
 $ErrorActionPreference = 'Continue'
 $commit = "$(git -C (Join-Path $PSScriptRoot '..\..') rev-parse HEAD 2>$null)".Trim()
 $ErrorActionPreference = 'Stop'
 $record = [ordered]@{
-  _note = 'The vcpkg libraries whose code is in each native client file, read from each file''s own program database, and each one''s licence text beside this file. Written by misc/thornswood/Write-ClientLicences.ps1 (Thornswood #3099).'
+  _note = 'The vcpkg libraries whose code is in each native client file, read from each file''s own program database, the fork''s own libraries under a notice of their own and the npm packages in skymp5-client.js (libraries), and each one''s licence text beside this file. Written by misc/thornswood/Write-ClientLicences.ps1 (Thornswood #3099, #3751).'
   commit = $commit
   triplet = $Triplet
   readWith = $pdbutilVersion
   files = $fileRecord
   ports = $portRecord
+  libraries = $libRecord
 }
 [IO.File]::WriteAllText((Join-Path $Out 'licences.json'), (($record | ConvertTo-Json -Depth 6) + "`n"), (New-Object Text.UTF8Encoding($false)))
 Write-Host ("{0} port(s) in the client files; their texts and licences.json are in {1}" -f $portRecord.Count, $Out)
 foreach ($n in $portRecord.Keys) {
   $r = $portRecord[$n]
   Write-Host ("  {0,-34} {1,-16} {2,-28} {3}" -f $n, $r.version, $(if ($r.licence) { $r.licence } else { '(not declared)' }), (@($r.in | ForEach-Object { $_.Substring($_.LastIndexOf('/') + 1) }) -join ', '))
+}
+Write-Host ("{0} other librar(ies) in the client files" -f $libRecord.Count)
+foreach ($n in $libRecord.Keys) {
+  $r = $libRecord[$n]
+  Write-Host ("  {0,-34} {1,-16} {2,-28} {3}" -f $n, $r.kind, $(if ($r.licence) { $r.licence } else { '(not declared)' }), (@($r.in | ForEach-Object { $_.Substring($_.LastIndexOf('/') + 1) }) -join ', '))
 }
