@@ -13,6 +13,17 @@
 # first time was 30. vcpkg now restores those from GitHub Packages, and the
 # coverage run checked nothing test_unit does not, so a build is the
 # configure, the compile (14 minutes) and the tests (about 3).
+#
+# HOW LONG A JOB MAY RUN (Thornswood #3557). Every job sets timeout-minutes,
+# as every Thornswood workflow does; without it GitHub waits 360 minutes, and
+# a hung vcpkg or CMake step would hold the runner and this workflow's
+# concurrency group that long, since a push never cancels an older push's
+# build. Measured 27 Oct over all 177 runs since 5 Oct: a build with the
+# library cache takes 20 to 45 minutes (median 30); one that builds every
+# library again, as after a vcpkg pin change, took 54 to 67. Twice the
+# slowest is 135, for build-pr and build alike, since a pull request that
+# moves the pin builds every library too. The Ubuntu job never took more
+# than 20 seconds, so it gets 10 minutes.
 # Upstream's workflows on this branch (the four that dispatch upstream's
 # installer, the Linux builds, the formatting, Prettier and dependent issue
 # checks) carry `if: github.repository == 'skyrim-multiplayer/skymp'`, so they
@@ -97,6 +108,7 @@ env:
 jobs:
   save-directory-linux:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -131,6 +143,7 @@ jobs:
   build-pr:
     if: github.event_name == 'pull_request'
     runs-on: windows-2022
+    timeout-minutes: 135
     permissions:
       contents: read
       packages: read
@@ -253,6 +266,7 @@ jobs:
   build:
     if: github.event_name == 'push'
     runs-on: windows-2022
+    timeout-minutes: 135
     # The workflow's own VCPKG_BINARY_SOURCES, readwrite: the header above
     # build-pr, THE LIBRARY CACHE.
     permissions:
