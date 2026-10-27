@@ -59,10 +59,13 @@
 #   build\skymp5-scripts\pex\           Papyrus the build compiled, when it did
 #   build\licences\                     the licence text of every vcpkg
 #                                       library whose code is in one of the
-#                                       four native client files, and
-#                                       licences.json, which says which is in
-#                                       which (misc\thornswood\Write-ClientLicences.ps1,
-#                                       Thornswood #3099)
+#                                       four native client files, of the
+#                                       fork's own folders under a notice of
+#                                       their own and of the npm packages in
+#                                       skymp5-client.js, and licences.json,
+#                                       which says which is in which
+#                                       (misc\thornswood\Write-ClientLicences.ps1,
+#                                       Thornswood #3099, #3751)
 #   fork-build.json                     the commit, this run, and each file's
 #                                       sha256, size and time
 # A zip keeps a file's time without its zone, so the times go in
