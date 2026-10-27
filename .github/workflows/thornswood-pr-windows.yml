@@ -13,10 +13,16 @@
 # first time was 30. vcpkg now restores those from GitHub Packages, and the
 # coverage run checked nothing test_unit does not, so a build is the
 # configure, the compile (14 minutes) and the tests (about 3).
-# Upstream's workflows that would start here (the four that dispatch upstream's
+# Upstream's workflows on this branch (the four that dispatch upstream's
 # installer, the Linux builds, the formatting, Prettier and dependent issue
 # checks) carry `if: github.repository == 'skyrim-multiplayer/skymp'`, so they
-# keep working upstream and are skipped here.
+# keep working upstream and are skipped here. That guard is on this branch
+# only. A schedule, an issue event and a push to main run the copies on the
+# fork's main, which is upstream's as it was and has no guard: there
+# "PR Windows Flatrim (AE/SE)" and "PR Windows Skyrim VR" run every night and
+# on every push to main, and "Build & Push skymp-vcpkg-deps" fails on every
+# push to main for want of Docker Hub secrets (Thornswood #3594, #3404).
+# Nothing of Thornswood's reads those runs.
 #
 # Why GitHub's runner and not the VPS: this repository is public, so its
 # minutes on GitHub's standard runners cost nothing, and a self-hosted runner
@@ -52,7 +58,15 @@
 # fork-build.json in UTC and engine.yml puts them back: the record's builtUtc
 # is the binary's time. A pull request's build keeps one too, for 14 days, so
 # a fork change can be tried before it merges; engine.yml takes only a push to
-# thornswood/engine-changes.
+# thornswood/engine-changes, and a push's is kept 90.
+#
+# NOTHING ELSE IS KEPT BUT LOGS (Thornswood #3675, #3691). pr_base's own
+# uploads of the build (dist, the client js, server-dist, the Skyrim Platform
+# and papyrus-vm Nexus files) were about 376 MB a run, kept 90 days, and
+# nothing read them: thornswood-engine-<commit> holds every file Thornswood
+# takes. So this passes UPLOAD_BUILD "false" and SP_NEXUS_ARTIFACT_NAME
+# "nope", and the logs pr_base keeps (vcpkg logs, CMake profiling, msbuild
+# files) go after 7 days, which is long enough to read a failed build's.
 #
 # LINE ENDS AS ONE BUILDS. The image's git turns every text file to CR LF on
 # checkout (core.autocrlf true in its system config). The machine that builds
@@ -136,7 +150,7 @@ jobs:
         with:
           DESCRIPTION: 'Flatrim'
           SKYRIM_VR_FLAG: OFF
-          SP_NEXUS_ARTIFACT_NAME: Skyrim Platform %SP_VERSION%
+          SP_NEXUS_ARTIFACT_NAME: nope
           DEPLOY_BRANCH: ""
           DIST_ARTIFACT_NAME: dist
           SERVER_DIST_ARTIFACT_NAME: server-dist
@@ -144,6 +158,8 @@ jobs:
           NUGET_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NUGET_FEED_OWNER: ${{ github.repository_owner }}
           COVERAGE: "false"
+          UPLOAD_BUILD: "false"
+          ARTIFACT_RETENTION_DAYS: "7"
 
       # Read from each native client file's own program database, which only
       # this build folder has (Thornswood #3099; the script says how).
