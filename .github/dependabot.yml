@@ -63,3 +63,23 @@ updates:
         patterns: ["*"]
     commit-message:
       prefix: "skymp5-front"
+
+  # The actions thornswood/engine-changes runs (Thornswood #2761). Every one is
+  # pinned by commit with its tag in a comment, and
+  # misc/thornswood/Test-ActionPins.ps1 on that branch fails the build on one
+  # that is not. This moves the pins: it looks the newer tag up and rewrites
+  # both the commit and the comment, every action in one grouped pull request
+  # a month, as the lockfiles above. "/" is .github/workflows; a composite
+  # action is read only where it is named.
+  - package-ecosystem: "github-actions"
+    directories:
+      - "/"
+      - "/.github/actions/pr_base"
+    target-branch: "thornswood/engine-changes"
+    schedule:
+      interval: "monthly"
+    groups:
+      all:
+        patterns: ["*"]
+    commit-message:
+      prefix: "actions"
