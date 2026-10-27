@@ -67,10 +67,9 @@ const createApp = (getOriginPort: () => number) => {
     }
   });
 
+  // Masters, archives and scripts are refused by serveFromOneHandle, on the
+  // path it opens (Thornswood #3927).
   const router = new Router();
-  router.get(new RegExp("/scripts/.*"), (ctx: any) => ctx.throw(403));
-  router.get(new RegExp("\.es[mpl]"), (ctx: any) => ctx.throw(403));
-  router.get(new RegExp("\.bsa"), (ctx: any) => ctx.throw(403));
 
   // The request body is read only here, the one route that uses it, and
   // never as multipart: koa-body writes every uploaded file to the temp folder
