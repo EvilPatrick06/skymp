@@ -1655,6 +1655,12 @@ void WorldState::SetRelootTime(const std::string& recordType,
   }
 }
 
+std::chrono::system_clock::time_point WorldState::GetTimerNow() const
+{
+  return pImpl->timerClock ? pImpl->timerClock()
+                           : std::chrono::system_clock::now();
+}
+
 void WorldState::SetTimerClock(Viet::Timer::Clock clock)
 {
   pImpl->timerClock = clock;

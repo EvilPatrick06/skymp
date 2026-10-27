@@ -1412,6 +1412,13 @@ void MpObjectReference::ApplyChangeForm(const MpChangeForm& changeForm)
     RequestReloot(ms);
   }
 
+  // A reference saved with a delete time (a drop, Thornswood #3498) is
+  // deleted at it, even when the server was down then: a time already passed
+  // fires on the first tick.
+  if (changeForm.deleteDatetime && !changeForm.isDeleted) {
+    ArmDeleteTimer(changeForm.deleteDatetime);
+  }
+
   // Perform all required grid operations
   // Mirrors MpActor impl
   if (!AsActor()) {
@@ -1595,7 +1602,7 @@ void MpObjectReference::GivePickupItemsToActivationSource(
     uint32_t resultingCount =
       std::max(kCountDefault, std::max(countRecord, countChangeForm));
 
-    if (pickupExtra) {
+    if (const auto& pickupExtra = GetPickupExtra()) {
       activationSource.AddItems(
         { Inventory::Entry(resultItem, resultingCount, *pickupExtra) });
     } else {
@@ -1607,13 +1614,52 @@ void MpObjectReference::GivePickupItemsToActivationSource(
 void MpObjectReference::SetPickupExtra(
   const std::optional<Inventory::ExtraData>& extra)
 {
-  pickupExtra = extra;
+  EditChangeForm(
+    [&](MpChangeFormREFR& changeForm) { changeForm.pickupExtra = extra; });
 }
 
 const std::optional<Inventory::ExtraData>& MpObjectReference::GetPickupExtra()
   const noexcept
 {
-  return pickupExtra;
+  return ChangeForm().pickupExtra;
+}
+
+void MpObjectReference::SetDeleteDatetime(
+  std::chrono::system_clock::time_point when)
+{
+  const auto ms = static_cast<uint64_t>(std::max<int64_t>(
+    1,
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      when.time_since_epoch())
+      .count()));
+  EditChangeForm(
+    [&](MpChangeFormREFR& changeForm) { changeForm.deleteDatetime = ms; });
+  ArmDeleteTimer(ms);
+}
+
+void MpObjectReference::ArmDeleteTimer(uint64_t deleteDatetimeMs)
+{
+  auto worldState = GetParent();
+  if (!worldState) {
+    return;
+  }
+  const std::chrono::system_clock::time_point when{ std::chrono::milliseconds(
+    deleteDatetimeMs) };
+  const auto wait = std::max(
+    std::chrono::system_clock::duration::zero(),
+    std::chrono::duration_cast<std::chrono::system_clock::duration>(
+      when - worldState->GetTimerNow()));
+  worldState->SetTimer(wait)
+    .Then([worldState, formId = GetFormId(), self = this](Viet::Void) {
+      // The same reference, not one made again with its id since.
+      auto form = worldState->LookupFormById(formId);
+      if (form.get() != self || self->IsDeleted()) {
+        return;
+      }
+      spdlog::trace("MpObjectReference {:x} - deleted at its delete time",
+                    formId);
+      self->Delete();
+    });
 }
 
 void MpObjectReference::ProcessActivateNormal(

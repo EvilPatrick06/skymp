@@ -2431,41 +2431,17 @@ void MpActor::DropItem(const uint32_t baseId, const Inventory::Entry& entry)
   pImpl->droppedItemsQueue.push_back(
     std::make_pair(droppedItemFormId, placedObject));
 
-  auto time =
-    Viet::TimeUtils::To<std::chrono::milliseconds>(kDeletionTimeSeconds);
-
-  uint32_t formId = GetFormId();
-
-  // TODO: make timer group for better performance
-  worldState->SetTimer(time).Then([placedObject, worldState, droppedItemFormId,
-                                   editorId, this, formId](Viet::Void) {
-    bool actorStillAlive = this == worldState->LookupFormById(formId).get();
-    if (!actorStillAlive) {
-      return;
-    }
-    bool formStillAlive =
-      placedObject == worldState->LookupFormById(droppedItemFormId).get();
-    if (!formStillAlive) {
-      return;
-    }
-
-    if (placedObject->IsDeleted()) {
-      return;
-    }
-
-    spdlog::trace("MpActor::DropItem - deleting previously dropped {}",
-                  editorId);
-
-    // Item deleted, not in queue anymore
-    auto it = std::remove(this->pImpl->droppedItemsQueue.begin(),
-                          this->pImpl->droppedItemsQueue.end(),
-                          std::make_pair(droppedItemFormId, placedObject));
-    this->pImpl->droppedItemsQueue.erase(it,
-                                         this->pImpl->droppedItemsQueue.end());
-
-    placedObject->Delete();
-    ++g_numDrops;
-  });
+  // THORNSWOOD PATCH (Thornswood #3498). The deletion time is saved with the
+  // reference and its timer set again after a restart (MpObjectReference::
+  // SetDeleteDatetime), so a drop goes after kDeletionTimeSeconds even when
+  // the server restarts in between. The timer used to live here only, and a
+  // drop saved before a restart stayed in the world for good. A deleted drop
+  // leaves the queue above on this actor's next drop. Drops are counted here,
+  // as each one takes a form id.
+  ++g_numDrops;
+  placedObject->SetDeleteDatetime(
+    worldState->GetTimerNow() +
+    Viet::TimeUtils::To<std::chrono::milliseconds>(kDeletionTimeSeconds));
 }
 
 void MpActor::SetIsBlockActive(bool active)

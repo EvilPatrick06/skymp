@@ -296,6 +296,10 @@ public:
   // itself; an empty clock puts the system clock back (Thornswood #2000).
   void SetTimerClock(Viet::Timer::Clock clock);
 
+  // THORNSWOOD PATCH (Thornswood #3498). Now on the timers' clock: the
+  // system clock, or the one SetTimerClock gave.
+  std::chrono::system_clock::time_point GetTimerNow() const;
+
   void SetNpcSettings(
     std::unordered_map<std::string, NpcSettingsEntry>&& settings);
   void SetForbiddenRelootTypes(const std::set<std::string>& types);
