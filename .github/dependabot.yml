@@ -26,18 +26,19 @@ updates:
   # Security updates and alerts read the default branch only, so they never
   # see these lockfiles. Version updates are the watch: a fixed release of a
   # package with an advisory is a newer version, and this opens a pull request
-  # for it. Minor and patch bumps come grouped, one pull request per directory
-  # a week; a major bump comes on its own, because it can change behaviour.
+  # for it. Every bump for a directory, major ones included, comes in one
+  # grouped pull request a month (Patrick, 26 Oct 2026, q-3691-sec-updates B).
+  # Security updates stay off.
   # A merged bump reaches Thornswood only through its usual one-engine pull
   # request (Thornswood engine/README.md, "One engine").
   - package-ecosystem: "npm"
     directory: "/skymp5-server"
     target-branch: "thornswood/engine-changes"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
     groups:
-      minor-and-patch:
-        update-types: ["minor", "patch"]
+      all:
+        patterns: ["*"]
     commit-message:
       prefix: "skymp5-server"
 
@@ -45,10 +46,10 @@ updates:
     directory: "/skymp5-client"
     target-branch: "thornswood/engine-changes"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
     groups:
-      minor-and-patch:
-        update-types: ["minor", "patch"]
+      all:
+        patterns: ["*"]
     commit-message:
       prefix: "skymp5-client"
 
@@ -56,9 +57,9 @@ updates:
     directory: "/skymp5-front"
     target-branch: "thornswood/engine-changes"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
     groups:
-      minor-and-patch:
-        update-types: ["minor", "patch"]
+      all:
+        patterns: ["*"]
     commit-message:
       prefix: "skymp5-front"
