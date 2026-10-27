@@ -149,7 +149,7 @@ const uint8_t* ReadPropertyValue(const uint8_t* p, Property* prop,
 void FillScriptArray(const uint8_t* p, std::vector<Script>& out,
                      uint16_t objFormat)
 {
-  for (uint16_t i = 0; i < out.size(); ++i) {
+  for (size_t i = 0; i < out.size(); ++i) {
     const uint16_t length = *reinterpret_cast<const uint16_t*>(p);
     p += 2;
     out[i].scriptName = std::string(reinterpret_cast<const char*>(p), length);
