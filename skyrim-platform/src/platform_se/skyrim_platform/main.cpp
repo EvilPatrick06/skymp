@@ -13,6 +13,7 @@
 #include "Hooks.h"
 #include "IPC.h"
 #include "InputConverter.h"
+#include "PageHeldKeys.h"
 #include "PapyrusTESModPlatform.h"
 #include "Settings.h"
 #include "SkyrimPlatform.h"
@@ -256,7 +257,6 @@ public:
   {
     pCursorX = &RE::MenuScreenData::GetSingleton()->mousePos.x;
     pCursorY = &RE::MenuScreenData::GetSingleton()->mousePos.y;
-    vkCodeDownDur.fill(0);
   }
 
   void Init(std::shared_ptr<OverlayService> service_,
@@ -306,8 +306,24 @@ public:
 
   void OnKeyStateChange(uint8_t code, bool down) noexcept override
   {
-    if (!IsBrowserFocused())
+    /*
+      THORNSWOOD PATCH (Thornswood #1920). This used to return here whenever
+      the browser did not have focus, key ups included, so a key the page was
+      told went down and that came up after a panel gave the keyboard back
+      stayed held in the page, and OnUpdate repeated its character on every
+      read for the rest of the session. PageHeldKeys (platform_lib, with its
+      own unit test) says what the page is handed: everything while it has
+      the keyboard, and otherwise only the key up for a key it holds.
+    */
+    const bool focused = IsBrowserFocused();
+    const int virtualKeyCode = VscToVk(code);
+    const bool toPage = pageKeys.Change(static_cast<uint32_t>(virtualKeyCode),
+                                        down, focused, clock());
+    if (!focused) {
+      if (toPage)
+        InjectKey(code, false);
       return;
+    }
 
     // Switch layout if need
     bool switchLayoutDown = ((GetAsyncKeyState(VK_SHIFT) & 0x8000) &&
@@ -319,12 +335,6 @@ public:
       if (switchLayoutDown) {
         conv->SwitchLayout();
       }
-    }
-
-    // Fill vkCodeDownDur
-    int virtualKeyCode = VscToVk(code);
-    if (virtualKeyCode >= 0 && virtualKeyCode < vkCodeDownDur.size()) {
-      vkCodeDownDur[virtualKeyCode] = down ? clock() : 0;
     }
 
     if (auto app = service->GetMyChromiumApp()) {
@@ -400,10 +410,12 @@ public:
     if (auto app = service->GetMyChromiumApp())
       app->RunTasks();
 
-    // Repeat the character until the key isn't released
+    // Repeat the character until the key isn't released, and only while the
+    // page has the keyboard (Thornswood #1920, PageHeldKeys).
+    const bool focused = IsBrowserFocused();
+    const clock_t now = clock();
     for (int i = 0; i < 256; ++i) {
-      const auto pressMoment = this->vkCodeDownDur[i];
-      if (pressMoment && clock() - pressMoment > CLOCKS_PER_SEC / 2) {
+      if (pageKeys.Repeats(i, focused, now, CLOCKS_PER_SEC / 2)) {
         if (i == VK_BACK || i == VK_RIGHT || i == VK_LEFT) {
           InjectKey(MapVirtualKeyA(i, MAPVK_VK_TO_VSC), true);
           InjectKey(MapVirtualKeyA(i, MAPVK_VK_TO_VSC), false);
@@ -417,7 +429,7 @@ public:
 private:
   std::shared_ptr<OverlayService> service;
   std::shared_ptr<InputConverter> conv;
-  std::array<clock_t, 256> vkCodeDownDur;
+  PageHeldKeys pageKeys;
   float* pCursorX = nullptr;
   float* pCursorY = nullptr;
   bool switchLayoutDownWas = false;

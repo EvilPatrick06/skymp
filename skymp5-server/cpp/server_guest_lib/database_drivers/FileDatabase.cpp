@@ -1,4 +1,5 @@
 #include "FileDatabase.h"
+#include "SaveDirectory.h"
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -18,6 +19,7 @@
 
 namespace {
 constexpr size_t kMaxJournalBytes = 256 * 1024 * 1024;
+using FileDatabaseDetail::SyncDirectory;
 
 struct FileNameLess
 {
@@ -45,21 +47,6 @@ std::string Checksum(const std::string& bytes)
   char hex[crypto_hash_sha256_BYTES * 2 + 1];
   sodium_bin2hex(hex, sizeof(hex), hash, sizeof(hash));
   return hex;
-}
-
-void SyncDirectory(const std::filesystem::path& directory)
-{
-#ifndef _WIN32
-  int fd = open(directory.c_str(), O_RDONLY | O_DIRECTORY);
-  if (fd < 0) {
-    throw std::runtime_error("Unable to open save directory for sync");
-  }
-  int result = fsync(fd);
-  close(fd);
-  if (result != 0) {
-    throw std::runtime_error("Unable to sync save directory");
-  }
-#endif
 }
 
 void ReplaceFile(const std::filesystem::path& path, const std::string& bytes,
@@ -220,11 +207,9 @@ struct FileDatabase::Impl
 FileDatabase::FileDatabase(std::string directory_,
                            std::shared_ptr<spdlog::logger> logger_)
 {
-  std::filesystem::path p = directory_;
-  p /= "changeForms";
-
+  const auto p = FileDatabaseDetail::InitializeDirectoryTree(
+    std::filesystem::path(directory_) / "changeForms");
   pImpl.reset(new Impl{ p, logger_ });
-  std::filesystem::create_directories(p);
   pImpl->Recover();
 }
 

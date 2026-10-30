@@ -308,38 +308,88 @@ static bool ShouldReadInput()
 }
 
 /*
-  THORNSWOOD PATCH, fourth pass. Ask Windows whether the buffer is telling the
-  truth, and put the keyboard back when it is not.
+  THORNSWOOD PATCH (Thornswood #2131). The keyboard lock, its cause, and the
+  meter that says so if it comes back.
 
-  Every explanation so far has been an attempt to name what takes the keyboard,
-  and each one has been shot down by the next log. What the meter did establish
-  is much narrower and is not in doubt: the hook is called at full rate, every
-  read returns DI_OK, nothing is ever reported lost, and the buffer says no key
-  is down while keys are being pressed. Nothing else creates a DirectInput
-  device in this process, so it is not another client holding it exclusive.
+  The lock: Windows says a key is held while DirectInput reads DI_OK with an
+  empty buffer, cured by alt tabbing out and back. Its cause was in this file.
+  DInputHook::Update called RegisterRawInputDevices for the keyboard and the
+  mouse with hwndTarget NULL, first with RIDEV_REMOVE and then again with no
+  flags. Microsoft's page for that function: "Only one window per raw input
+  device class may be registered to receive raw input within a process (the
+  window passed in the last call to RegisterRawInputDevices). Because of this,
+  RegisterRawInputDevices should not be used from a library, as it may
+  interfere with any raw input processing logic already present in
+  applications that load it." And DirectInput reads the keyboard through raw
+  input of its own: "Internally, DirectInput creates a second thread to read
+  WM_INPUT data" (Microsoft, Taking Advantage of High-Definition Mouse
+  Movement). So every call took the keyboard's raw input away from
+  DirectInput. Its reads still succeeded and its buffer stayed empty, while
+  GetAsyncKeyState, which reads the kernel's own key table, still saw the keys.
+  Alt tabbing cured it because the device is acquired again, and DirectInput
+  registers its own raw input again. The call came out of Update as a bisect
+  before 17 September; the code it left behind the return comes out with this.
 
-  DInputHook::Update registers raw input with hwndTarget NULL and no flags,
-  which means WM_INPUT is delivered to whichever window holds KEYBOARD FOCUS in
-  this process, and DirectInput is built on that delivery. Focus inside the
-  process is not the foreground window: the watcher shows the game holding the
-  foreground across the whole lock. A foreground change resets focus, which is
-  exactly why alt tabbing out and back in has cured it every single time.
+  Until #2131 this function then mended the lock on a timer: after a second of
+  Windows and the device disagreeing, SetFocus on the game window and
+  SetEnabled(true), at most every three seconds, with a [repair] line. Neither
+  reaches the cause. SetEnabled(true) only calls Acquire on each device, and
+  Acquire on a device that is already acquired does nothing (S_FALSE). Focus
+  does not decide what DirectInput reads either: the [input] lines of a dev
+  build session on 11 October show keys arriving in 77 five second spans while
+  GetFocus on this thread was NULL. The line also still said "Raw input
+  registration put back", which stopped being true with the bisect.
 
-  Rather than keep guessing which window takes that focus, this checks the
-  device against something that cannot be affected by it. GetAsyncKeyState
-  reads the kernel's own key table and answers the same whoever has focus. If
-  Windows says a key is held and our buffer says the keyboard is empty, the
-  buffer is wrong, and after a second of that the registration is put back,
-  which is the alt tab cure performed in place. It logs every time it fires, so
-  the cause is still being narrowed even while it stops hurting.
+  So this only measures and changes nothing. When Windows has said for a second
+  that a key is held and the device that none is, one [keyboard] line names
+  where this process's raw input for the keyboard goes now
+  (GetRegisteredRawInputDevices: the target window, its class, its thread and
+  process, and the flags), which names whatever took it if anything ever does
+  again. One more line when the two agree again says how long it lasted.
 
-  GetAsyncKeyState is a lookup in a shared table. It sends no message and
-  cannot block, which is the rule this file has had to learn twice.
+  GetAsyncKeyState, GetRegisteredRawInputDevices, GetClassNameA and
+  GetWindowThreadProcessId send no message and cannot block, the rule this
+  file has had to learn twice.
 */
-static void CheckAgainstWindows(const uint8_t* apKeyboard)
+static void ReportKeyboardRegistration(FILE* f)
+{
+  RAWINPUTDEVICE devices[16];
+  UINT count = sizeof(devices) / sizeof(devices[0]);
+  UINT got = GetRegisteredRawInputDevices(devices, &count, sizeof(RAWINPUTDEVICE));
+  if (got == static_cast<UINT>(-1)) {
+    fprintf(f, "[keyboard] raw input registrations could not be read (%lu)\n",
+            GetLastError());
+    return;
+  }
+
+  bool keyboard = false;
+  for (UINT i = 0; i < got; ++i) {
+    if (devices[i].usUsagePage != 0x01 || devices[i].usUsage != 0x06)
+      continue;
+    keyboard = true;
+    HWND target = devices[i].hwndTarget;
+    char cls[64] = "";
+    DWORD pid = 0;
+    DWORD tid = 0;
+    if (target) {
+      GetClassNameA(target, cls, sizeof(cls));
+      tid = GetWindowThreadProcessId(target, &pid);
+    }
+    fprintf(f,
+            "[keyboard] raw input for the keyboard goes to %p (class \"%s\", "
+            "thread %lu, process %lu, this process %lu), flags 0x%08lX\n",
+            (void*)target, cls, tid, pid, GetCurrentProcessId(),
+            devices[i].dwFlags);
+  }
+  if (!keyboard)
+    fprintf(f, "[keyboard] nothing in this process is registered for raw "
+               "keyboard input\n");
+}
+
+static void MeterAgainstWindows(const uint8_t* apKeyboard)
 {
   static unsigned long long disagreeingSince = 0;
-  static unsigned long long lastRepair = 0;
+  static bool reported = false;
   static unsigned long long lastCheck = 0;
 
   unsigned long long now = GetTickCount64();
@@ -365,7 +415,17 @@ static void CheckAgainstWindows(const uint8_t* apKeyboard)
   }
 
   if (!anyWindows || anyDirectInput) {
+    if (reported) {
+      FILE* f = InputLog();
+      if (f) {
+        fprintf(f,
+                "[keyboard] Windows and the device agree again after %llu ms\n",
+                now - disagreeingSince);
+        fflush(f);
+      }
+    }
     disagreeingSince = 0;
+    reported = false;
     return;
   }
 
@@ -373,40 +433,19 @@ static void CheckAgainstWindows(const uint8_t* apKeyboard)
     disagreeingSince = now;
     return;
   }
-  if (now - disagreeingSince < 1000)
-    return;
-  // Never more than once every three seconds, so a genuine disagreement does
-  // not turn into a re-registration loop.
-  if (lastRepair && now - lastRepair < 3000)
+  if (reported || now - disagreeingSince < 1000)
     return;
 
-  disagreeingSince = 0;
-  lastRepair = now;
-
-  HWND had = GetFocus();
-
-  /*
-    Two repairs, cheapest first.
-
-    Keyboard focus inside the process is what the raw input registration
-    follows, so putting it back on the game's own window is the closest thing
-    to what alt tabbing does. SetFocus only works on a window this thread owns
-    and fails harmlessly otherwise, which is why it is tried rather than
-    depended on. Then the registration goes back regardless, because the two
-    failure modes look identical from here and doing both costs nothing.
-  */
-  if (g_gameWindow)
-    SetFocus(g_gameWindow);
-
-  DInputHook::Get().SetEnabled(true);
-
+  reported = true;
   FILE* f = InputLog();
   if (f) {
     fprintf(f,
-            "[repair] Windows says a key is held and the device says nothing "
-            "is. Focus was %p, game window is %p, focus now %p. Raw input "
-            "registration put back.\n",
-            (void*)had, (void*)g_gameWindow, (void*)GetFocus());
+            "[keyboard] Windows says a key is held and the device has said "
+            "none is for %llu ms; nothing is changed. Game window %p, "
+            "foreground %p.\n",
+            now - disagreeingSince, (void*)g_gameWindow,
+            (void*)GetForegroundWindow());
+    ReportKeyboardRegistration(f);
     fflush(f);
   }
 }
@@ -716,7 +755,7 @@ HRESULT _stdcall FakeIDirectInputDevice8A::GetDeviceData(
     }
     g_meter.lastKbd = static_cast<long>(hr);
     if (hr == DI_OK) {
-      CheckAgainstWindows(rawData);
+      MeterAgainstWindows(rawData);
 
       // Same reasoning as the mouse: hand the listener an all clear rather
       // than nothing, so a key let go while the window was minimised is not
@@ -865,62 +904,21 @@ DInputHook& DInputHook::Get() noexcept
 void DInputHook::Update() const noexcept
 {
   /*
-    THORNSWOOD PATCH. The raw input registration is gone, as a bisect.
+    THORNSWOOD PATCH (Thornswood #2131). No raw input registration here.
 
-    Six explanations for the keyboard lock have now been built and shot down by
-    the next log. What the meter did establish is not in dispute: DirectInput is
-    called at full rate, every read returns DI_OK, nothing is ever reported
-    lost, no other client holds the device, nothing here discards a key, and the
-    game receives input and does nothing with it. Alt tabbing out and back fixes
-    it every single time.
-
-    This function is the only place in the whole hook that reaches outside
-    DirectInput and changes state for the entire process. It calls
-    RegisterRawInputDevices with hwndTarget NULL and no flags, which replaces
-    whatever registration the process already had for the keyboard and the
-    mouse, and makes WM_INPUT follow keyboard focus inside the process. Skyrim
-    reads raw input too. A foreground change is exactly what re-establishes all
-    of it, which is the one behaviour of this bug I have never been able to
-    explain any other way.
-
-    So rather than guess again: take it out and see. Nothing in SkyrimPlatform
-    needs it. The hook feeds on DirectInput, which is untouched, and Acquire and
-    Unacquire still do their jobs below.
-
-    If the lock survives this, that is worth more than a fix would be. It
-    exonerates this file completely, and the next place to look is Skyrim's own
-    input manager or another SKSE plugin, not here.
+    Upstream's Update called RegisterRawInputDevices for the keyboard and the
+    mouse with hwndTarget NULL, removing and then registering again. A process
+    has one raw input registration per device class, the last call's, and
+    DirectInput reads the keyboard through raw input of its own, so every call
+    took the keyboard away from DirectInput: reads kept returning DI_OK with an
+    empty buffer until alt tabbing acquired the device again. That was the
+    keyboard lock (the note above MeterAgainstWindows has the whole of it).
+    Microsoft's page for RegisterRawInputDevices says it should not be used
+    from a library, and nothing in Skyrim Platform needs it: the hook reads
+    DirectInput. So this only acquires or releases the devices.
   */
   if (m_enabled) {
     Acquire();
-  } else {
-    Unacquire();
-  }
-  return;
-
-  RAWINPUTDEVICE device[2];
-
-  device[0].usUsagePage = 0x01;
-  device[0].usUsage = 0x06;
-  device[0].dwFlags = RIDEV_REMOVE;
-  device[0].hwndTarget = nullptr;
-
-  device[1].usUsagePage = 0x01;
-  device[1].usUsage = 0x02;
-  device[1].dwFlags = RIDEV_REMOVE;
-  device[1].hwndTarget = nullptr;
-
-  RegisterRawInputDevices(device, sizeof(device) / sizeof(RAWINPUTDEVICE),
-                          sizeof(RAWINPUTDEVICE));
-
-  if (m_enabled) {
-    Acquire();
-
-    device[0].dwFlags = 0;
-    device[1].dwFlags = 0;
-
-    RegisterRawInputDevices(device, sizeof(device) / sizeof(RAWINPUTDEVICE),
-                            sizeof(RAWINPUTDEVICE));
   } else {
     Unacquire();
   }

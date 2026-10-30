@@ -28,4 +28,13 @@ foreach(file ${files})
   file(COPY ${file} DESTINATION ${destination_dir})
 endforeach()
 
-file(DOWNLOAD https://raw.githubusercontent.com/frida/frida-gum/698b356fef0ecfc3ac2818f0b387be90e93deeda/COPYING ${CURRENT_PACKAGES_DIR}/share/${PORT}/copyright)
+# The archive carries no licence. These are Node's own terms, at the tag of
+# the Node it was built from (include/node/node_version.h says 23.2.0), so the
+# client files that link it carry Node's text and not another port's
+# (Thornswood #3099: this line once fetched frida-gum's COPYING here).
+vcpkg_download_distfile(NODE_LICENSE
+    URLS https://raw.githubusercontent.com/nodejs/node/a83fbdbde16b7decf5ec41277917abe267746661/LICENSE
+    FILENAME node-v23.2.0-LICENSE
+    SHA512 96f94d7e41f70d7a5e3ea7dca49865035d9149c6a99c48ad49cef80d33bd351b224cabcad611682daf6497fc924a38da27c5410fac6bd4269138d2d30647a5a0
+)
+file(INSTALL ${NODE_LICENSE} DESTINATION ${CURRENT_PACKAGES_DIR}/share/${PORT} RENAME copyright)

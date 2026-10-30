@@ -24,9 +24,11 @@ public:
   FileDatabase database{ root.string(), spdlog::default_logger() };
   std::vector<std::optional<MpChangeForm>> pending;
   UpsertCallback completion;
+  UpsertOutcomeCallback failureOutcome;
   bool ready = false;
   bool fail = false;
   bool failSubmission = false;
+  bool failBeforeConsumption = false;
   uint32_t writes = 0;
 
   ~ControlledFileStorage() { std::filesystem::remove_all(root); }
@@ -38,6 +40,10 @@ public:
               const UpsertCallback& cb) override
   {
     REQUIRE_FALSE(static_cast<bool>(completion));
+    if (failBeforeConsumption) {
+      failBeforeConsumption = false;
+      throw std::runtime_error("injected failure before consuming buffer");
+    }
     if (failSubmission) {
       failSubmission = false;
       auto consumed = std::move(forms);
@@ -45,6 +51,14 @@ public:
     }
     pending = std::move(forms);
     completion = cb;
+  }
+  bool SupportsUpsertOutcomes() const noexcept override { return true; }
+  void UpsertWithOutcome(std::vector<std::optional<MpChangeForm>>&& forms,
+                         const UpsertOutcomeCallback& cb) override
+  {
+    failureOutcome = cb;
+    try { Upsert(std::move(forms), [cb] { cb(nullptr); }); }
+    catch (...) { failureOutcome = {}; throw; }
   }
   void Iterate(const IterateCallback& cb,
                const std::optional<std::vector<FormDesc>>& filter) override
@@ -76,13 +90,17 @@ public:
     if (fail) {
       fail = false;
       completion = {};
-      throw Viet::AsyncSaveStorage<
+      auto error = std::make_exception_ptr(Viet::AsyncSaveStorage<
         MpChangeForm, FormDesc,
         std::vector<FormDesc>>::UpsertFailedException(std::move(pending),
-                                                      "injected failure");
+                                                      "injected failure"));
+      auto outcome = std::move(failureOutcome);
+      if (outcome) { outcome(error); return; }
+      std::rethrow_exception(error);
     }
     if (ready) {
       ready = false;
+      auto outcome = std::move(failureOutcome);
       auto cb = std::move(completion);
       pending.clear();
       ++writes;
@@ -180,6 +198,34 @@ bool PendingHasForm(const ControlledFileStorage& storage, const FormDesc& desc)
   }
   return false;
 }
+}
+
+TEST_CASE("RetriedMetadataDoesNotSplitMerchantSettlement", "[merchant-transfer][save-pump]")
+{
+  PartOne server;
+  AttachSkyrimFiles(server);
+  auto storage = std::make_shared<ControlledFileStorage>();
+  server.AttachSaveStorage(storage);
+  auto& human = AddHuman(server, 0xff000abc);
+  auto& merchant = AddMerchant(server, 0xff000def);
+  auto& transfers = server.worldState.GetMerchantTransfers();
+  auto began = BeginTransfer(transfers, human, merchant, 10, 1, 1);
+  REQUIRE(began.ok);
+  REQUIRE(transfers.CommitHumanDebit(human, began.offerId).ok);
+  CompleteSave(server, *storage);
+  human.SetPropertyValueDump("thornswoodQuests", "1", false, false);
+  storage->failBeforeConsumption = true;
+  server.Tick();
+  REQUIRE_FALSE(static_cast<bool>(storage->completion));
+  REQUIRE(transfers.ReleaseQuarantine(human, merchant, began.offerId).ok);
+  server.Tick();
+  REQUIRE(PendingHasForm(*storage, human.GetChangeForm().formDesc));
+  REQUIRE(PendingHasForm(*storage, merchant.GetChangeForm().formDesc));
+  storage->Commit();
+  server.Tick();
+  REQUIRE(transfers.Find(began.offerId)->state == MerchantTransferController::State::Durable);
+  REQUIRE_FALSE(transfers.IsLocked(human.GetFormId()));
+  REQUIRE_FALSE(transfers.IsLocked(merchant.GetFormId()));
 }
 
 TEST_CASE("HumanChangeUsesCompareAndSetInventoryReceiptPair",
@@ -426,10 +472,18 @@ TEST_CASE("MerchantChangeJoinsSameFileDatabaseBatchUpsertAsHuman",
   auto offer = transfers.Find(began.offerId);
   REQUIRE(offer);
   REQUIRE(offer->state == MerchantTransferController::State::AwaitingSave);
+  bool profileChanged = false;
+  SECTION("same submitted profiles") {}
+  SECTION("merchant profile changes before acknowledgement") {
+    REQUIRE(merchant.GetProfileId() == -1);
+    merchant.RegisterProfileId(0);
+    profileChanged = true;
+  }
   storage->Commit();
   server.Tick();
   offer = transfers.Find(began.offerId);
-  REQUIRE(offer->state == MerchantTransferController::State::Durable);
+  REQUIRE(offer->state == (profileChanged ? MerchantTransferController::State::AwaitingSave
+                                        : MerchantTransferController::State::Durable));
 }
 
 TEST_CASE("MerchantDurabilityAckIsBatchUpsertCompletionNotInventoryReceipt",

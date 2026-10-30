@@ -6,7 +6,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Get Version
         run: |
           VERSION=$(sed -n "s/.*\([0-9]\.[0-9]\.[0-9]*\).*/\1/p" ${{ github.workspace }}/skyrim-platform/package.json | head -1)
@@ -25,7 +25,7 @@ jobs:
           echo "URL=$URL" >> $GITHUB_ENV
 
       - name: Update Types Repo
-        uses: peter-evans/repository-dispatch@v1
+        uses: peter-evans/repository-dispatch@ce5485de42c9b2622d2ed064be479e8ed65e76f4 # v1.1.3
         with:
           token: ${{ secrets.MAHAHUHA_PAT_FOR_SP_ORG_ACCESS }}
           repository: skyrim-platform/skyrim-platform

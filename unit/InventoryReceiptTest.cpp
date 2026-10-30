@@ -7,6 +7,27 @@
 #include <filesystem>
 #include <limits>
 
+// RequestPreparedSave prepares the two optional map destinations separately.
+// Every other nontrivial snapshot member must stay nonthrowing on assignment.
+static_assert(std::is_nothrow_move_assignable_v<decltype(MpChangeForm::formDesc)>, "formDesc");
+static_assert(std::is_nothrow_move_assignable_v<decltype(MpChangeForm::baseDesc)>, "baseDesc");
+static_assert(std::is_nothrow_move_assignable_v<decltype(MpChangeForm::position)>, "position");
+static_assert(std::is_nothrow_move_assignable_v<decltype(MpChangeForm::angle)>, "angle");
+static_assert(std::is_nothrow_move_assignable_v<decltype(MpChangeForm::worldOrCellDesc)>, "worldOrCellDesc");
+static_assert(std::is_nothrow_move_assignable_v<decltype(MpChangeForm::inv)>, "inv");
+static_assert(std::is_nothrow_move_assignable_v<decltype(MpChangeForm::learnedSpells)>, "learnedSpells");
+static_assert(std::is_nothrow_move_assignable_v<decltype(MpChangeForm::activeMagicEffects)>, "activeMagicEffects");
+static_assert(std::is_nothrow_move_assignable_v<decltype(MpChangeForm::appearanceDump)>, "appearanceDump");
+static_assert(std::is_nothrow_move_assignable_v<decltype(MpChangeForm::equipment)>, "equipment");
+static_assert(std::is_nothrow_move_assignable_v<decltype(MpChangeForm::actorValues)>, "actorValues");
+static_assert(std::is_nothrow_move_assignable_v<decltype(MpChangeForm::spawnPoint)>, "spawnPoint");
+static_assert(std::is_nothrow_move_assignable_v<decltype(MpChangeForm::templateChain)>, "templateChain");
+static_assert(std::is_nothrow_move_assignable_v<decltype(MpChangeForm::lastAnimation)>, "lastAnimation");
+static_assert(std::is_nothrow_move_assignable_v<decltype(MpChangeForm::displayName)>, "displayName");
+static_assert(std::is_nothrow_move_assignable_v<decltype(MpChangeForm::factions)>, "factions");
+static_assert(std::is_nothrow_move_assignable_v<decltype(MpChangeForm::quests)>, "quests");
+static_assert(std::is_nothrow_move_assignable_v<decltype(MpChangeForm::dynamicFields)>, "dynamicFields");
+
 extern espm::Loader& GetEspmLoader();
 
 namespace {
@@ -23,6 +44,7 @@ public:
   FileDatabase database{ root.string(), spdlog::default_logger() };
   std::vector<std::optional<MpChangeForm>> pending;
   UpsertCallback completion;
+  UpsertOutcomeCallback failureOutcome;
   bool ready = false;
   bool fail = false;
   uint32_t writes = 0;
@@ -38,6 +60,14 @@ public:
     REQUIRE_FALSE(static_cast<bool>(completion));
     pending = std::move(forms);
     completion = cb;
+  }
+  bool SupportsUpsertOutcomes() const noexcept override { return true; }
+  void UpsertWithOutcome(std::vector<std::optional<MpChangeForm>>&& forms,
+                         const UpsertOutcomeCallback& cb) override
+  {
+    failureOutcome = cb;
+    try { Upsert(std::move(forms), [cb] { cb(nullptr); }); }
+    catch (...) { failureOutcome = {}; throw; }
   }
   void Iterate(const IterateCallback& cb,
                const std::optional<std::vector<FormDesc>>& filter) override
@@ -69,13 +99,17 @@ public:
     if (fail) {
       fail = false;
       completion = {};
-      throw Viet::AsyncSaveStorage<
+      auto error = std::make_exception_ptr(Viet::AsyncSaveStorage<
         MpChangeForm, FormDesc,
         std::vector<FormDesc>>::UpsertFailedException(std::move(pending),
-                                                      "injected failure");
+                                                      "injected failure"));
+      auto outcome = std::move(failureOutcome);
+      if (outcome) { outcome(error); return; }
+      std::rethrow_exception(error);
     }
     if (ready) {
       ready = false;
+      auto outcome = std::move(failureOutcome);
       auto cb = std::move(completion);
       pending.clear();
       ++writes;
@@ -229,6 +263,30 @@ TEST_CASE("Inventory and quest state compare and commit together",
   REQUIRE(actor.GetInventory().entries[1].enchantmentId == 0x1234);
 }
 
+TEST_CASE("A stale runtime owner cannot commit quest goods or their receipt",
+          "[inventory-receipt][actor-runtime-identity]")
+{
+  PartOne server;
+  auto& actor = CreateHuman(server);
+  const auto before = actor.GetInventory();
+  auto after = before;
+  after.entries[0].count += 25;
+  ActorsMap owners;
+  owners.Set(0, &actor);
+  MpObjectReference::InventoryPropertyChange change{
+    "thornswoodQuests", "null", "{}" };
+  change.expectedRuntimeIdentity = actor.GetRuntimeIdentity();
+  owners.Erase(static_cast<Networking::UserId>(0));
+  REQUIRE_FALSE(actor.CompareAndSetInventory(before, "null", after, 1, &change));
+  REQUIRE(actor.GetInventory().ToJson() == before.ToJson());
+  REQUIRE(actor.GetDynamicFields().GetValueDump(change.name) == "null");
+  REQUIRE(actor.GetInventoryReceiptDump() == "null");
+  change.expectedRuntimeIdentity = actor.GetRuntimeIdentity();
+  REQUIRE(actor.CompareAndSetInventory(before, "null", after, 1, &change));
+  REQUIRE(actor.GetInventory().ToJson() == after.ToJson());
+  REQUIRE(actor.GetInventoryReceiptDump() != "null");
+}
+
 TEST_CASE("Saved quest receipts acknowledge the same inventory and property",
           "[inventory-receipt][espm]")
 {
@@ -375,6 +433,93 @@ TEST_CASE("Failed saves do not advance receipt acknowledgement",
   server.Tick();
   REQUIRE(server.worldState.GetSavedInventoryReceipt(actor) == receipt);
 }
+TEST_CASE("Metadata CAS stages its save before changing live progress",
+          "[inventory-receipt][actor-metadata]")
+{
+  struct Actor : MpActor {
+    using MpActor::MpActor;
+    bool failSnapshot = false;
+    void SuspendSaving() { blockSaving = true; }
+    MpChangeForm GetChangeForm() const override {
+      if (failSnapshot) throw std::bad_alloc();
+      return MpActor::GetChangeForm();
+    }
+  };
+  PartOne server;
+  auto created = std::make_unique<Actor>(
+    LocationalData{{1, 1, 1}, {}, FormDesc::Tamriel()},
+    server.CreateFormCallbacks(), 0x7);
+  auto& actor = *created;
+  server.worldState.AddForm(std::move(created), kHuman);
+  actor.RegisterProfileId(42);
+  actor.SetInventory(InitialInventory());
+  MpObjectReference::InventoryPropertyChange change{"thornswoodQuests", "null", "{\"kills\":1}"};
+  change.expectedRuntimeIdentity = actor.GetRuntimeIdentity();
+  SECTION("Snapshot allocation fails before live metadata changes") {
+    actor.failSnapshot = true;
+    REQUIRE_THROWS_AS(actor.CompareAndSetActorProperty(42, change), std::bad_alloc);
+  }
+  SECTION("Suspended saving refuses instead of reporting a queued commit") {
+    actor.SuspendSaving();
+    REQUIRE_FALSE(actor.CompareAndSetActorProperty(42, change));
+  }
+  REQUIRE(actor.GetDynamicFields().GetValueDump(change.name) == "null");
+  REQUIRE(actor.GetInventoryReceiptDump() == "null");
+  REQUIRE(actor.GetInventory().ToJson() == InitialInventory().ToJson());
+}
+
+TEST_CASE("Metadata saves preserve in-flight goods and later inventory receipts",
+          "[inventory-receipt][actor-metadata][espm]")
+{
+  const bool failFirst = GENERATE(false, true);
+  PartOne server;
+  AttachSkyrimFiles(server);
+  auto storage = std::make_shared<ControlledFileStorage>();
+  server.AttachSaveStorage(storage);
+  auto& actor = CreateHuman(server);
+  auto before = actor.GetInventory(), debit = before;
+  debit.entries[0].count = 90;
+  REQUIRE(actor.CompareAndSetInventory(before, "null", debit, 1));
+  const auto debitReceipt = actor.GetInventoryReceiptDump();
+  server.Tick();
+  REQUIRE(static_cast<bool>(storage->completion));
+  MpObjectReference::InventoryPropertyChange change{"thornswoodQuests", "null", ""};
+  change.expectedRuntimeIdentity = actor.GetRuntimeIdentity();
+  for (int kills = 1; kills <= 3; ++kills) {
+    change.replacementDump = nlohmann::json{{"kills", kills}}.dump();
+    REQUIRE(actor.CompareAndSetActorProperty(42, change));
+    change.expectedDump = change.replacementDump;
+    REQUIRE(actor.GetInventoryReceiptDump() == debitReceipt);
+    REQUIRE(actor.GetInventory().ToJson() == debit.ToJson());
+    REQUIRE(server.worldState.GetSavedInventoryReceipt(actor) == "null");
+  }
+  auto credit = debit;
+  credit.entries[0].count += 25;
+  REQUIRE(actor.CompareAndSetInventory(debit, debitReceipt, credit, 2));
+  const auto creditReceipt = actor.GetInventoryReceiptDump();
+  if (failFirst) storage->fail = true;
+  else storage->Commit();
+  server.Tick();
+  REQUIRE(server.worldState.GetSavedInventoryReceipt(actor) == (failFirst ? "null" : debitReceipt));
+  REQUIRE(actor.GetInventoryReceiptDump() == creditReceipt);
+  REQUIRE(actor.GetDynamicFields().GetValueDump(change.name) == change.replacementDump);
+  REQUIRE(static_cast<bool>(storage->completion));
+  const auto submitted = std::find_if(storage->pending.begin(), storage->pending.end(),
+    [](const auto& form) { return form && form->profileId == 42; });
+  REQUIRE(submitted != storage->pending.end());
+  REQUIRE((*submitted)->inv.ToJson() == credit.ToJson());
+  REQUIRE((*submitted)->dynamicFields.GetValueDump(change.name) == change.replacementDump);
+  storage->Commit();
+  server.Tick();
+  REQUIRE(server.worldState.GetSavedInventoryReceipt(actor) == creditReceipt);
+  std::vector<MpChangeForm> saved;
+  storage->database.Iterate([&](const MpChangeForm& form) { if (form.profileId == 42) saved.push_back(form); }, std::nullopt);
+  REQUIRE(saved.size() == 1);
+  REQUIRE(saved[0].inv.ToJson() == credit.ToJson());
+  REQUIRE(saved[0].dynamicFields.GetValueDump(change.name) == change.replacementDump);
+  REQUIRE(saved[0].dynamicFields.GetValueDump(MpObjectReference::kInventoryReceiptProperty) == creditReceipt);
+}
+
 TEST_CASE("Transaction preflight uses the exact native serialized byte bound",
           "[inventory-receipt]")
 {
