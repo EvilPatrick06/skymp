@@ -497,7 +497,7 @@ private:
 
   // Adds then removes on a copy of the rules, but removal is applied
   // first so a spent stack cannot fund itself. Metadata stays on the
-  // matched entry. AddItems is not used: it returns after one merge.
+  // matched entry.
   static bool ApplyDelta(Inventory& inventory, const Inventory& add,
                          const Inventory& remove, std::string& reason)
   {
@@ -535,25 +535,12 @@ private:
         reason = "invalid transfer entry";
         return false;
       }
-      bool merged = false;
-      for (auto& have : inventory.entries) {
-        if (!have.EqualExceptCount(gained)) {
-          continue;
-        }
-        uint64_t sum =
-          static_cast<uint64_t>(have.count) + gained.count;
-        if (sum > std::numeric_limits<uint32_t>::max()) {
-          reason = "transfer count overflows";
-          return false;
-        }
-        have.count = static_cast<uint32_t>(sum);
-        merged = true;
-        break;
-      }
-      if (!merged) {
-        inventory.entries.push_back(gained);
-      }
     }
+    if (!inventory.CanAddItems(add.entries)) {
+      reason = "transfer count overflows";
+      return false;
+    }
+    inventory.AddItems(add.entries);
     return true;
   }
 

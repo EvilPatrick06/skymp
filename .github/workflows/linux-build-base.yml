@@ -34,7 +34,7 @@ jobs:
         runs-on: ubuntu-latest
         steps:
           - name: Checkout
-            uses: actions/checkout@v6
+            uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
             with:
               repository: skyrim-multiplayer/skymp
               token: ${{ secrets.combined_server_token || github.token }}
@@ -45,7 +45,7 @@ jobs:
           - name: Gather PRs
             id: gather_prs
             if: ${{ inputs.auto_merge_action_config }}
-            uses: skyrim-multiplayer/auto-merge-action@main
+            uses: skyrim-multiplayer/auto-merge-action@c869e8eeb50ef5acf58a5a35a1812f602ada5b4c # main
             with:
               path: ${{ github.workspace }}
               repositories: ${{ inputs.auto_merge_action_config }}
@@ -133,31 +133,31 @@ jobs:
                 ./build.sh --print-env
 
           # Download Skyrim SE data files
-          - uses: suisei-cn/actions-download-file@v1
+          - uses: suisei-cn/actions-download-file@8500334edf23d9fb3bd8a6e23e4347d9d3d9e20f # v1
             if: ${{ !inputs.skip_tests }}
             name: Download Skyrim.esm
             with:
               url: "https://gitlab.com/pospelov/se-data/-/raw/main/Skyrim.esm"
               target: ${{github.workspace}}/skyrim_data_files/
-          - uses: suisei-cn/actions-download-file@v1
+          - uses: suisei-cn/actions-download-file@8500334edf23d9fb3bd8a6e23e4347d9d3d9e20f # v1
             if: ${{ !inputs.skip_tests }}
             name: Download Update.esm
             with:
               url: "https://gitlab.com/pospelov/se-data/-/raw/main/Update.esm"
               target: ${{github.workspace}}/skyrim_data_files/
-          - uses: suisei-cn/actions-download-file@v1
+          - uses: suisei-cn/actions-download-file@8500334edf23d9fb3bd8a6e23e4347d9d3d9e20f # v1
             if: ${{ !inputs.skip_tests }}
             name: Download Dawnguard.esm
             with:
               url: "https://gitlab.com/pospelov/se-data/-/raw/main/Dawnguard.esm"
               target: ${{github.workspace}}/skyrim_data_files/
-          - uses: suisei-cn/actions-download-file@v1
+          - uses: suisei-cn/actions-download-file@8500334edf23d9fb3bd8a6e23e4347d9d3d9e20f # v1
             if: ${{ !inputs.skip_tests }}
             name: Download HearthFires.esm
             with:
               url: "https://gitlab.com/pospelov/se-data/-/raw/main/HearthFires.esm"
               target: ${{github.workspace}}/skyrim_data_files/
-          - uses: suisei-cn/actions-download-file@v1
+          - uses: suisei-cn/actions-download-file@8500334edf23d9fb3bd8a6e23e4347d9d3d9e20f # v1
             if: ${{ !inputs.skip_tests }}
             name: Download Dragonborn.esm
             with:
@@ -179,7 +179,7 @@ jobs:
 
           - name: Upload vcpkg logs
             if: always()
-            uses: actions/upload-artifact@v7
+            uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
             with:
               name: ${{inputs.base_system}}_vcpkg_logs
               path: |
@@ -193,7 +193,7 @@ jobs:
               ln -s compile_commands.json '${{ inputs.base_system }}_compile_commands.json'
 
           - name: Upload compile_commands.json
-            uses: actions/upload-artifact@v7
+            uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
             with:
                 name: ${{ inputs.base_system }}_compile_commands.json
                 path: ${{ github.workspace }}/build/${{ inputs.base_system }}_compile_commands.json
@@ -216,7 +216,7 @@ jobs:
               ln -s dist.tar.gz '${{ inputs.base_system }}_dist.tar.gz'
 
           - name: Upload dist.tar.gz
-            uses: actions/upload-artifact@v7
+            uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
             with:
               name: ${{ inputs.base_system }}_dist.tar.gz
               path: ${{ github.workspace }}/build/${{ inputs.base_system }}_dist.tar.gz

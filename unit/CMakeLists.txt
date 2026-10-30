@@ -67,6 +67,25 @@ if(BUILD_UNIT_TESTS AND NOT EMSCRIPTEN)
   apply_default_settings(TARGETS private-ledger-test)
   add_test(NAME private_ledger COMMAND private-ledger-test "${CMAKE_BINARY_DIR}/private-ledger-tests")
 
+  # mp.writeFileWhole's file write (Thornswood #2740), on the real file system:
+  # a reader holding the old file, one refusing the rename, nothing left over.
+  add_executable(whole-file-write-test "${CMAKE_SOURCE_DIR}/misc/tests/whole_file_write_test.cpp")
+  target_include_directories(whole-file-write-test PRIVATE "${CMAKE_SOURCE_DIR}/skymp5-server/cpp/addon")
+  apply_default_settings(TARGETS whole-file-write-test)
+  add_test(NAME whole_file_write COMMAND whole-file-write-test "${CMAKE_BINARY_DIR}/whole-file-write-tests")
+
+  # scam_native.node has Windows report a native crash of the server
+  # (Thornswood #1267): two real crashes with LocalDumps armed, before and
+  # after CrashReporting::Allow.
+  add_executable(crash-reporting-test "${CMAKE_SOURCE_DIR}/misc/tests/crash_reporting_test.cpp" "${CMAKE_SOURCE_DIR}/skymp5-server/cpp/addon/CrashReporting.cpp")
+  target_include_directories(crash-reporting-test PRIVATE "${CMAKE_SOURCE_DIR}/skymp5-server/cpp/addon")
+  if(WIN32)
+    target_link_libraries(crash-reporting-test PRIVATE Advapi32.lib)
+  endif()
+  apply_default_settings(TARGETS crash-reporting-test)
+  add_test(NAME crash_reporting COMMAND crash-reporting-test "${CMAKE_BINARY_DIR}/crash-reporting-tests")
+  set_tests_properties(crash_reporting PROPERTIES TIMEOUT 120)
+
   # This contract runner must not use unit/main.cpp, which loads game plugins.
   add_executable(save-capability-test "${CMAKE_SOURCE_DIR}/misc/tests/save_capability_test.cpp")
   target_link_libraries(save-capability-test PRIVATE viet)
