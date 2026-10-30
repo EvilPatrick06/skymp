@@ -4,6 +4,7 @@
 #include "CursorFocus.h"
 #include "NullPointerException.h"
 #include "TPOverlayService.h"
+#include <ui/LoadingScreen.h>
 
 namespace {
 
@@ -61,16 +62,16 @@ bool BrowserApiTilted::IsVisible()
   return CEFUtils::DX11RenderHandler::Visible();
 }
 
-Napi::Value BrowserApiTilted::SetFocused(const Napi::CallbackInfo& info)
+namespace {
+void SetFocusedImpl(bool newFocus)
 {
   bool& v = CEFUtils::DInputHook::ChromeFocus();
-  bool newFocus = NapiHelper::ExtractBoolean(info[0], "focused");
   if (v != newFocus) {
     v = newFocus;
 
     auto ui = RE::UI::GetSingleton();
     if (!ui) {
-      return info.Env().Undefined();
+      return;
     }
 
     // Thornswood #2384: the show or hide is queued, not done, so what has
@@ -79,7 +80,19 @@ Napi::Value BrowserApiTilted::SetFocused(const Napi::CallbackInfo& info)
     Queue(g_cursorFocus.OnFocus(newFocus,
                                 ui->IsMenuOpen(RE::CursorMenu::MENU_NAME)));
   }
+}
+}
+
+Napi::Value BrowserApiTilted::SetFocused(const Napi::CallbackInfo& info)
+{
+  SetFocusedImpl(NapiHelper::ExtractBoolean(info[0], "focused"));
   return info.Env().Undefined();
+}
+
+void BrowserApiTilted::ShowAtStart()
+{
+  CEFUtils::DX11RenderHandler::Visible() = true;
+  SetFocusedImpl(true);
 }
 
 void BrowserApiTilted::OnCursorMenu(bool opening)
@@ -88,6 +101,26 @@ void BrowserApiTilted::OnCursorMenu(bool opening)
   // the game's thread, when the Cursor Menu itself opens or closes.
   Queue(g_cursorFocus.OnCursorMenu(opening,
                                    CEFUtils::DInputHook::ChromeFocus()));
+}
+
+void BrowserApiTilted::OnLoadingMenu(bool opening)
+{
+  // Thornswood #3130: called from EventHandler's MenuOpenCloseEvent sink, on
+  // the game's thread, as the Loading Menu itself opens or closes, which is
+  // before and after the load. The plugins hear of it only after the load
+  // (LoadingScreen.h). The page is drawn while it is open, and told.
+  CEFUtils::DX11RenderHandler::Loading() = opening;
+  spdlog::info(opening ? "Loading Menu opened, the page is drawn over it"
+                       : "Loading Menu closed");
+  auto overlayService = OverlayService::GetInstance();
+  if (!overlayService) {
+    return;
+  }
+  auto app = overlayService->GetMyChromiumApp();
+  if (!app) {
+    return;
+  }
+  app->ExecuteJavaScript(LoadingScreen::Script(opening));
 }
 
 Napi::Value BrowserApiTilted::IsFocused(const Napi::CallbackInfo& info)

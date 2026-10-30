@@ -9,6 +9,25 @@
 
 extern espm::Loader& GetEspmLoader();
 
+namespace Viet {
+// IsSettled is one instantaneous observation that answers false whenever it
+// cannot certify, and an idle worker polling its queues every sleepTimeMs is
+// such a moment (it marks itself active and holds the queue locks). So a
+// second, positive observation is only exact once the worker is stopped, as
+// misc/tests/save_settlement_test.cpp does with the same peer.
+struct AsyncSaveStorageTestPeer
+{
+  template <class T, class FormDesc, class Filter>
+  static void StopWorker(AsyncSaveStorage<T, FormDesc, Filter>& storage)
+  {
+    storage.pImpl->destroyed = true;
+    if (storage.pImpl->thr->joinable()) {
+      storage.pImpl->thr->join();
+    }
+  }
+};
+}
+
 namespace {
 class CompletionStorage
   : public Viet::ISaveStorage<MpChangeForm, FormDesc, std::vector<FormDesc>>
@@ -370,9 +389,16 @@ TEST_CASE("Terminal completion drains the real asynchronous file backend", "[sav
   const auto receipt = actor.GetInventoryReceiptDump();
   const auto result = server.worldState.CompleteSavesForShutdown(5000);
   REQUIRE_FALSE(result.supportsDurableUpsert);
+  // The drain returned, so it observed the storage settled. Stop the worker
+  // before observing it again (above), and read the file backend directly.
+  Viet::AsyncSaveStorageTestPeer::StopWorker(*storage);
   REQUIRE(storage->IsSettled());
   REQUIRE(server.worldState.GetSavedInventoryReceipt(actor) == receipt);
-  auto saved = Viet::ISaveStorageUtils::FindSync(*storage, actor.GetChangeForm().formDesc);
+  std::optional<MpChangeForm> saved;
+  const auto formDesc = actor.GetChangeForm().formDesc;
+  database->Iterate([&](const MpChangeForm& changeForm) {
+    if (changeForm.formDesc == formDesc) saved = changeForm;
+  }, std::nullopt);
   REQUIRE(saved);
   REQUIRE(saved->dynamicFields.GetValueDump(MpObjectReference::kInventoryReceiptProperty) == receipt);
 }
