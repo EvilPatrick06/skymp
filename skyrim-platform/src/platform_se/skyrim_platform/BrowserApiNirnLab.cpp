@@ -1,4 +1,5 @@
 #include "BrowserApiNirnLab.h"
+#include "BrowserApi.h"
 
 #include <NirnLabUIPlatformAPI/API.h>
 #include <NirnLabUIPlatformAPI/SKSELoader.h>
@@ -19,6 +20,13 @@ void BrowserApiNirnLab::HandleSkseMessage(
 
 BrowserApiNirnLab::BrowserApiNirnLab()
 {
+  // Thornswood #3129: shown and focused from the start, see
+  // BrowserApi::ShowAtStart. ApiInit hands both to the browser it makes.
+  if (BrowserApi::ShowAtStart()) {
+    wantedIsVisible = true;
+    wantedIsFocused = true;
+  }
+
   NL::UI::SKSELoader::GetUIPlatformAPIWithVersionCheck(
     [](NL::UI::IUIPlatformAPI* receivedApi) {
       auto& self = GetInstance();

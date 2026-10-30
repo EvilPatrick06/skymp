@@ -37,6 +37,7 @@
 #include <string>
 
 #include "ChangeValuesMessage.h"
+#include "SetInventoryMessage.h"
 #include "TeleportMessage.h"
 #include "UpdateEquipmentMessage.h"
 #include "UpdateMovementMessage.h"
@@ -81,6 +82,8 @@ struct MpActor::Impl
   uint32_t blockActiveCount = 0;
   std::vector<std::pair<uint32_t, MpObjectReference*>> droppedItemsQueue;
   std::optional<AnimationData> animationData;
+  // THORNSWOOD PATCH (Thornswood #3159). See MpActor::BenchStock.
+  std::optional<MpActor::BenchStock> benchStock;
   float serverMovementSpeed = 0;
   uint32_t serverCombatTarget = 0;
   std::chrono::steady_clock::time_point serverCombatUntil{};
@@ -500,6 +503,119 @@ std::optional<AnimationData> MpActor::GetLastAnimEvent() const
   return pImpl->animationData;
 }
 
+void MpActor::SetBenchStock(std::optional<BenchStock> stock)
+{
+  const bool wasOpen = pImpl->benchStock && pImpl->benchStock->open;
+  if (wasOpen) {
+    for (auto container : GetOpenBenchStock(pImpl->benchStock->workbenchId)) {
+      container->SetBenchStockReader(GetFormId(), false);
+    }
+  }
+  pImpl->benchStock = std::move(stock);
+  if (pImpl->benchStock) {
+    pImpl->benchStock->open = false;
+  }
+  if (wasOpen) {
+    SendInventoryUpdate();
+  }
+}
+
+const std::optional<MpActor::BenchStock>& MpActor::GetBenchStock() const
+{
+  return pImpl->benchStock;
+}
+
+bool MpActor::OpenBenchStock(uint32_t workbenchId)
+{
+  auto& stock = pImpl->benchStock;
+  if (!stock) {
+    return false;
+  }
+  if (stock->workbenchId != workbenchId) {
+    SetBenchStock(std::nullopt);
+    return false;
+  }
+  stock->open = true;
+  for (auto container : GetOpenBenchStock(workbenchId)) {
+    container->SetBenchStockReader(GetFormId(), true);
+  }
+  spdlog::info("MpActor::OpenBenchStock - actor {:#x} took bench {:#x}, "
+               "which may draw from {} container(s)",
+               GetFormId(), workbenchId, stock->containerIds.size());
+
+  /*
+    THE PACK WITH THE STOCK GOES FIRST. The inventory an actor is sent is
+    deferred to the end of the tick (SendInventoryUpdate), and the message
+    that opens the bench (SendOpenContainer) is not, so a deferred one would
+    reach the client after the crafting menu had opened, and the client
+    applies no inventory while that menu is open. So the pack with the stock
+    in it is sent now, before the caller opens the bench. The deferred one is
+    replaced as well, with the same pack, so nothing queued earlier in this
+    tick without the stock lands after it.
+  */
+  SendInventoryUpdate();
+  if (GetUserId() != Networking::InvalidUserId) {
+    SetInventoryMessage message;
+    message.inventory = GetInventoryWithBenchStock();
+    SendToUser(message, true);
+  }
+  return true;
+}
+
+void MpActor::CloseBenchStock(uint32_t workbenchId)
+{
+  if (pImpl->benchStock && pImpl->benchStock->workbenchId == workbenchId) {
+    SetBenchStock(std::nullopt);
+  }
+}
+
+std::vector<MpObjectReference*> MpActor::GetOpenBenchStock(
+  uint32_t workbenchId)
+{
+  std::vector<MpObjectReference*> res;
+  auto& stock = pImpl->benchStock;
+  auto worldState = GetParent();
+  if (!stock || !stock->open || stock->workbenchId != workbenchId ||
+      !worldState) {
+    return res;
+  }
+  for (uint32_t id : stock->containerIds) {
+    auto& form = worldState->LookupFormById(id);
+    auto refr = form ? form->AsObjectReference() : nullptr;
+    if (!refr || refr->IsDeleted() || refr->IsDisabled() || refr == this) {
+      continue;
+    }
+    res.push_back(refr);
+  }
+  return res;
+}
+
+Inventory MpActor::GetInventoryWithBenchStock()
+{
+  Inventory res = GetInventory();
+  if (!pImpl->benchStock || !pImpl->benchStock->open) {
+    return res;
+  }
+  for (auto container : GetOpenBenchStock(pImpl->benchStock->workbenchId)) {
+    for (const auto& entry : container->GetInventory().entries) {
+      // Thornswood #3163: a stack that differs from the plain item only in
+      // its name is one a craft can take (CraftService's PlanInputs), food
+      // carrying its days left in a chest above all, so it is shown too.
+      Inventory::Entry unnamed = entry;
+      unnamed.name.reset();
+      if (!entry.count ||
+          !unnamed.EqualExceptCount(Inventory::Entry(entry.baseId, 1))) {
+        continue;
+      }
+      std::vector<Inventory::Entry> one = { entry };
+      if (res.CanAddItems(one)) {
+        res.AddItems(one);
+      }
+    }
+  }
+  return res;
+}
+
 void MpActor::SetRaceMenuOpen(bool isOpen)
 {
   EditChangeForm(
@@ -872,7 +988,17 @@ bool MpActor::OnEquip(uint32_t baseId)
   }
 
   if (isIngredient || isPotion || spellLearned) {
-    RemoveItem(baseId, 1, nullptr);
+    /*
+      THORNSWOOD PATCH (Thornswood #3163). The client says what was eaten
+      by its base id alone, and food carries its days left on its name
+      ("Venison (6 days left)"), so the one eaten is taken from the plain
+      stack first and then from a stack that differs only in its name
+      (Inventory::ResolveRemoval). RemoveItem matched the plain entry
+      exactly, so eating a named one threw here after its effects had
+      landed and the server kept the food: a meal that cost nothing.
+    */
+    RemoveItems(GetInventory().ResolveRemoval({ Inventory::Entry(baseId, 1) }),
+                nullptr);
   }
 
   const VarValue args[] = {
@@ -2305,41 +2431,17 @@ void MpActor::DropItem(const uint32_t baseId, const Inventory::Entry& entry)
   pImpl->droppedItemsQueue.push_back(
     std::make_pair(droppedItemFormId, placedObject));
 
-  auto time =
-    Viet::TimeUtils::To<std::chrono::milliseconds>(kDeletionTimeSeconds);
-
-  uint32_t formId = GetFormId();
-
-  // TODO: make timer group for better performance
-  worldState->SetTimer(time).Then([placedObject, worldState, droppedItemFormId,
-                                   editorId, this, formId](Viet::Void) {
-    bool actorStillAlive = this == worldState->LookupFormById(formId).get();
-    if (!actorStillAlive) {
-      return;
-    }
-    bool formStillAlive =
-      placedObject == worldState->LookupFormById(droppedItemFormId).get();
-    if (!formStillAlive) {
-      return;
-    }
-
-    if (placedObject->IsDeleted()) {
-      return;
-    }
-
-    spdlog::trace("MpActor::DropItem - deleting previously dropped {}",
-                  editorId);
-
-    // Item deleted, not in queue anymore
-    auto it = std::remove(this->pImpl->droppedItemsQueue.begin(),
-                          this->pImpl->droppedItemsQueue.end(),
-                          std::make_pair(droppedItemFormId, placedObject));
-    this->pImpl->droppedItemsQueue.erase(it,
-                                         this->pImpl->droppedItemsQueue.end());
-
-    placedObject->Delete();
-    ++g_numDrops;
-  });
+  // THORNSWOOD PATCH (Thornswood #3498). The deletion time is saved with the
+  // reference and its timer set again after a restart (MpObjectReference::
+  // SetDeleteDatetime), so a drop goes after kDeletionTimeSeconds even when
+  // the server restarts in between. The timer used to live here only, and a
+  // drop saved before a restart stayed in the world for good. A deleted drop
+  // leaves the queue above on this actor's next drop. Drops are counted here,
+  // as each one takes a form id.
+  ++g_numDrops;
+  placedObject->SetDeleteDatetime(
+    worldState->GetTimerNow() +
+    Viet::TimeUtils::To<std::chrono::milliseconds>(kDeletionTimeSeconds));
 }
 
 void MpActor::SetIsBlockActive(bool active)
