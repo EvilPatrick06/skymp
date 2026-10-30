@@ -505,7 +505,18 @@ void SaveFile_::Reader::FillTES(GlobalData& globalData)
   }
 
   tes.numUnknown2 = ReadUint32_bit();
-  tes.unknowns2.resize(tes.numUnknown2 * tes.numUnknown2);
+  // THORNSWOOD PATCH (Thornswood #3927). The format holds numUnknown2 squared
+  // RefIDs of 3 bytes each. The square was taken in 32 bits, so a count of
+  // 65536 or more wrapped into a smaller one and the rest of the save was read
+  // from the wrong place. It is taken in 64 bits, and a count the rest of the
+  // save cannot hold throws, as a read past the end does, before anything is
+  // allocated for it.
+  const uint64_t numUnknowns2 =
+    static_cast<uint64_t>(tes.numUnknown2) * tes.numUnknown2;
+  if (numUnknowns2 >
+      (arrayBytes.size() - static_cast<size_t>(currentReadPositionInFile)) / 3)
+    throw std::runtime_error("Save TES list runs past the end of the file");
+  tes.unknowns2.resize(static_cast<size_t>(numUnknowns2));
 
   for (auto& unc : tes.unknowns2)
     unc = FillRefID();

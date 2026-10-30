@@ -1,6 +1,7 @@
 {
     "compilerOptions": {
         "outDir": "./dist",
+        "newLine": "lf",
         "allowJs": true,
         "allowSyntheticDefaultImports": true,
         "target": "ES6",

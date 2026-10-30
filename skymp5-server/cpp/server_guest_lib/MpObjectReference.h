@@ -57,6 +57,13 @@ enum class SetPosMode
   // Will save pos from time to time
   CalledByUpdateMovement,
 
+  // The server's own NPC movement (MpActor::UpdateServerMovement). Never
+  // saves on its own: the gamemode saves a server NPC when it takes it on and
+  // when a fight or a flight starts or ends, never while it wanders
+  // (Thornswood #3180). The 30-second save above, meant for a player's
+  // movement, rewrote every walking NPC's change form twice a minute.
+  CalledByServerMovement,
+
   // Will save pos immediately
   Other
 };
@@ -112,6 +119,12 @@ public:
   bool HasScript(const char* name) const;
   bool IsActivationBlocked() const;
   bool GetTeleportFlag() const;
+
+  // Whether a move or a turn asks for a save: a player's movement once its
+  // last save is 30 seconds old, the server's own NPC movement never, and
+  // anything else at once (SetPosMode says why).
+  static ChangeFormGuard::Mode SaveModeFor(bool isLocationSaveNeeded,
+                                           SetPosMode setPosMode);
 
   virtual void VisitProperties(CreateActorMessage& message,
                                VisitPropertiesMode mode);
@@ -170,7 +183,10 @@ public:
                                const Inventory& replacement,
                                uint64_t sequence,
                                const InventoryPropertyChange* property = nullptr);
-  void AddItem(uint32_t baseId, uint32_t count);
+  // THORNSWOOD PATCH (Thornswood #3026). An entry's extra data may come with
+  // it (a crafted garment's name), so a named entry is added as itself.
+  void AddItem(uint32_t baseId, uint32_t count,
+               const Inventory::ExtraData& extraData = Inventory::ExtraData());
   void AddItems(const std::vector<Inventory::Entry>& entries);
   void RemoveItem(uint32_t baseId, uint32_t count, MpObjectReference* target);
   void RemoveItems(const std::vector<Inventory::Entry>& entries,
@@ -217,11 +233,24 @@ public:
 
   void SendInventoryUpdate();
 
+  // THORNSWOOD PATCH (Thornswood #3159). Whether this container is in the
+  // actor's open bench stock (MpActor::BenchStock), so a change to what it
+  // holds is sent to that actor too. MpActor keeps it in step.
+  void SetBenchStockReader(uint32_t actorId, bool reading);
+
   // The extra (name, enchantment, charge, poison, soul, health) of the entry
   // this reference was dropped as. The pickup adds the item with it, so a
   // piece picked up is the piece that was dropped (Thornswood #1719).
+  // It is saved with the reference, so it outlives a restart (Thornswood
+  // #3498).
   void SetPickupExtra(const std::optional<Inventory::ExtraData>& extra);
   const std::optional<Inventory::ExtraData>& GetPickupExtra() const noexcept;
+
+  // THORNSWOOD PATCH (Thornswood #3498). The reference is deleted at `when`,
+  // on the world's timer clock. The moment is saved with the reference, so
+  // ApplyChangeForm sets the timer again after a restart, and a moment that
+  // passed while the server was down deletes it on the first tick.
+  void SetDeleteDatetime(std::chrono::system_clock::time_point when);
   const std::vector<MpActor*>& GetActorListeners() const noexcept;
 
   static const char* GetPropertyPrefixPrivate() noexcept { return "private."; }
@@ -283,7 +312,8 @@ private:
   std::optional<std::chrono::system_clock::duration> relootTimeOverride;
   std::unique_ptr<uint8_t> chanceNoneOverride;
   bool activationBlocked = false;
-  std::optional<Inventory::ExtraData> pickupExtra;
+
+  void ArmDeleteTimer(uint64_t deleteDatetimeMs);
 
   struct Impl;
   std::shared_ptr<Impl> pImpl;

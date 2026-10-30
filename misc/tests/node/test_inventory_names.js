@@ -82,6 +82,15 @@ function makeGame() {
       for (const l of chosen) l.name = to;
       return true;
     },
+    // Thornswood #2146: lists are taken away by their index among baseId's.
+    removeInventoryItems: (refrId, baseId, listCount, indexes, counts, plain) => {
+      game.calls.push(['remove', baseId, indexes.slice(), counts.slice(), plain]);
+      const lists = game.lists.filter((l) => l.baseId === baseId);
+      if (lists.length !== listCount) return false;
+      indexes.forEach((i, k) => { lists[i].count -= counts[k]; });
+      game.lists = game.lists.filter((l) => l.count > 0);
+      return true;
+    },
     TESModPlatform: {
       resetContainer() {},
       pushWornState(worn, wornLeft) { game.wornState = { worn, wornLeft }; },
@@ -186,9 +195,10 @@ function makeGame() {
   g.lists = [{ baseId: DAGGER, count: 3, name: 'Steel Dagger (60%)' }];
   g.apply([{ baseId: DAGGER, count: 2, name: 'Steel Dagger (60%)' }, { baseId: DAGGER, count: 1, name: 'Steel Dagger (55%)' }]);
   const adds = g.calls.filter((c) => c[0] === 'addItemEx');
-  yes('one of a stack of three renamed: no list holds exactly one, so one is taken away and one added',
-    g.calls.some((c) => c[0] === 'rename') && adds.length === 2 &&
-    adds.some((c) => c[2] === -1 && c[3] === 'Steel Dagger (60%)') && adds.some((c) => c[2] === 1 && c[3] === 'Steel Dagger (55%)'));
+  const removes = g.calls.filter((c) => c[0] === 'remove');
+  yes('one of a stack of three renamed: no list holds exactly one, so one is taken away from that stack and one added',
+    g.calls.some((c) => c[0] === 'rename') && adds.length === 1 && adds[0][2] === 1 && adds[0][3] === 'Steel Dagger (55%)' &&
+    removes.length === 1 && JSON.stringify(removes[0].slice(1)) === JSON.stringify([DAGGER, [0], [1], 0]));
   g.calls.length = 0;
   g.apply([{ baseId: DAGGER, count: 2, name: 'Steel Dagger (60%)' }, { baseId: DAGGER, count: 1, name: 'Steel Dagger (55%)' }]);
   yes('and then nothing is left to do', g.calls.length === 0);

@@ -26,6 +26,7 @@
 #include <iterator>
 #include <optional>
 #include <save_storages/ISaveStorage.h>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -87,6 +88,10 @@ struct RelootTimeForTypesEntry
 
 struct WorldState::Impl
 {
+  const std::thread::id ownerThread = std::this_thread::get_id();
+  enum class CompletionPhase { Active, Completing, Completed, Failed };
+  CompletionPhase completionPhase = CompletionPhase::Active;
+  std::optional<std::chrono::steady_clock::time_point> completionDeadline;
   std::shared_ptr<MerchantTransferController> merchantTransfers;
   using ReceiptKey = std::pair<FormDesc, int32_t>;
   struct SavedReceipt
@@ -134,6 +139,7 @@ struct WorldState::Impl
   // The clock SetTimerClock gave, for reloot timers made after it.
   Viet::Timer::Clock timerClock;
   std::set<std::string> forbiddenRelootTypes;
+  std::set<std::string> forbiddenBaseContainerTypes;
   std::vector<std::unique_ptr<IPapyrusClassBase>> classes;
   // By GetAllForms' modIndex
   std::unordered_map<uint32_t, std::shared_ptr<std::vector<uint32_t>>>
@@ -206,6 +212,10 @@ void WorldState::AttachSaveStorage(
     Viet::ISaveStorage<MpChangeForm, FormDesc, std::vector<FormDesc>>>
     saveStorage)
 {
+  if (pImpl->completionPhase != Impl::CompletionPhase::Active) {
+    pImpl->saveStorageFailed = true;
+    throw std::runtime_error("Cannot attach save storage after terminal completion begins");
+  }
   if (pImpl->saveStoragePumping) {
     throw std::runtime_error("Cannot attach save storage during a save pump");
   }
@@ -296,6 +306,10 @@ void WorldState::AddForm(std::unique_ptr<MpForm> form, uint32_t formId,
 
 void WorldState::EnsureTickAllowed() const
 {
+  if (pImpl->completionPhase != Impl::CompletionPhase::Active) {
+    pImpl->saveStorageFailed = true;
+    throw std::runtime_error("Cannot tick gameplay after terminal completion begins");
+  }
   if (pImpl->saveStoragePumping) {
     pImpl->saveStorageFailed = true;
     throw std::runtime_error("Cannot tick the world during a save pump");
@@ -926,6 +940,69 @@ std::string WorldState::GetSavedInventoryReceipt(MpObjectReference& ref)
   return pImpl->savedInventoryReceipts.at(key).dump;
 }
 
+void WorldState::CheckSaveCompletionProgress() const
+{
+  if (pImpl->completionPhase != Impl::CompletionPhase::Completing) return;
+  if (pImpl->saveStorageFailed) {
+    throw std::runtime_error("Terminal save completion observed a save failure");
+  }
+  if (std::chrono::steady_clock::now() >= *pImpl->completionDeadline) {
+    throw std::runtime_error("Terminal save completion exceeded its deadline");
+  }
+}
+
+WorldState::SaveCompletionResult WorldState::CompleteSavesForShutdown(uint32_t timeoutMs)
+{
+  // Only the immutable thread binding may be read before this check.
+  if (std::this_thread::get_id() != pImpl->ownerThread) {
+    throw std::runtime_error("Terminal save completion requires the world owner thread");
+  }
+  if (pImpl->completionPhase != Impl::CompletionPhase::Active) {
+    if (pImpl->completionPhase == Impl::CompletionPhase::Completing) pImpl->saveStorageFailed = true;
+    throw std::runtime_error("Terminal save completion is a one-shot operation");
+  }
+  if (timeoutMs == 0 || timeoutMs > 30000) {
+    throw std::invalid_argument("Terminal save timeout must be between 1 and 30000 milliseconds");
+  }
+  if (!pImpl->saveStorage || pImpl->saveStoragePumping || pImpl->formLoadingInProgress ||
+      pImpl->chunkLoadingInProgress || pImpl->saveStorageFailed) {
+    throw std::runtime_error("World is not ready for terminal save completion");
+  }
+  auto storage = pImpl->saveStorage;
+  const bool durable = storage->SupportsDurableUpsert();
+  pImpl->completionDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+  pImpl->completionPhase = Impl::CompletionPhase::Completing;
+  Viet::ScopedTask<Impl::CompletionPhase> terminal([](Impl::CompletionPhase& phase) {
+    if (phase == Impl::CompletionPhase::Completing) phase = Impl::CompletionPhase::Failed;
+  }, pImpl->completionPhase);
+  auto empty = [&] {
+    return !pImpl->saveStorageBusy && !pImpl->activeSave &&
+      pImpl->pendingChanges.empty() && pImpl->retryBatch.rows.empty();
+  };
+  try {
+    while (true) {
+      CheckSaveCompletionProgress();
+      // No world tick, timer, packet or JavaScript work is dispatched here.
+      TickSaveStorage({});
+      CheckSaveCompletionProgress();
+      if (empty()) {
+        const bool settled = storage->IsSettled();
+        // Settlement/capture cleanup can enqueue new accepted snapshots.
+        CheckSaveCompletionProgress();
+        if (settled && empty()) {
+          CheckSaveCompletionProgress();
+          pImpl->completionPhase = Impl::CompletionPhase::Completed;
+          return {SaveCompletionResult::Phase::WritesCompleted, durable};
+        }
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+  } catch (...) {
+    pImpl->saveStorageFailed = true;
+    throw;
+  }
+}
+
 void WorldState::TickSaveStorage(const std::chrono::system_clock::time_point& now)
 {
   try {
@@ -960,6 +1037,7 @@ void WorldState::TickSaveStorageImpl(const std::chrono::system_clock::time_point
     spdlog::error("TickSaveStorage - uncorrelated storage error: {}", e.what());
   }
 
+  CheckSaveCompletionProgress();
   if (pImpl->saveStorageBusy) {
     return;
   }
@@ -1065,6 +1143,7 @@ void WorldState::TickSaveStorageImpl(const std::chrono::system_clock::time_point
     pImpl->pendingChanges.clear();
     pImpl->retryBatch.Clear();
     published = true;
+    CheckSaveCompletionProgress();
     storage->UpsertWithOutcome(std::move(submittedRows), receive);
     attempt->phase = Impl::SaveAttempt::Phase::Waiting;
     if (attempt->duplicateOutcome) pImpl->FailSave(attempt);
@@ -1080,6 +1159,9 @@ void WorldState::TickSaveStorageImpl(const std::chrono::system_clock::time_point
     throw;
   }
 
+  // The submission returned successfully. A terminal deadline refusal must
+  // not masquerade as a rejected Upsert and retire a still-accepted job.
+  CheckSaveCompletionProgress();
   // Recycling can also call back into the world. Never pass its live pending
   // queue to storage or replace work queued by either callback boundary.
   std::vector<std::optional<MpChangeForm>> recycled;
@@ -1573,6 +1655,12 @@ void WorldState::SetRelootTime(const std::string& recordType,
   }
 }
 
+std::chrono::system_clock::time_point WorldState::GetTimerNow() const
+{
+  return pImpl->timerClock ? pImpl->timerClock()
+                           : std::chrono::system_clock::now();
+}
+
 void WorldState::SetTimerClock(Viet::Timer::Clock clock)
 {
   pImpl->timerClock = clock;
@@ -1670,6 +1758,12 @@ void WorldState::SetForbiddenRelootTypes(const std::set<std::string>& types)
   pImpl->forbiddenRelootTypes = types;
 }
 
+void WorldState::SetForbiddenBaseContainerTypes(
+  const std::set<std::string>& types)
+{
+  pImpl->forbiddenBaseContainerTypes = types;
+}
+
 void WorldState::SetEnableConsoleCommandsForAllSetting(bool enable)
 {
   enableConsoleCommandsForAll = enable;
@@ -1679,6 +1773,12 @@ bool WorldState::IsRelootForbidden(std::string type) const noexcept
 {
   return pImpl->forbiddenRelootTypes.find(type) !=
     pImpl->forbiddenRelootTypes.end();
+}
+
+bool WorldState::IsBaseContainerForbidden(
+  const std::string& type) const noexcept
+{
+  return pImpl->forbiddenBaseContainerTypes.count(type) > 0;
 }
 
 bool WorldState::HasEspmFile(std::string_view filename) const noexcept

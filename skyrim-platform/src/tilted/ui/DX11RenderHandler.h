@@ -6,6 +6,7 @@
 #include <DirectXTK/SpriteBatch.h>
 #include <DirectXTK/SpriteFont.h>
 #include <Signal.hpp>
+#include <atomic>
 #include <functional>
 #include <map>
 #include <mutex>
@@ -24,6 +25,15 @@ struct DX11RenderHandler : MyRenderHandler
   {
     static bool g_visible = false;
     return g_visible;
+  }
+
+  // Thornswood #3130: true from the game's Loading Menu opening to its
+  // closing (LoadingScreen.h). Written on the game's thread, read on the
+  // thread that presents.
+  static std::atomic<bool>& Loading()
+  {
+    static std::atomic<bool> g_loading{ false };
+    return g_loading;
   }
 
   struct Renderer

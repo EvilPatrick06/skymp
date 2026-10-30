@@ -8,6 +8,7 @@
 #include "UpdateAnimationMessage.h"
 #include "UpdateAnimationMessage.h"
 #include "formulas/TES5DamageFormula.h"
+#include "gamemode_events/GameModeEvent.h"
 #include "libespm/IterateFields.h"
 #include <algorithm>
 #include <chrono>
@@ -276,7 +277,29 @@ TEST_CASE("Server NPC attacks enter the normal directional block pipeline",
   f.Npc().SetPos(f.Human().GetPos() +
     direction * (facingAttacker ? 40.f : -40.f));
   f.Human().SetIsBlockActive(true);
+  // The OnHit event carries the server's block, decided before it is sent
+  // (Thornswood #1386: the gamemode charges a block's stamina from it).
+  struct OnHitListener : FakeListener
+  {
+    size_t hits = 0;
+    bool blocked = false;
+    bool OnMpApiEvent(const GameModeEvent& event) override
+    {
+      if (std::string(event.GetName()) == "onPapyrusEvent:OnHit") {
+        const auto args = event.GetAdditionalArguments();
+        if (args.second == 7) {
+          ++hits;
+          blocked = static_cast<bool>(args.first[6]); // abHitBlocked
+        }
+      }
+      return true;
+    }
+  };
+  auto listener = std::make_shared<OnHitListener>();
+  f.p.AddListener(listener);
   REQUIRE(f.Attack());
+  REQUIRE(listener->hits == 1);
+  REQUIRE(listener->blocked == facingAttacker);
   REQUIRE(f.damage->calls == 1);
   REQUIRE(f.damage->last.isHitBlocked == facingAttacker);
   const float expectedDamage = facingAttacker ? 0.4f : 4.f;
@@ -1295,4 +1318,26 @@ TEST_CASE("An unsafe saved NPC return deadline is rejected before scheduling",
   REQUIRE_FALSE(npc.IsRespawning());
   f.p.worldState.Tick();
   REQUIRE(npc.IsDead());
+}
+
+TEST_CASE("The server's own NPC movement never asks for a save on a timer",
+          "[ServerNpcCombat][Save]")
+{
+  // Thornswood #3180: every walking server NPC's change form was rewritten
+  // each 30 seconds, about 5,000 files per server twice a minute with nobody
+  // on, because UpdateServerMovement took the player's movement mode, which
+  // saves once its last save is 30 seconds old.
+  using Mode = ChangeFormGuard::Mode;
+  for (bool locationSaveDue : { false, true }) {
+    CHECK(MpObjectReference::SaveModeFor(locationSaveDue,
+                                         SetPosMode::CalledByServerMovement) ==
+          Mode::NoRequestSave);
+  }
+  // A player's movement keeps its 30-second save, and any other move saves.
+  CHECK(MpObjectReference::SaveModeFor(
+          true, SetPosMode::CalledByUpdateMovement) == Mode::RequestSave);
+  CHECK(MpObjectReference::SaveModeFor(
+          false, SetPosMode::CalledByUpdateMovement) == Mode::NoRequestSave);
+  CHECK(MpObjectReference::SaveModeFor(false, SetPosMode::Other) ==
+        Mode::RequestSave);
 }
