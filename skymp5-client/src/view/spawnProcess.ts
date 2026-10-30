@@ -2,6 +2,7 @@ import { ObjectReference, Game, Actor, MotionType } from "skyrimPlatform";
 import { Appearance, applyTints } from "../sync/appearance";
 import { NiPoint3 } from "../sync/movement";
 import { ObjectReferenceEx } from "../extensions/objectReferenceEx";
+import { traceSpawnEnd, traceSpawnStage, traceSpawnStart } from "./spawnTrace";
 
 export class SpawnProcess {
   /*
@@ -35,6 +36,12 @@ export class SpawnProcess {
     It is deliberately a re-apply rather than a reordering. Enabling before
     positioning would show the NPC at the person for a frame, and resurrecting
     before enabling is not something this engine promises anything about.
+
+    THORNSWOOD (Thornswood #1287). Each step below writes one line to
+    thornswood-spawn.log once it has resolved (start, moved, enabled,
+    resurrected or keyframed, settled), or "gone <step>" where the reference
+    went away, so a capture can show where the actor stood between enable and
+    the put-back. The lines only read; see spawnTrace.ts.
   */
   private spawnPos: NiPoint3;
 
@@ -48,17 +55,21 @@ export class SpawnProcess {
 
     const refr = ObjectReference.from(Game.getFormEx(refrId));
     if (!refr || refr.getFormID() !== refrId) {
+      traceSpawnEnd("gone-start", refrId);
       return;
     }
 
+    traceSpawnStart(refrId, pos);
     refr.setPosition(...pos).then(() => this.enable(appearance, refrId));
   }
 
   private enable(appearance: Appearance | null, refrId: number) {
     const refr = ObjectReference.from(Game.getFormEx(refrId));
     if (!refr || refr.getFormID() !== refrId) {
+      traceSpawnEnd("gone-moved", refrId);
       return;
     }
+    traceSpawnStage("moved", refrId);
 
     const ac = Actor.from(refr);
     if (ac && appearance) {
@@ -70,34 +81,39 @@ export class SpawnProcess {
   private resurrect(refrId: number) {
     const refr = ObjectReference.from(Game.getFormEx(refrId));
     if (!refr || refr.getFormID() !== refrId) {
+      traceSpawnEnd("gone-enabled", refrId);
       return;
     }
+    traceSpawnStage("enabled", refrId);
 
     const ac = Actor.from(refr);
     if (ac) {
-      return ac.resurrect().then(() => this.settle(refrId));
+      return ac.resurrect().then(() => this.settle(refrId, "resurrected"));
     }
 
     ObjectReferenceEx.dealWithRef(refr, refr.getBaseObject()!);
 
     return refr
       .setMotionType(MotionType.Keyframed, true)
-      .then(() => this.settle(refrId));
+      .then(() => this.settle(refrId, "keyframed"));
   }
 
   /*
     THORNSWOOD. The last word on where it stands. See the note at the top.
   */
-  private settle(refrId: number) {
+  private settle(refrId: number, step: string) {
     const refr = ObjectReference.from(Game.getFormEx(refrId));
     if (!refr || refr.getFormID() !== refrId) {
       // Gone between calls. There is nothing to place and nothing to call back
       // about, and this is a normal outcome for somebody who walked out of
       // range while the spawn was still running.
+      traceSpawnEnd("gone-" + step, refrId);
       return;
     }
+    traceSpawnStage(step, refrId);
 
     return refr.setPosition(...this.spawnPos).then(() => {
+      traceSpawnEnd("settled", refrId);
       this.callback();
     });
   }
