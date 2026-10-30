@@ -2,6 +2,7 @@
 
 #include "MpActor.h"
 #include "WorldState.h"
+#include <cmath>
 #include <unordered_set>
 #include <vector>
 
@@ -30,8 +31,32 @@ std::string EatItemEvent::GetArgumentsJsonArray() const
   return result;
 }
 
+uint32_t EatItemEvent::GetActorId() const
+{
+  return actor ? actor->GetFormId() : 0;
+}
+
+float EatItemEvent::GetEffectScale() const
+{
+  return effectScale;
+}
+
+void EatItemEvent::SetEffectScale(float scale)
+{
+  if (std::isnan(scale) || scale < 0.f) {
+    scale = 0.f;
+  }
+  if (scale > 1.f) {
+    scale = 1.f;
+  }
+  effectScale = scale;
+}
+
 void EatItemEvent::OnFireSuccess(WorldState* worldState)
 {
+  if (effectScale <= 0.f) {
+    return;
+  }
   std::vector<espm::Effects::Effect> effects;
   if (isAlchemyItem) {
     effects = espm::GetData<espm::ALCH>(baseId, worldState).effects;
@@ -43,5 +68,10 @@ void EatItemEvent::OnFireSuccess(WorldState* worldState)
   std::unordered_set<std::string> modFiles = { worldState->espmFiles.begin(),
                                                worldState->espmFiles.end() };
   bool hasSweetpie = modFiles.count("SweetPie.esp");
+  if (effectScale < 1.f) {
+    for (auto& effect : effects) {
+      effect.magnitude *= effectScale;
+    }
+  }
   actor->ApplyMagicEffects(effects, hasSweetpie);
 }

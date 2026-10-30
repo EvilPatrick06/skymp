@@ -33,7 +33,9 @@ public:
 
   // public API methods
   Napi::Value AttachSaveStorage(const Napi::CallbackInfo& info);
+  Napi::Value CompleteSavesForShutdown(const Napi::CallbackInfo& info);
   Napi::Value WritePrivateEconomyLedger(const Napi::CallbackInfo& info);
+  Napi::Value WriteFileWhole(const Napi::CallbackInfo& info);
   Napi::Value Tick(const Napi::CallbackInfo& info);
   Napi::Value On(const Napi::CallbackInfo& info);
   Napi::Value CreateActor(const Napi::CallbackInfo& info);
@@ -47,6 +49,7 @@ public:
   Napi::Value DestroyActor(const Napi::CallbackInfo& info);
   Napi::Value SetRaceMenuOpen(const Napi::CallbackInfo& info);
   Napi::Value GetActorsByProfileId(const Napi::CallbackInfo& info);
+  Napi::Value GetUnreadableChangeForms(const Napi::CallbackInfo& info);
   Napi::Value SetEnabled(const Napi::CallbackInfo& info);
   Napi::Value CreateBot(const Napi::CallbackInfo& info);
   Napi::Value GetUserByActor(const Napi::CallbackInfo& info);
@@ -63,6 +66,7 @@ public:
   Napi::Value ValidateInventoryTransaction(const Napi::CallbackInfo& info);
   Napi::Value CompareAndSetInventory(const Napi::CallbackInfo& info);
   Napi::Value CompareAndSetInventoryAndProperty(const Napi::CallbackInfo& info);
+  Napi::Value CompareAndSetActorProperty(const Napi::CallbackInfo& info);
   Napi::Value CompareAndSetInventoryImpl(const Napi::CallbackInfo& info,
                                          bool withProperty);
   Napi::Value GetInventoryReceipt(const Napi::CallbackInfo& info);
@@ -79,6 +83,7 @@ public:
   Napi::Value StopNpcMovement(const Napi::CallbackInfo& info);
   Napi::Value GetNavmeshRecords(const Napi::CallbackInfo& info);
   Napi::Value GetNpcAIState(const Napi::CallbackInfo& info);
+  Napi::Value GetActorRuntimeIdentity(const Napi::CallbackInfo& info);
   Napi::Value GetFactionReactions(const Napi::CallbackInfo& info);
   Napi::Value ServerNpcAttack(const Napi::CallbackInfo& info);
   Napi::Value GetLoadedFormCount(const Napi::CallbackInfo& info);

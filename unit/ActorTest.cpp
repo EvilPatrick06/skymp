@@ -101,3 +101,64 @@ TEST_CASE("Actor factions in changeForm", "[Actor]")
     FormDesc::FromFormId(0x000123, p.worldState.espmFiles), false);
   REQUIRE(actor.GetChangeForm().factions.value().size() == 0);
 }
+
+TEST_CASE("Thornswood #1651: the equipment record follows a renamed piece "
+          "and nothing else",
+          "[Actor]")
+{
+  Inventory::ExtraData worn;
+  worn.worn_ = true;
+  worn.name = "Iron Sword (85%)";
+  Inventory::ExtraData spare;
+  spare.name = "Iron Sword (85%)";
+
+  Equipment eq;
+  eq.inv.entries.push_back(Inventory::Entry(0x12eb7, 1, worn));
+  eq.inv.entries.push_back(Inventory::Entry(0x12eb7, 1, spare));
+  eq.rightSpell = 0x12fcd;
+  eq.numChanges = 7;
+
+  MpActor actor(LocationalData(), FormCallbacks::DoNothing());
+  actor.SetEquipment(eq);
+
+  // The worn sword renamed, the one in the pack left as it was.
+  Equipment renamed = eq;
+  renamed.inv.entries[0].name = "Iron Sword (84%)";
+  renamed.numChanges = 0;
+  REQUIRE(actor.RenameEquipment(renamed));
+  REQUIRE(actor.GetEquipment().inv.entries[0].name == "Iron Sword (84%)");
+  REQUIRE(actor.GetEquipment().inv.entries[0].GetWorn() ==
+          Inventory::Worn::Right);
+  REQUIRE(actor.GetEquipment().inv.entries[1].name == "Iron Sword (85%)");
+  REQUIRE(actor.GetEquipment().numChanges == 7);
+  REQUIRE(actor.GetChangeForm().equipment.inv.entries[0].name ==
+          "Iron Sword (84%)");
+
+  // Back to a plain name, as a repair to 100% writes it.
+  renamed.inv.entries[0].name = std::nullopt;
+  REQUIRE(actor.RenameEquipment(renamed));
+  REQUIRE(!actor.GetEquipment().inv.entries[0].name.has_value());
+
+  const Equipment before = actor.GetEquipment();
+
+  // Anything but a name is refused and changes nothing.
+  Equipment unworn = before;
+  unworn.inv.entries[0].worn_ = false;
+  REQUIRE(!actor.RenameEquipment(unworn));
+  Equipment counted = before;
+  counted.inv.entries[1].count = 2;
+  REQUIRE(!actor.RenameEquipment(counted));
+  Equipment tempered = before;
+  tempered.inv.entries[0].health = 1.6f;
+  REQUIRE(!actor.RenameEquipment(tempered));
+  Equipment shorter = before;
+  shorter.inv.entries.pop_back();
+  REQUIRE(!actor.RenameEquipment(shorter));
+  Equipment otherSpell = before;
+  otherSpell.rightSpell = 0x12fd0;
+  REQUIRE(!actor.RenameEquipment(otherSpell));
+  Equipment otherBase = before;
+  otherBase.inv.entries[1].baseId = 0x139b5;
+  REQUIRE(!actor.RenameEquipment(otherBase));
+  REQUIRE(actor.GetEquipment() == before);
+}

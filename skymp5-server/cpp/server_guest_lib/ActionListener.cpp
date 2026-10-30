@@ -14,7 +14,9 @@
 #include "WorldState.h"
 #include "gamemode_events/CustomEvent.h"
 #include "gamemode_events/EatItemEvent.h"
+#include "gamemode_events/SpellCastEvent.h"
 #include "gamemode_events/UpdateAppearanceAttemptEvent.h"
+#include "gamemode_events/EquipItemAttemptEvent.h"
 #include "gamemode_events/UpdateEquipmentAttemptEvent.h"
 #include "script_objects/EspmGameObject.h"
 #include <algorithm>
@@ -146,6 +148,16 @@ void ActionListener::OnCustomPacket(const RawMessageData& rawMsgData,
 {
   simdjson::dom::parser parser;
   auto content = parser.parse(msg.contentJsonDump).value();
+
+  // THORNSWOOD PATCH (Thornswood #3161). The client says the person got up
+  // from a bench: its menu closed. The crafts still being worked for them
+  // stop. See CraftService::OnCraftItem.
+  auto packetType = content["customPacketType"].get_string();
+  if (!packetType.error() && packetType.value() == "craftLeave") {
+    craftService->StopWork(rawMsgData.userId);
+    return;
+  }
+
   for (auto& listener : partOne.GetListeners()) {
     listener->OnCustomPacket(rawMsgData.userId, content);
   }
@@ -540,9 +552,76 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
     }
   }
 
+  // THORNSWOOD #2262. The gamemode's say over single items. Each item this
+  // update puts on that the server's record does not already have on is
+  // asked about once, as onEquipItemAttempt, before anything is stored. A
+  // refused item is kept in the record as in the pack, not worn, and the rest
+  // of the update goes through; the owner's game is told to take it off and
+  // keeps it. A login is the same path: the first update after spawning names
+  // what the game put back on, and the server's record of a refused item says
+  // not worn. Off unless the server setting equipItemAttemptEnabled is on.
+  std::vector<uint32_t> refusedItemIds;
+  if (isAllowed && actor->GetParent() &&
+      actor->GetParent()->equipItemAttemptEnabled) {
+    std::unordered_set<uint32_t> alreadyWornIds;
+    for (const auto& entry : actor->GetEquipment().inv.entries) {
+      if (entry.GetWorn() != Inventory::Worn::None) {
+        alreadyWornIds.insert(entry.baseId);
+      }
+    }
+    std::unordered_set<uint32_t> asked;
+    std::unordered_set<uint32_t> refused;
+    for (const auto& entry : equipmentInv.entries) {
+      if (entry.GetWorn() == Inventory::Worn::None ||
+          alreadyWornIds.count(entry.baseId) ||
+          !asked.insert(entry.baseId).second) {
+        continue;
+      }
+      EquipItemAttemptEvent equipItemAttemptEvent(actor, entry.baseId);
+      if (!equipItemAttemptEvent.Fire(actor->GetParent())) {
+        refused.insert(entry.baseId);
+        refusedItemIds.push_back(entry.baseId);
+      }
+    }
+    if (!refused.empty()) {
+      for (auto& entry : equipmentInv.entries) {
+        if (refused.count(entry.baseId)) {
+          entry.SetWorn(Inventory::Worn::None);
+        }
+      }
+      for (uint32_t id : refusedItemIds) {
+        spdlog::info("ActionListener::OnUpdateEquipment {:x} - the gamemode "
+                     "refused item {:x}; kept the rest of the update",
+                     actorFormId, id);
+      }
+    }
+  }
+
   if (isAllowed) {
-    SendToNeighbours(msg.idx, rawMsgData, true);
+    if (refusedItemIds.empty()) {
+      SendToNeighbours(msg.idx, rawMsgData, true);
+    } else {
+      // The neighbours get what was stored, not the client's bytes, so
+      // nobody sees the refused item in hand.
+      UpdateEquipmentMessage stored;
+      stored.idx = msg.idx;
+      stored.data = data;
+      SendToNeighbours(msg.idx, rawMsgData.userId, stored, true);
+    }
     actor->SetEquipment(data);
+    for (uint32_t itemId : refusedItemIds) {
+      SpSnippetObjectArgument itemArg;
+      itemArg.formId = itemId;
+      itemArg.type = "Form";
+      std::vector<std::optional<
+        std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+        args;
+      args.push_back(itemArg);
+      args.push_back(false);
+      args.push_back(true);
+      SpSnippet("Actor", "UnequipItem", args, actor->GetFormId())
+        .Execute(actor, SpSnippetMode::kNoReturnResult);
+    }
   } else {
     actor->SendInventoryUpdate();
 
@@ -901,6 +980,11 @@ void ActionListener::OnHostAttempt(const RawMessageData& rawMsgData,
     // 0" and named nobody.
     partOne.GetLogger().info("Hoster of {0:x} changed from {1:x} to {2:x}",
                              remoteId, prevHoster, me->GetFormId());
+    if (prevHoster != me->GetFormId()) {
+      if (auto actor = remote.AsActor()) {
+        actor->AcceptClientHost();
+      }
+    }
     hoster = me->GetFormId();
     remote.UpdateHoster(hoster);
 
@@ -1227,6 +1311,90 @@ bool ShouldBeBlocked(const MpActor& aggressor, const MpActor& target)
               (targetViewDirection.Length() * aggressorDirection.Length()));
   return angle < 1;
 }
+
+// Whether the server sees the target block this hit: a block raised (the
+// animation events and the movement the target's machine sends), the
+// aggressor in front of it, and a bow or crossbow shot blocked only by a
+// shield. The client's own flag can only add a block to this, never take one
+// away. Decided before the OnHit event, so the event carries the block the
+// damage is worked out with; the gamemode charges a block's stamina from it
+// (Thornswood #1386), and a hit a server NPC lands has no client flag at all.
+bool IsHitBlockedByServer(const MpActor& aggressor, MpActor& targetActor,
+                          const HitData& hitData)
+{
+  if (!targetActor.IsBlockActive() ||
+      !ShouldBeBlocked(aggressor, targetActor)) {
+    return false;
+  }
+
+  bool isRemoteBowAttack = false;
+
+  auto sourceLookupResult =
+    targetActor.GetParent()->GetEspm().GetBrowser().LookupById(hitData.source);
+  if (sourceLookupResult.rec &&
+      sourceLookupResult.rec->GetType() == espm::WEAP::kType) {
+    auto weapData =
+      espm::GetData<espm::WEAP>(hitData.source, targetActor.GetParent());
+    if (weapData.weapDNAM) {
+      if (weapData.weapDNAM->animType == espm::WEAP::AnimType::Bow ||
+          weapData.weapDNAM->animType == espm::WEAP::AnimType::Crossbow) {
+        if (!hitData.isBashAttack) {
+          isRemoteBowAttack = true;
+        }
+      }
+    }
+  }
+
+  bool isBlockingByShield = false;
+
+  auto targetActorEquipmentEntries = targetActor.GetEquipment().inv.entries;
+  for (auto& entry : targetActorEquipmentEntries) {
+    if (entry.GetWorn() != Inventory::Worn::None) {
+      auto res =
+        targetActor.GetParent()->GetEspm().GetBrowser().LookupById(
+          entry.baseId);
+      if (res.rec && res.rec->GetType() == espm::ARMO::kType) {
+        auto data =
+          espm::GetData<espm::ARMO>(entry.baseId, targetActor.GetParent());
+        bool isShield = data.equipSlotId > 0;
+        if (isShield) {
+          isBlockingByShield = isShield;
+        }
+      }
+    }
+  }
+
+  return !isRemoteBowAttack || isBlockingByShield;
+}
+
+// A killing blow may rotate the target's runtime, but not its body identity.
+// Keep both participants alive across Papyrus and network callbacks, and stop
+// the hit if either ownership session or the target body is replaced.
+class HitActorLease
+{
+public:
+  HitActorLease(MpActor& aggressor, MpActor& target)
+    : aggressor(aggressor), target(target)
+    , heldAggressor(aggressor.GetParent()->LookupFormById(aggressor.GetFormId()))
+    , heldTarget(target.GetParent()->LookupFormById(target.GetFormId()))
+    , aggressorRuntime(aggressor.GetRuntimeIdentity())
+    , targetLife(target.GetRuntimeLifeIdentity())
+  {}
+
+  bool Current() const
+  {
+    return heldAggressor.get() == &aggressor && heldTarget.get() == &target &&
+      aggressor.HasRuntimeIdentity(aggressorRuntime) && targetLife != 0 &&
+      target.GetRuntimeLifeIdentity() == targetLife &&
+      target.GetParent()->LookupFormById(target.GetFormId()).get() == &target;
+  }
+
+private:
+  MpActor& aggressor;
+  MpActor& target;
+  std::shared_ptr<MpForm> heldAggressor, heldTarget;
+  uint64_t aggressorRuntime, targetLife;
+};
 }
 
 bool ActionListener::ServerNpcAttack(uint32_t aggressorId, uint32_t targetId)
@@ -1278,7 +1446,9 @@ bool ActionListener::ServerNpcAttack(uint32_t aggressorId, uint32_t targetId)
     std::chrono::steady_clock::now() - aggressor->GetLastHitTime(std::nullopt);
   if (!CanHit(*aggressor, hit, elapsed)) return false;
   const auto previous = aggressor->GetLastHitTime(targetId);
+  const HitActorLease lease(*aggressor, *target);
   OnWeaponHit(aggressor, target, hit, IsUnarmedAttack(hit.source));
+  if (!lease.Current()) return false;
   if (aggressor->GetLastHitTime(targetId) == previous) return false;
   UpdateAnimationMessage animation;
   animation.idx = aggressor->GetIdx();
@@ -1286,6 +1456,7 @@ bool ActionListener::ServerNpcAttack(uint32_t aggressorId, uint32_t targetId)
   const auto last = aggressor->GetLastAnimEvent();
   animation.data.numChanges = last ? last->numChanges + 1 : 1;
   partOne.animationSystem.Process(aggressor, animation.data);
+  if (!lease.Current()) return false;
   aggressor->PublishServerAttackAnimation(animation.data);
   return true;
 }
@@ -1474,11 +1645,26 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
     return;
   }
 
-  SendToNeighbours(myActor->idx, rawMsgData);
+  // THORNSWOOD PATCH (Thornswood #2848). Neighbours get the cast as the
+  // client sent it, but with how long its effects hold decided here: the
+  // onSpellCast listeners' answer, the game's own unless one agrees to more
+  // (SpellCastEvent.h). The caster's own machine already gave its own
+  // effects what it asked for. An interrupt has no effects to hold.
+  SpellCastMessage forwarded;
+  forwarded.data = msg.data;
+  forwarded.data.durationMult.reset();
 
   if (spellCastData.interruptCast) {
+    SendToNeighbours(myActor->idx, rawMsgData.userId, forwarded, false);
     return;
   }
+
+  SpellCastEvent spellCastEvent(caster, spellCastData.spell,
+                                msg.data.durationMult.value_or(1.f));
+  spellCastEvent.Fire(&partOne.worldState);
+
+  forwarded.data.durationMult = spellCastEvent.GetDurationMult();
+  SendToNeighbours(myActor->idx, rawMsgData.userId, forwarded, false);
 
   auto& browser = partOne.worldState.GetEspm().GetBrowser();
 
@@ -1512,12 +1698,15 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
                                 MpObjectReference* targetRef,
                                 const HitData& hitData)
 {
-  SendPapyrusOnHitEvent(aggressor, targetRef, hitData);
-
   auto* targetActorPtr = targetRef ? targetRef->AsActor() : nullptr;
   if (!targetActorPtr) {
+    SendPapyrusOnHitEvent(aggressor, targetRef, hitData);
     return; // Not an actor, damage calculation is not needed
   }
+  const HitActorLease lease(*aggressor, *targetActorPtr);
+  if (!lease.Current()) return;
+  SendPapyrusOnHitEvent(aggressor, targetRef, hitData);
+  if (!lease.Current()) return;
 
   auto targetActorValues = targetActorPtr->GetChangeForm().actorValues;
   const auto previousHealth = targetActorValues.healthPercentage;
@@ -1541,6 +1730,7 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
 
   targetActorPtr->NetSetPercentages(targetActorValues, aggressor,
                                     kHealthAvFilter);
+  if (!lease.Current()) return;
   if (damage > 0 && targetActorValues.healthPercentage < previousHealth) {
     targetActorPtr->RecordServerCombatTarget(aggressor->GetFormId());
   }
@@ -1556,13 +1746,18 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
                                  [[maybe_unused]] bool isUnarmed)
 {
   const auto currentHitTime = std::chrono::steady_clock::now();
-
-  SendPapyrusOnHitEvent(aggressor, targetRef, hitData);
-
   auto* targetActorPtr = targetRef ? targetRef->AsActor() : nullptr;
   if (!targetActorPtr) {
+    SendPapyrusOnHitEvent(aggressor, targetRef, hitData);
     return; // Not an actor, damage calculation is not needed
   }
+  const HitActorLease lease(*aggressor, *targetActorPtr);
+  if (!lease.Current()) return;
+  if (IsHitBlockedByServer(*aggressor, *targetActorPtr, hitData)) {
+    hitData.isHitBlocked = true;
+  }
+  SendPapyrusOnHitEvent(aggressor, targetRef, hitData);
+  if (!lease.Current()) return;
 
   auto& targetActor = *targetActorPtr;
 
@@ -1641,53 +1836,6 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
 
   float healthPercentage = currentActorValues.healthPercentage;
 
-  if (targetActor.IsBlockActive()) {
-    if (ShouldBeBlocked(*aggressor, targetActor)) {
-      bool isRemoteBowAttack = false;
-
-      auto sourceLookupResult =
-        targetActor.GetParent()->GetEspm().GetBrowser().LookupById(
-          hitData.source);
-      if (sourceLookupResult.rec &&
-          sourceLookupResult.rec->GetType() == espm::WEAP::kType) {
-        auto weapData =
-          espm::GetData<espm::WEAP>(hitData.source, targetActor.GetParent());
-        if (weapData.weapDNAM) {
-          if (weapData.weapDNAM->animType == espm::WEAP::AnimType::Bow ||
-              weapData.weapDNAM->animType == espm::WEAP::AnimType::Crossbow) {
-            if (!hitData.isBashAttack) {
-              isRemoteBowAttack = true;
-            }
-          }
-        }
-      }
-
-      bool isBlockingByShield = false;
-
-      auto targetActorEquipmentEntries =
-        targetActor.GetEquipment().inv.entries;
-      for (auto& entry : targetActorEquipmentEntries) {
-        if (entry.GetWorn() != Inventory::Worn::None) {
-          auto res =
-            targetActor.GetParent()->GetEspm().GetBrowser().LookupById(
-              entry.baseId);
-          if (res.rec && res.rec->GetType() == espm::ARMO::kType) {
-            auto data =
-              espm::GetData<espm::ARMO>(entry.baseId, targetActor.GetParent());
-            bool isShield = data.equipSlotId > 0;
-            if (isShield) {
-              isBlockingByShield = isShield;
-            }
-          }
-        }
-      }
-
-      if (!isRemoteBowAttack || isBlockingByShield) {
-        hitData.isHitBlocked = true;
-      }
-    }
-  }
-
   float damage = partOne.CalculateDamage(*aggressor, targetActor, hitData);
   damage = damage < 0.f ? 0.f : damage;
   float outBaseHealth = 0.f;
@@ -1702,6 +1850,7 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
   targetActor.NetSetPercentages(
     currentActorValues, aggressor,
     std::vector<espm::ActorValue>{ espm::ActorValue::Health });
+  if (!lease.Current()) return;
   if (damage > 0 && currentActorValues.healthPercentage < healthPercentage) {
     targetActor.RecordServerCombatTarget(aggressor->GetFormId());
   }
@@ -1718,6 +1867,12 @@ void ActionListener::SendPapyrusOnHitEvent(MpActor* aggressor,
                                            MpObjectReference* target,
                                            const HitData& hitData)
 {
+  if (!aggressor || !target) return;
+  // Object targets take the event-only branch, without HitActorLease. The
+  // complete synchronous Papyrus dispatch still needs both native lifetimes.
+  const auto heldAggressor = partOne.worldState.LookupFormByIdNoLoad(aggressor->GetFormId());
+  const auto heldTarget = partOne.worldState.LookupFormByIdNoLoad(target->GetFormId());
+  if (heldAggressor.get() != aggressor || heldTarget.get() != target) return;
   auto& browser = partOne.worldState.GetEspm().GetBrowser();
   std::array<VarValue, 7> args;
   args[0] = VarValue(aggressor->ToGameObject()); // akAggressor

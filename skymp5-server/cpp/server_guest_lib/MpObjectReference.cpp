@@ -30,6 +30,7 @@
 #include <TimeUtils.h>
 #include <antigo/Context.h>
 #include <antigo/ResolvedContext.h>
+#include <algorithm>
 #include <map>
 #include <numeric>
 #include <optional>
@@ -101,6 +102,9 @@ public:
     if (untrustedRefPtr->occupant == &actor) {
       untrustedRefPtr->SetOpen(false);
       untrustedRefPtr->occupant = nullptr;
+      // THORNSWOOD PATCH (Thornswood #3159). An occupant that goes without
+      // leaving the bench closes its stock all the same.
+      actor.CloseBenchStock(refId);
     }
   }
 
@@ -135,6 +139,9 @@ public:
     if (untrustedRefPtr->occupant == &actor) {
       untrustedRefPtr->SetOpen(false);
       untrustedRefPtr->occupant = nullptr;
+      // THORNSWOOD PATCH (Thornswood #3159). An occupant that goes without
+      // leaving the bench closes its stock all the same.
+      actor.CloseBenchStock(refId);
     }
   }
 
@@ -185,18 +192,25 @@ public:
   std::optional<PrimitiveData> primitive;
   bool teleportFlag = false;
   bool setPropertyCalled = false;
+  // THORNSWOOD PATCH (Thornswood #3159). The actors whose open bench stock
+  // names this container. See SetBenchStockReader.
+  std::set<uint32_t> benchStockReaders;
 };
 
-namespace {
-ChangeFormGuard::Mode MakeMode(bool isLocationSaveNeeded,
-                               SetPosMode setPosMode)
+ChangeFormGuard::Mode MpObjectReference::SaveModeFor(bool isLocationSaveNeeded,
+                                                     SetPosMode setPosMode)
 {
+  if (setPosMode == SetPosMode::CalledByServerMovement) {
+    return ChangeFormGuard::Mode::NoRequestSave;
+  }
+
   if (isLocationSaveNeeded) {
     return ChangeFormGuard::Mode::RequestSave;
   }
 
   switch (setPosMode) {
     case SetPosMode::CalledByUpdateMovement:
+    case SetPosMode::CalledByServerMovement:
       return ChangeFormGuard::Mode::NoRequestSave;
     case SetPosMode::Other:
       return ChangeFormGuard::Mode::RequestSave;
@@ -207,6 +221,7 @@ ChangeFormGuard::Mode MakeMode(bool isLocationSaveNeeded,
   }
 }
 
+namespace {
 MpChangeForm MakeChangeForm(const LocationalData& locationalData)
 {
   MpChangeForm changeForm;
@@ -541,7 +556,7 @@ void MpObjectReference::SetPos(const NiPoint3& newPos, SetPosMode setPosMode)
 
   EditChangeForm(
     [&newPos](MpChangeFormREFR& changeForm) { changeForm.position = newPos; },
-    MakeMode(IsLocationSavingNeeded(), setPosMode));
+    SaveModeFor(IsLocationSavingNeeded(), setPosMode));
 
   if (oldGridPos != newGridPos || !everSubscribedOrListened)
     ForceSubscriptionsUpdate();
@@ -605,7 +620,7 @@ void MpObjectReference::SetAngle(const NiPoint3& newAngle,
 {
   EditChangeForm(
     [&](MpChangeFormREFR& changeForm) { changeForm.angle = newAngle; },
-    MakeMode(IsLocationSavingNeeded(), setAngleMode));
+    SaveModeFor(IsLocationSavingNeeded(), setAngleMode));
 }
 
 void MpObjectReference::SetHarvested(bool harvested)
@@ -893,6 +908,8 @@ bool MpObjectReference::CompareAndSetInventory(
 
   std::string nextPropertyDump;
   if (property) {
+    if (property->expectedRuntimeIdentity &&
+        !actor->HasRuntimeIdentity(*property->expectedRuntimeIdentity)) return false;
     const auto life = nlohmann::json::parse(
       GetDynamicFields().GetValueDump("_skympNpcLifeGeneration"));
     if (!life.is_null() && (!life.is_number_integer() || life < 0 ||
@@ -945,11 +962,12 @@ bool MpObjectReference::CompareAndSetInventory(
   return true;
 }
 
-void MpObjectReference::AddItem(uint32_t baseId, uint32_t count)
+void MpObjectReference::AddItem(uint32_t baseId, uint32_t count,
+                                const Inventory::ExtraData& extraData)
 {
   EditChangeForm([&](MpChangeFormREFR& changeForm) {
+    changeForm.inv.AddItems({ Inventory::Entry(baseId, count, extraData) });
     changeForm.baseContainerAdded = true;
-    changeForm.inv.AddItem(baseId, count);
   });
   SendInventoryUpdate();
 
@@ -978,8 +996,8 @@ void MpObjectReference::AddItems(const std::vector<Inventory::Entry>& entries)
 {
   if (entries.size() > 0) {
     EditChangeForm([&](MpChangeFormREFR& changeForm) {
-      changeForm.baseContainerAdded = true;
       changeForm.inv.AddItems(entries);
+      changeForm.baseContainerAdded = true;
     });
     SendInventoryUpdate();
   }
@@ -1004,6 +1022,15 @@ void MpObjectReference::RemoveItem(uint32_t baseId, uint32_t count,
 void MpObjectReference::RemoveItems(
   const std::vector<Inventory::Entry>& entries, MpObjectReference* target)
 {
+  // Refused before the source gives anything up, so a target that can't
+  // take the entries leaves both as they were.
+  if (target && !target->GetInventory().CanAddItems(entries)) {
+    throw std::runtime_error(fmt::format(
+      "MpObjectReference::RemoveItems - {:#x} can't take the entries from "
+      "{:#x}: a stack would pass its limit",
+      target->GetFormId(), GetFormId()));
+  }
+
   EditChangeForm([&](MpChangeFormREFR& changeForm) {
     changeForm.inv.RemoveItems(entries);
   });
@@ -1385,6 +1412,13 @@ void MpObjectReference::ApplyChangeForm(const MpChangeForm& changeForm)
     RequestReloot(ms);
   }
 
+  // A reference saved with a delete time (a drop, Thornswood #3498) is
+  // deleted at it, even when the server was down then: a time already passed
+  // fires on the first tick.
+  if (changeForm.deleteDatetime && !changeForm.isDeleted) {
+    ArmDeleteTimer(changeForm.deleteDatetime);
+  }
+
   // Perform all required grid operations
   // Mirrors MpActor impl
   if (!AsActor()) {
@@ -1539,8 +1573,20 @@ void MpObjectReference::GivePickupItemsToActivationSource(
     auto map = LeveledListUtils::EvaluateListRecurse(
       loader.GetBrowser(), resultItemLookupRes, kCountMult,
       kPlayerCharacterLevel, chanceNoneOverride.get());
+    std::vector<Inventory::Entry> entries;
     for (auto& p : map) {
-      activationSource.AddItem(p.first, p.second);
+      entries.push_back({ p.first, p.second });
+    }
+    // One AddItem per entry for OnItemAdded, so the whole list is checked
+    // first: a refusal part way would give some and leave it unharvested.
+    if (!activationSource.GetInventory().CanAddItems(entries)) {
+      throw std::runtime_error(fmt::format(
+        "MpObjectReference::GivePickupItemsToActivationSource - {:#x} can't "
+        "take what {:#x} gives: a stack would pass its limit",
+        activationSource.GetFormId(), GetFormId()));
+    }
+    for (auto& entry : entries) {
+      activationSource.AddItem(entry.baseId, entry.count);
     }
   } else {
     auto refrRecord = espm::Convert<espm::REFR>(
@@ -1556,7 +1602,7 @@ void MpObjectReference::GivePickupItemsToActivationSource(
     uint32_t resultingCount =
       std::max(kCountDefault, std::max(countRecord, countChangeForm));
 
-    if (pickupExtra) {
+    if (const auto& pickupExtra = GetPickupExtra()) {
       activationSource.AddItems(
         { Inventory::Entry(resultItem, resultingCount, *pickupExtra) });
     } else {
@@ -1568,13 +1614,52 @@ void MpObjectReference::GivePickupItemsToActivationSource(
 void MpObjectReference::SetPickupExtra(
   const std::optional<Inventory::ExtraData>& extra)
 {
-  pickupExtra = extra;
+  EditChangeForm(
+    [&](MpChangeFormREFR& changeForm) { changeForm.pickupExtra = extra; });
 }
 
 const std::optional<Inventory::ExtraData>& MpObjectReference::GetPickupExtra()
   const noexcept
 {
-  return pickupExtra;
+  return ChangeForm().pickupExtra;
+}
+
+void MpObjectReference::SetDeleteDatetime(
+  std::chrono::system_clock::time_point when)
+{
+  const auto ms = static_cast<uint64_t>(std::max<int64_t>(
+    1,
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      when.time_since_epoch())
+      .count()));
+  EditChangeForm(
+    [&](MpChangeFormREFR& changeForm) { changeForm.deleteDatetime = ms; });
+  ArmDeleteTimer(ms);
+}
+
+void MpObjectReference::ArmDeleteTimer(uint64_t deleteDatetimeMs)
+{
+  auto worldState = GetParent();
+  if (!worldState) {
+    return;
+  }
+  const std::chrono::system_clock::time_point when{ std::chrono::milliseconds(
+    deleteDatetimeMs) };
+  const auto wait = std::max(
+    std::chrono::system_clock::duration::zero(),
+    std::chrono::duration_cast<std::chrono::system_clock::duration>(
+      when - worldState->GetTimerNow()));
+  worldState->SetTimer(wait)
+    .Then([worldState, formId = GetFormId(), self = this](Viet::Void) {
+      // The same reference, not one made again with its id since.
+      auto form = worldState->LookupFormById(formId);
+      if (form.get() != self || self->IsDeleted()) {
+        return;
+      }
+      spdlog::trace("MpObjectReference {:x} - deleted at its delete time",
+                    formId);
+      self->Delete();
+    });
 }
 
 void MpObjectReference::ProcessActivateNormal(
@@ -1712,6 +1797,15 @@ void MpObjectReference::ProcessActivateNormal(
         this->occupant->RemoveEventSink(this->occupantDisableSink);
       }
 
+      // THORNSWOOD PATCH (Thornswood #3159). A bench's stock opens as the
+      // bench is taken, and its pack is sent before the bench is opened on
+      // the client. Somebody else who held the bench until now has left it,
+      // so theirs closes. See MpActor::BenchStock.
+      if (this->occupant && this->occupant != actorActivator) {
+        this->occupant->CloseBenchStock(GetFormId());
+      }
+      actorActivator->OpenBenchStock(GetFormId());
+
       // SendOpenContainer being used to activate the object
       // TODO: rename SendOpenContainer to SendActivate
       activationSource.SendOpenContainer(GetFormId());
@@ -1759,6 +1853,9 @@ bool MpObjectReference::ProcessActivateSecond(
     if (this->occupant == &activationSource) {
       this->occupant->RemoveEventSink(this->occupantDestroySink);
       this->occupant = nullptr;
+      // THORNSWOOD PATCH (Thornswood #3159). Leaving the bench closes its
+      // stock. See MpActor::BenchStock.
+      actorActivator->CloseBenchStock(GetFormId());
       return true;
     }
   }
@@ -2019,8 +2116,50 @@ void MpObjectReference::SendInventoryUpdate()
   auto actor = AsActor();
   if (actor) {
     SetInventoryMessage message;
-    message.inventory = actor->GetInventory();
+    // THORNSWOOD PATCH (Thornswood #3159): with a bench's stock in it while
+    // one is open. See MpActor::BenchStock.
+    message.inventory = actor->GetInventoryWithBenchStock();
     actor->SendToUserDeferred(message, true, kChannelSetInventory, true);
+    return;
+  }
+
+  // THORNSWOOD PATCH (Thornswood #3159). A container in somebody's open bench
+  // stock is part of what their client is shown, so a change to it is sent
+  // to them as well, at the end of the tick like their own. A reader whose
+  // stock no longer names this container is passed over and dropped.
+  if (pImpl->benchStockReaders.empty()) {
+    return;
+  }
+  auto worldState = GetParent();
+  auto readers = pImpl->benchStockReaders;
+  for (uint32_t readerId : readers) {
+    std::shared_ptr<MpForm> form;
+    if (worldState) {
+      form = worldState->LookupFormById(readerId);
+    }
+    auto refr = form ? form->AsObjectReference() : nullptr;
+    auto reader = refr ? refr->AsActor() : nullptr;
+    bool reads = false;
+    if (reader) {
+      const auto& stock = reader->GetBenchStock();
+      reads = stock && stock->open &&
+        std::find(stock->containerIds.begin(), stock->containerIds.end(),
+                  GetFormId()) != stock->containerIds.end();
+    }
+    if (!reads) {
+      pImpl->benchStockReaders.erase(readerId);
+      continue;
+    }
+    reader->SendInventoryUpdate();
+  }
+}
+
+void MpObjectReference::SetBenchStockReader(uint32_t actorId, bool reading)
+{
+  if (reading) {
+    pImpl->benchStockReaders.insert(actorId);
+  } else {
+    pImpl->benchStockReaders.erase(actorId);
   }
 }
 
@@ -2121,6 +2260,15 @@ void MpObjectReference::EnsureBaseContainerAdded(espm::Loader& espm)
     return;
   }
 
+  // A base record type the server settings name in forbiddenBaseContainer
+  // brings none of its record's contents: the reference starts empty and
+  // holds only what the gamemode or a person puts in it (Thornswood #3078).
+  // Nothing is marked, so the record is read again only if the setting
+  // changes.
+  if (worldState->IsBaseContainerForbidden(baseType)) {
+    return;
+  }
+
   auto actor = AsActor();
   const std::vector<FormDesc> kEmptyTemplateChain;
   const std::vector<FormDesc>& templateChain =
@@ -2157,13 +2305,14 @@ void MpObjectReference::EnsureBaseContainerAdded(espm::Loader& espm)
   for (auto& p : itemsToAdd) {
     entries.push_back({ p.first, p.second });
   }
-  AddItems(entries);
-
-  if (!ChangeForm().baseContainerAdded) {
+  // AddItems marks a nonempty container in the same edit as its inventory.
+  // Finish the empty case before publication can reload or replace this form.
+  if (entries.empty()) {
     EditChangeForm([&](MpChangeFormREFR& changeForm) {
       changeForm.baseContainerAdded = true;
     });
   }
+  AddItems(entries);
 }
 
 void MpObjectReference::CheckInteractionAbility(MpObjectReference& refr)
@@ -2194,8 +2343,39 @@ void MpObjectReference::CheckInteractionAbility(MpObjectReference& refr)
 void MpObjectReference::SendMessageToActorListeners(const IMessageBase& msg,
                                                     bool reliable) const
 {
+  VisitCurrentActorListeners([&](MpActor& listener) {
+    auto& destination = listener.GetActorToSendTo();
+    const auto keepDestination = destination.GetParent()->LookupFormById(destination.GetFormId());
+    if (keepDestination.get() == &destination)
+      destination.SendToUser(msg, reliable);
+  });
+}
+
+void MpObjectReference::VisitCurrentActorListeners(
+  const std::function<void(MpActor&)>& visitor) const
+{
+  const auto world = GetParent();
+  const auto keepSource = world ? world->LookupFormById(GetFormId()) : nullptr;
+  if (keepSource.get() != this) return;
+  const auto actor = AsActor();
+  const auto runtime = actor ? actor->GetRuntimeIdentity() : 0;
+  struct Listener {
+    std::shared_ptr<MpActor> actor;
+    uint64_t runtime;
+  };
+  std::vector<Listener> snapshot;
   for (auto listener : GetActorListeners()) {
-    listener->GetActorToSendTo().SendToUser(msg, true);
+    auto held = std::dynamic_pointer_cast<MpActor>(world->LookupFormById(listener->GetFormId()));
+    if (held.get() == listener)
+      snapshot.push_back({held, held->GetRuntimeIdentity()});
+  }
+  for (const auto& listener : snapshot) {
+    if (world->LookupFormById(GetFormId()).get() != this ||
+        (actor && !actor->HasRuntimeIdentity(runtime))) return;
+    const auto& current = GetActorListeners();
+    if (!listener.actor->HasRuntimeIdentity(listener.runtime) ||
+        std::find(current.begin(), current.end(), listener.actor.get()) == current.end()) continue;
+    visitor(*listener.actor);
   }
 }
 

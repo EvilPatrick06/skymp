@@ -20,6 +20,11 @@ export interface InventorySnapshot {
   }[];
 }
 
+export interface SaveCompletionResult {
+  readonly phase: "writes-completed";
+  readonly supportsDurableUpsert: boolean;
+}
+
 export interface ScampServer {
   on(event: "connect", handler: (userId: number) => void): void;
   on(event: "disconnect", handler: (userId: number) => void): void;
@@ -28,6 +33,13 @@ export interface ScampServer {
     handler: (userId: number, content: string) => void
   ): void;
   attachSaveStorage(): void;
+  /** Terminal owner-thread drain of already accepted native saves. Before
+   * entry, the trusted caller must exclude all mutation producers and finish
+   * its JS writes. Never resume gameplay after entry, including on error or an
+   * unknown result. Completion alone proves neither durability nor process exit.
+   * timeoutMs must be a primitive finite integer from 1 through 30000.
+   */
+  completeSavesForShutdown(timeoutMs: number): SaveCompletionResult;
   tick(): void;
   compareAndSetInventory(formId: number, expected: InventorySnapshot,
     expectedReceipt: string, replacement: InventorySnapshot, sequence: number,
@@ -39,7 +51,19 @@ export interface ScampServer {
   compareAndSetInventoryAndProperty(formId: number, expected: InventorySnapshot,
     expectedReceipt: string, replacement: InventorySnapshot, sequence: number,
     expectedProfileId: number,
-    property: {name: string; expected: unknown; replacement: unknown; expectedLifeGeneration: number}): boolean;
+    property: {name: string; expected: unknown; replacement: unknown; expectedLifeGeneration: number;
+      expectedRuntimeIdentity?: string}): boolean;
+  /** Process-local actor/session revision; never persisted or supplied by clients. */
+  getActorRuntimeIdentity(formId: number): string;
+  /** Queues one hidden custom property's full character snapshot without
+   * editing inventory, equipment or its receipt. Native underscore-prefixed
+   * fields are forbidden. Both values are limited to 16 KiB serialized JSON.
+   * True means committed live and queued, not acknowledged on disk. An unchanged
+   * saved inventory receipt does not acknowledge this metadata write.
+   */
+  compareAndSetActorProperty(formId: number, expectedProfileId: number,
+    property: {name: string; expected: unknown; replacement: unknown;
+      expectedLifeGeneration: number; expectedRuntimeIdentity: string}): boolean;
   getInventoryReceipt(formId: number): string;
   getSavedInventoryReceipt(formId: number): string;
   prepareNpcLoad(): number;
@@ -58,6 +82,8 @@ export interface ScampServer {
     isDead: boolean; isDisabled: boolean; isHuman: boolean; isConnected: boolean;
     profileId: number;
     isServerControlled: boolean; lifeGeneration: number; difficultyTier: number;
+    /** Process-local body revision, stable at death; revoked by revival, reload or ownership changes. */
+    runtimeLifeIdentity: string;
     meleeReach: number; meleeAllowance: number;
     canSwim: boolean; canFly: boolean; immobile: boolean;
     aggression: number; confidence: number; combatTarget: number;
@@ -91,10 +117,21 @@ export interface ScampServer {
   sendCustomPacket(userId: number, jsonContent: string): void;
   setEnabled(actorId: number, enabled: boolean): void;
   getActorsByProfileId(profileId: number): number[];
+  // Thornswood #1269: this profile's characters whose saved record could not
+  // be read at start. Kept on disk as they were; their ids are never reused.
+  getUnreadableChangeForms(profileId: number): number[];
   createBot(): Bot;
   getUserByActor(formId: number): number;
   getUserIp(userId: number): string;
   kick(userId: number): void;
+
+  /** Thornswood #2740: replaces the file at path with text (UTF-8), whole.
+   * The bytes go to a new file beside it, flushed, then renamed over it with
+   * POSIX semantics, so a reader holding the old file keeps the old bytes and
+   * every open after it gets the new file whole. Throws, leaving the file as
+   * it was, when it cannot (a reader that does not share delete refuses it).
+   * No fallback to writing in place. */
+  writeFileWhole(path: string, text: string): void;
 
   executeJavaScriptOnChakra(src: string): void;
   clear(): void;

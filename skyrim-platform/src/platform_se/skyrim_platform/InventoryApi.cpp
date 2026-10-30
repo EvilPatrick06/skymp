@@ -3,6 +3,8 @@
 #include "NullPointerException.h"
 #include "InventoryQueueFence.h"
 #include "InventoryLoadEpoch.h"
+#include "InventoryRemove.h"
+#include "InventoryRename.h"
 
 extern CallNativeApi::NativeCallRequirements g_nativeCallRequirements;
 
@@ -345,8 +347,193 @@ Napi::Value InventoryApi::SetInventory(const Napi::CallbackInfo& info)
   return info.Env().Undefined();
 }
 
+namespace {
+// THORNSWOOD (Thornswood #1651). The extra lists of one inventory entry of
+// refr, and the choice InventoryRename::Select makes out of them.
+std::vector<RE::ExtraDataList*> ListsOf(RE::TESObjectREFR* refr,
+                                        uint32_t baseId)
+{
+  std::vector<RE::ExtraDataList*> res;
+  auto cntChanges =
+    refr ? refr->extraList.GetByType<RE::ExtraContainerChanges>() : nullptr;
+  if (!cntChanges || !cntChanges->changes || !cntChanges->changes->entryList) {
+    return res;
+  }
+  for (auto entry : *cntChanges->changes->entryList) {
+    if (!entry || !entry->object || entry->object->formID != baseId ||
+        !entry->extraLists) {
+      continue;
+    }
+    for (auto list : *entry->extraLists) {
+      if (list) {
+        res.push_back(list);
+      }
+    }
+  }
+  return res;
+}
+
+std::vector<RE::ExtraDataList*> ListsToRename(RE::TESObjectREFR* refr,
+                                              uint32_t baseId,
+                                              const std::string& from,
+                                              int32_t count)
+{
+  auto nameOf = [](RE::ExtraDataList* list) -> std::optional<std::string> {
+    auto text = list->GetByType<RE::ExtraTextDisplayData>();
+    if (!text) {
+      return std::string();
+    }
+    if (text->displayNameText || text->ownerQuest) {
+      return std::nullopt;
+    }
+    return std::string(text->displayName.c_str());
+  };
+  auto countOf = [](RE::ExtraDataList* list) {
+    return static_cast<int32_t>(list->GetCount());
+  };
+  auto isWorn = [](RE::ExtraDataList* list) {
+    return list->HasType<RE::ExtraWorn>() ||
+      list->HasType<RE::ExtraWornLeft>();
+  };
+  return InventoryRename::Select(ListsOf(refr, baseId), from, count, nameOf,
+                                 countOf, isWorn);
+}
+}
+
+// renameInventoryItems(refrId, baseId, from, to, count): gives `count` units
+// of baseId in refr's inventory that are named `from` the name `to`, where
+// they lie, so a worn piece stays worn (Thornswood #1651). Returns false, and
+// changes nothing, when no set of its extra lists holds exactly those units;
+// the client then applies the change by taking away and adding, as it does
+// any other difference. Queued like AddItemEx, so it keeps its place among
+// the inventory work of the same frame and is dropped by a load.
+Napi::Value InventoryApi::RenameInventoryItems(const Napi::CallbackInfo& info)
+{
+  auto refrId = NapiHelper::ExtractUInt32(info[0], "refrId");
+  auto baseId = NapiHelper::ExtractUInt32(info[1], "baseId");
+  auto from = NapiHelper::ExtractString(info[2], "from");
+  auto to = NapiHelper::ExtractString(info[3], "to");
+  auto count = NapiHelper::ExtractInt32(info[4], "count");
+
+  if (to.empty() || !g_nativeCallRequirements.gameThrQ) {
+    return Napi::Boolean::New(info.Env(), false);
+  }
+
+  auto refr = RE::TESForm::LookupByID<RE::TESObjectREFR>(refrId);
+  if (ListsToRename(refr, baseId, from, count).empty()) {
+    return Napi::Boolean::New(info.Env(), false);
+  }
+
+  const auto inventoryEpoch = InventoryLoadEpoch::Capture();
+  g_nativeCallRequirements.gameThrQ->AddTask(
+    [refrId, baseId, from, to, count, inventoryEpoch](Viet::Void) {
+      if (!InventoryLoadEpoch::IsCurrent(inventoryEpoch)) return;
+      auto refr = RE::TESForm::LookupByID<RE::TESObjectREFR>(refrId);
+      for (auto list : ListsToRename(refr, baseId, from, count)) {
+        if (auto text = list->GetByType<RE::ExtraTextDisplayData>()) {
+          text->SetName(to.c_str());
+          continue;
+        }
+        auto extra = RE::malloc<RE::ExtraTextDisplayData>();
+        if (extra) {
+          ::new (extra) RE::ExtraTextDisplayData(to.c_str());
+          list->Add(extra);
+        }
+      }
+    });
+  return Napi::Boolean::New(info.Env(), true);
+}
+
+namespace {
+std::optional<std::vector<std::pair<RE::ExtraDataList*, int32_t>>>
+ListsToRemove(RE::TESObjectREFR* refr, uint32_t baseId, size_t listCount,
+              const std::vector<InventoryRemove::Pick>& picks)
+{
+  return InventoryRemove::Resolve(
+    ListsOf(refr, baseId), listCount, picks, [](RE::ExtraDataList* list) {
+      return static_cast<int32_t>(list->GetCount());
+    });
+}
+}
+
+// removeInventoryItems(refrId, baseId, listCount, indexes, counts, plain):
+// takes counts[i] units of baseId away from the extra list at indexes[i] of
+// refr's inventory (as getExtraContainerChanges lists them, listCount of
+// them), by the game's own lists, and then `plain` units that have no list
+// of their own (Thornswood #2146). Returns false, and takes nothing, when the
+// game is paused (AddItemEx refuses then too) or the lists are not the ones
+// the client read; InventoryRemove.h says when that is. Queued like
+// AddItemEx, so it keeps its place among the inventory work of the same frame
+// and is dropped by a load.
+Napi::Value InventoryApi::RemoveInventoryItems(const Napi::CallbackInfo& info)
+{
+  auto refrId = NapiHelper::ExtractUInt32(info[0], "refrId");
+  auto baseId = NapiHelper::ExtractUInt32(info[1], "baseId");
+  auto listCount = NapiHelper::ExtractUInt32(info[2], "listCount");
+  auto indexes = NapiHelper::ExtractArray(info[3], "indexes");
+  auto counts = NapiHelper::ExtractArray(info[4], "counts");
+  auto plain = NapiHelper::ExtractInt32(info[5], "plain");
+
+  if (indexes.Length() != counts.Length()) {
+    throw std::runtime_error("indexes and counts differ in length");
+  }
+  std::vector<InventoryRemove::Pick> picks;
+  for (uint32_t i = 0; i < indexes.Length(); ++i) {
+    picks.push_back({ NapiHelper::ExtractUInt32(indexes.Get(i), "indexes[i]"),
+                      NapiHelper::ExtractInt32(counts.Get(i), "counts[i]") });
+  }
+
+  auto ui = RE::UI::GetSingleton();
+  if (!g_nativeCallRequirements.gameThrQ || !ui || ui->GameIsPaused() ||
+      plain < 0) {
+    return Napi::Boolean::New(info.Env(), false);
+  }
+
+  auto refr = RE::TESForm::LookupByID<RE::TESObjectREFR>(refrId);
+  auto item = RE::TESForm::LookupByID<RE::TESBoundObject>(baseId);
+  if (!refr || !item || !ListsToRemove(refr, baseId, listCount, picks)) {
+    return Napi::Boolean::New(info.Env(), false);
+  }
+
+  const auto inventoryEpoch = InventoryLoadEpoch::Capture();
+  g_nativeCallRequirements.gameThrQ->AddTask(
+    [refrId, baseId, listCount, picks, plain, inventoryEpoch](Viet::Void) {
+      if (!InventoryLoadEpoch::IsCurrent(inventoryEpoch))
+        return;
+      auto refr = RE::TESForm::LookupByID<RE::TESObjectREFR>(refrId);
+      auto item = RE::TESForm::LookupByID<RE::TESBoundObject>(baseId);
+      if (!refr || !item)
+        return;
+      auto chosen = ListsToRemove(refr, baseId, listCount, picks);
+      if (!chosen) {
+        spdlog::warn("removeInventoryItems: the lists of {:x} in {:x} changed "
+                     "before they were taken away; the next pass reads them "
+                     "again",
+                     baseId, refrId);
+        return;
+      }
+      // Every pointer is taken before anything is removed, so a list
+      // removed whole does not move the ones after it.
+      for (auto& [list, units] : *chosen) {
+        refr->RemoveItem(item, units, RE::ITEM_REMOVE_REASON::kRemove, list,
+                         nullptr);
+      }
+      if (plain > 0) {
+        refr->RemoveItem(item, plain, RE::ITEM_REMOVE_REASON::kRemove, nullptr,
+                         nullptr);
+      }
+    });
+  return Napi::Boolean::New(info.Env(), true);
+}
+
 void InventoryApi::Register(Napi::Env env, Napi::Object& exports)
 {
+  exports.Set("renameInventoryItems",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(RenameInventoryItems)));
+  exports.Set("removeInventoryItems",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(RemoveInventoryItems)));
   // Call after synchronous inventory native dispatch. Completion means its
   // queued work has run; callers must still compare actual inventory to the
   // authoritative snapshot, since a paused AddItemEx can reject the call.

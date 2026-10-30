@@ -1,6 +1,7 @@
 #pragma once
 #include "GameModeEvent.h"
 #include <cstdint>
+#include <memory>
 
 class MpActor;
 
@@ -24,8 +25,10 @@ public:
 private:
   void OnFireSuccess(WorldState*) override;
 
-  MpActor* actor = nullptr;
-  MpActor* optionalKiller = nullptr;
+  std::shared_ptr<MpActor> actor;
+  uint32_t actorId = 0;
+  uint32_t killerId = 0;
+  uint64_t runtimeIdentity = 0;
   float healthPercentageBeforeDeath = 0.f;
   float magickaPercentageBeforeDeath = 0.f;
   float staminaPercentageBeforeDeath = 0.f;
