@@ -214,6 +214,14 @@ TEST_CASE("A saved character whose race cannot be read keeps its id",
           std::map<uint32_t, int32_t>{ { 0xff000000, 964481319 },
                                        { 0xff000002, -1 } });
 
+  // and by profile, which is what the gamemode asks when it makes that
+  // profile a new character
+  REQUIRE(worldState.GetUnreadableChangeFormsOfProfile(964481319) ==
+          std::vector<uint32_t>{ 0xff000000 });
+  REQUIRE(worldState.GetUnreadableChangeFormsOfProfile(-1) ==
+          std::vector<uint32_t>{ 0xff000002 });
+  REQUIRE(worldState.GetUnreadableChangeFormsOfProfile(77).empty());
+
   // and neither id is handed to a new form, so nothing is saved over them
   REQUIRE(worldState.GenerateFormId() == 0xff000001);
   REQUIRE(worldState.GenerateFormId() == 0xff000003);
@@ -237,6 +245,7 @@ TEST_CASE("A saved character whose race can be read still loads",
   REQUIRE(worldState.GetActorsByProfileId(77) ==
           std::set<uint32_t>({ 0xff000000 }));
   REQUIRE(worldState.GetUnreadableChangeForms().empty());
+  REQUIRE(worldState.GetUnreadableChangeFormsOfProfile(77).empty());
   REQUIRE(worldState.GenerateFormId() == 0xff000001);
 }
 

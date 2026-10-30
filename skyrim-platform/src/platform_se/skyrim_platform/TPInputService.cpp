@@ -156,9 +156,10 @@ void ProcessKeyboard(uint16_t aKey, uint16_t aScanCode,
     Right Control used to switch DirectInput off here, and it is gone.
 
     It reads as a developer toggle and it is a one way kill switch. SetEnabled
-    false calls Update, Update calls Unacquire on every device the game owns
-    and then calls RegisterRawInputDevices with RIDEV_REMOVE without ever
-    putting the registration back. So the game stops getting keys, and the
+    false calls Update, which then called Unacquire on every device the game
+    owns and RegisterRawInputDevices with RIDEV_REMOVE without ever putting
+    the registration back (Update registers no raw input since Thornswood
+    #2131, and still unacquires every device). So the game stops getting keys, and the
     only thing that could switch it on again is this branch, which cannot run
     any more, because raw input is what feeds it. Press it once by accident
     and the keyboard is dead for the rest of the session, which is the report

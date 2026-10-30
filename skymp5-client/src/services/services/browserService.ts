@@ -13,7 +13,15 @@ export class BrowserService extends ClientListener {
   constructor(private sp: Sp, private controller: CombinedController) {
     super();
 
-    this.sp.browser.setVisible(false);
+    // THORNSWOOD PATCH (#3129): with gameData.chooseAtMenu the page at the main
+    // menu is the character choice, and SkyrimPlatform shows it from the start
+    // ([Browser] ShowAtStart), long before this plugin runs. Hiding it here put
+    // the game's own menu picture back on screen until thornswood-front.js
+    // showed the page again.
+    const settingsGameData = this.sp.settings["skymp5-client"]?.["gameData"] as any;
+    if (!settingsGameData?.chooseAtMenu) {
+      this.sp.browser.setVisible(false);
+    }
 
     this.controller.emitter.on("queryKeyCodeBindings", (e) => this.onQueryKeyCodeBindings(e));
     this.controller.once("update", () => this.onceUpdate());
@@ -99,7 +107,12 @@ export class BrowserService extends ClientListener {
     Menu.Inventory,
     Menu.Journal,
     Menu.Lockpicking,
-    Menu.Loading,
+    // THORNSWOOD #3130. Not Menu.Loading: Thornswood's page covers a load
+    // with its own loading screen, and SkyrimPlatform draws the page while
+    // the Loading Menu is open (LoadingScreen.h). This hid the browser for
+    // it from the first update after the load, and showed it again on the
+    // close, which came up to 90 ms later on dev (22 Oct 2026): the page
+    // blinked out as the load ended.
     Menu.Map,
     Menu.RaceSex,
     Menu.Stats,

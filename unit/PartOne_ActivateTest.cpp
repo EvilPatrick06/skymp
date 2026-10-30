@@ -569,6 +569,63 @@ TEST_CASE("Activate BarrelFood01 in Whiterun (open/close)", "[PartOne][espm]")
   REQUIRE(!ref.IsOpen());
 }
 
+namespace {
+// Opens BarrelFood01 in Whiterun and answers what the press left in it.
+MpChangeForm OpenWhiterunBarrel(PartOne& partOne)
+{
+  DoConnect(partOne, 0);
+  partOne.CreateActor(0xff000000, { 21272.0000, -7816.0000, -3608.0000 }, 0,
+                      0x1a26f);
+  partOne.SetUserActor(0, 0xff000000);
+
+  auto refrId = 0x20570;
+  auto& ref = partOne.worldState.GetFormAt<MpObjectReference>(refrId);
+  DoMessage(partOne, 0,
+            nlohmann::json{ { "t", MsgType::Activate },
+                            { "data",
+                              { { "caster", 0x14 },
+                                { "target", refrId },
+                                { "isSecondActivation", false } } } });
+  REQUIRE(ref.IsOpen());
+  auto changeForm = ref.GetChangeForm();
+
+  DoDisconnect(partOne, 0);
+  partOne.DestroyActor(0xff000000);
+  return changeForm;
+}
+}
+
+TEST_CASE("forbiddenBaseContainer names record types, nothing else",
+          "[PartOne]")
+{
+  WorldState worldState;
+  REQUIRE(!worldState.IsBaseContainerForbidden("CONT"));
+  worldState.SetForbiddenBaseContainerTypes({ "CONT" });
+  REQUIRE(worldState.IsBaseContainerForbidden("CONT"));
+  REQUIRE(!worldState.IsBaseContainerForbidden("NPC_"));
+  REQUIRE(!worldState.IsBaseContainerForbidden(""));
+}
+
+TEST_CASE("A container takes its record's contents on the first press",
+          "[PartOne][espm]")
+{
+  auto& partOne = GetPartOne();
+  auto changeForm = OpenWhiterunBarrel(partOne);
+  REQUIRE(changeForm.baseContainerAdded);
+}
+
+TEST_CASE("forbiddenBaseContainer: a container opens with none of its "
+          "record's contents",
+          "[PartOne][espm]")
+{
+  auto& partOne = GetPartOne();
+  partOne.worldState.SetForbiddenBaseContainerTypes({ "CONT" });
+
+  auto changeForm = OpenWhiterunBarrel(partOne);
+  REQUIRE(!changeForm.baseContainerAdded);
+  REQUIRE(changeForm.inv.IsEmpty());
+}
+
 TEST_CASE("Activate torch", "[espm][PartOne]")
 {
   auto& partOne = GetPartOne();
