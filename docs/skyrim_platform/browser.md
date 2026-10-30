@@ -69,3 +69,22 @@ on("browserMessage", (event) => {
     browser.executeJavaScript("window.skyrimPlatform.sendMessage('yay')");
 });
 ```
+
+#### Loading screens (Thornswood #3130)
+
+The page is told the moment the game's Loading Menu opens and closes, from the
+game's own menu event, so a page can cover a load with a loading screen of its
+own. Plugins hear `menuOpen` and `menuClose` only on the next `update`, and no
+`update` runs while the game loads, so they cannot do this.
+
+```js
+// in the page
+window.addEventListener('skyrimPlatform:loading', (e) => {
+  showLoadingScreen(e.detail.loading); // true when a load starts, false when it ends
+});
+// window.skyrimPlatformLoading holds the same answer
+```
+
+While the Loading Menu is open the page is drawn whatever `browser.setVisible`
+said last. A page that loads while the game is loading is told when it has
+loaded. Only the Tilted backend does this.

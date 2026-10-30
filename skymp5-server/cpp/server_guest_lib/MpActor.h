@@ -159,6 +159,8 @@ public:
     std::optional<Viet::Promise<VarValue>> promise = std::nullopt);
 
   void ResolveSnippet(uint32_t snippetIdx, VarValue v);
+  // SetPercentages kills on a health of nothing without asking the gamemode;
+  // NetSetPercentages asks first (Thornswood #1626). SetPercentage asks.
   void SetPercentages(const ActorValues& actorValues,
                       MpActor* aggressor = nullptr);
   void SetPercentage(espm::ActorValue av, float percentage);
@@ -271,12 +273,70 @@ public:
   void SetLastAnimEvent(const std::optional<AnimationData>& animationData);
   std::optional<AnimationData> GetLastAnimEvent() const;
 
+  // THORNSWOOD PATCH (Thornswood #3159). A bench's stock: the containers a
+  // crafting bench may take materials from for this actor. Patrick, 22 Oct
+  // 2026: a bench draws materials from chests you own in the same building.
+  // Which chests those are is the gamemode's to say, and it says it when the
+  // bench is pressed (CraftStockBinding, the craftStock property). The stock
+  // opens when this actor takes that bench (MpObjectReference, FURN) and
+  // closes when it leaves it, and it is never saved.
+  //
+  // While it is open, this actor's own client is sent its pack with the
+  // stock's materials in it (GetInventoryWithBenchStock, MpObjectReference::
+  // SendInventoryUpdate), because the game's crafting menu only lists what it
+  // can make from the pack, and sent again when one of the containers
+  // changes (MpObjectReference::SetBenchStockReader). Nothing moves until a
+  // craft: CraftService takes what the pack lacks from the stock's
+  // containers, in the same step that takes the rest from the pack
+  // (CraftEvent::OnFireSuccess). The materials the client was shown and did
+  // not use go when the bench closes, because the server's own inventory is
+  // sent then.
+  struct BenchStock
+  {
+    uint32_t workbenchId = 0;
+    std::vector<uint32_t> containerIds;
+    bool open = false;
+  };
+
+  // Names the stock for the next time this actor takes that bench, or none.
+  // A stock that was open closes.
+  void SetBenchStock(std::optional<BenchStock> stock);
+  const std::optional<BenchStock>& GetBenchStock() const;
+
+  // The actor took this bench: the stock named for it opens, and the client
+  // is sent the pack with it at once, ahead of whatever is sent next, so the
+  // crafting menu that opens next lists it. A stock named for another bench
+  // is dropped. Returns true when a stock opened.
+  bool OpenBenchStock(uint32_t workbenchId);
+
+  // The actor left this bench: its stock closes, and the client is sent the
+  // server's inventory. Another bench's stock is left alone.
+  void CloseBenchStock(uint32_t workbenchId);
+
+  // The containers of the stock open at this bench that still exist, in the
+  // order the gamemode named them, or none.
+  std::vector<MpObjectReference*> GetOpenBenchStock(uint32_t workbenchId);
+
+  // What this actor's own client is shown as its pack: the inventory, and
+  // while a stock is open, each of its containers' entries that carry
+  // nothing but a base, a count and perhaps a name, the only kind a craft's
+  // inputs take (Inventory::ResolveRemoval, Thornswood #3163). An entry that
+  // would take a stack past what a count holds is left out rather than
+  // thrown on.
+  Inventory GetInventoryWithBenchStock();
+
 private:
   struct Impl;
   std::shared_ptr<Impl> pImpl;
   bool factionsLoaded = false;
 
   bool SendAndSetDeathState(bool isDead, bool shouldTeleport);
+
+  // Thornswood #1626. Fires onDying for a death a health write is about to
+  // make. std::nullopt lets the death go ahead; a value is the health share
+  // a listener's refusal keeps the actor alive at. The caller checks the
+  // actor (and the killer) are still the same lives afterwards.
+  std::optional<float> AskBeforeDeath(MpActor* killer);
   void SendServerStateToObservers(const IMessageBase& message,
                                   bool reliable) const;
 

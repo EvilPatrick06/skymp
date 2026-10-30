@@ -1,4 +1,5 @@
 #include "MagicApi.h"
+#include "CastDurations.h"
 #include "CallNativeApi.h"
 #include "JsUtils.h"
 #include "SkyrimPlatform.h"
@@ -63,9 +64,16 @@ Napi::Value MagicApi::CastSpellImmediate(const Napi::CallbackInfo& info)
   const auto aimHeading = NapiHelper::ExtractFloat(info[5], "aimHeading");
   const RE::Projectile::ProjectileRot projectileAngles{ aimAngle, aimHeading };
 
+  // THORNSWOOD PATCH (Thornswood #2848): how many times their usual time the
+  // effects of this cast hold on this machine, the server's answer for it.
+  // Left out, the game's own.
+  const float durationMult = info.Length() > 7 && info[7].IsNumber()
+    ? NapiHelper::ExtractFloat(info[7], "durationMult")
+    : 1.f;
+
   g_nativeCallRequirements.gameThrQ->AddTask(
     [spellFormId, actorFormId, castingSource, magicTargetFormId,
-     projectileAngles,
+     projectileAngles, durationMult,
 
      animVars = skymp::magic::details::GetAnimationVariablesFromJSArg(
        NapiHelper::ExtractObject(info[6], "animationVariables"))](Viet::Void) {
@@ -86,6 +94,9 @@ Napi::Value MagicApi::CastSpellImmediate(const Napi::CallbackInfo& info)
       if (!isValidSpellType) {
         return;
       }
+
+      CastDurations::GetSingleton().OnPlayedCast(actorFormId, spellFormId,
+                                                 durationMult);
 
       const bool isAnimationVariablesApplied =
         AnimationGraphMasterBehaviourDescriptor{ std::move(animVars) }
