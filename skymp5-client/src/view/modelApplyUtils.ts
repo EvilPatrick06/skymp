@@ -1,4 +1,4 @@
-import { ObjectReference, Actor, Game, FormType, TextureSet, NetImmerse } from "skyrimPlatform";
+import { ObjectReference, Game, FormType, TextureSet, NetImmerse } from "skyrimPlatform";
 import { Inventory, applyInventory } from "../sync/inventory";
 import { logError, logTrace } from "../logging";
 import { SetNodeScaleEntry, SetNodeTextureSetEntry } from "src/services/messages/createActorMessage";
@@ -97,34 +97,22 @@ export class ModelApplyUtils {
     if (base) {
       const t = base.getType();
       if (t == FormType.Tree || t == FormType.Flora) {
-        const wasHarvested = refr.isHarvested();
-        if (isHarvested != wasHarvested) {
-          let ac: Actor | null = null;
-          if (isHarvested) {
-            for (let i = 0; i < 20; ++i) {
-              ac = Game.findRandomActor(
-                refr.getPositionX(),
-                refr.getPositionY(),
-                refr.getPositionZ(),
-                10000,
-              );
-              if (ac && ac.getFormID() !== 0x14) {
-                break;
-              }
-            }
-          }
-          if (isHarvested && ac && ac.getFormID() !== 0x14) {
-            refr.activate(ac, true);
-          } else {
-            refr.setHarvested(isHarvested);
-            const id = refr.getFormID();
-            refr.disable(false).then(() => {
-              const restoredRefr = ObjectReference.from(Game.getFormEx(id));
-              if (restoredRefr) {
-                restoredRefr.enable(false);
-              }
-            });
-          }
+        /*
+          THORNSWOOD PATCH (Thornswood #2382). The flag, and nothing else.
+
+          ObjectReference.SetHarvested is SKSE's native: it sets or clears
+          kFlag_Harvested at once and queues TaskInterface::UpdateHarvestModel,
+          the engine's own swap between the picked and unpicked model (SKSE64
+          PapyrusObjectReference.cpp). So it already draws the flora the way the
+          server says. Upstream also disabled the reference and enabled it again
+          to make it draw, and for a harvest asked a random NPC to activate it
+          (findRandomActor, up to 20 tries), which handed that NPC the produce.
+          The disable and enable brought back a flora the server holds disabled
+          when it was made unharvested in the same stream (#2328's harness), and
+          a reference's enabled state is the disabled flag's alone.
+        */
+        if (refr.isHarvested() !== isHarvested) {
+          refr.setHarvested(isHarvested);
         }
       } else {
         const wasHarvested = refr.isDisabled();
