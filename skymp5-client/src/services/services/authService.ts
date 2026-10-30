@@ -287,13 +287,19 @@ export class AuthService extends ClientListener {
 
   private onBrowserMessage(e: BrowserMessageEvent) {
     if (!this.isListenBrowserMessage) {
-      logTrace(this, `onBrowserMessage: isListenBrowserMessage was false, ignoring message`, JSON.stringify(e.arguments));
+      logTrace(this, `onBrowserMessage: isListenBrowserMessage was false, ignoring message`, JSON.stringify(e.arguments[0]));
       return;
     }
 
     const settingsService = this.controller.lookupListener(SettingsService);
 
-    logTrace(this, `onBrowserMessage:`, JSON.stringify(e.arguments));
+    // THORNSWOOD PATCH (Thornswood #3941): the message's kind, its first
+    // argument, and never the rest. Every printConsole goes into
+    // skyrim-platform.log, which goes up with the session's logs, and the
+    // rest can be the words somebody else said near you (the chat page hands
+    // the Thornswood front plugin every line that goes over a head). A
+    // branch below that needs more logs what it reads itself.
+    logTrace(this, `onBrowserMessage:`, JSON.stringify(e.arguments[0]));
 
     // THORNSWOOD PATCH: the menu's choice. Matched before the switch below so
     // the online widgets' default case never swallows it.

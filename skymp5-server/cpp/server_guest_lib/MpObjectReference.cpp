@@ -30,6 +30,7 @@
 #include <TimeUtils.h>
 #include <antigo/Context.h>
 #include <antigo/ResolvedContext.h>
+#include <algorithm>
 #include <map>
 #include <numeric>
 #include <optional>
@@ -101,6 +102,9 @@ public:
     if (untrustedRefPtr->occupant == &actor) {
       untrustedRefPtr->SetOpen(false);
       untrustedRefPtr->occupant = nullptr;
+      // THORNSWOOD PATCH (Thornswood #3159). An occupant that goes without
+      // leaving the bench closes its stock all the same.
+      actor.CloseBenchStock(refId);
     }
   }
 
@@ -135,6 +139,9 @@ public:
     if (untrustedRefPtr->occupant == &actor) {
       untrustedRefPtr->SetOpen(false);
       untrustedRefPtr->occupant = nullptr;
+      // THORNSWOOD PATCH (Thornswood #3159). An occupant that goes without
+      // leaving the bench closes its stock all the same.
+      actor.CloseBenchStock(refId);
     }
   }
 
@@ -185,6 +192,9 @@ public:
   std::optional<PrimitiveData> primitive;
   bool teleportFlag = false;
   bool setPropertyCalled = false;
+  // THORNSWOOD PATCH (Thornswood #3159). The actors whose open bench stock
+  // names this container. See SetBenchStockReader.
+  std::set<uint32_t> benchStockReaders;
 };
 
 ChangeFormGuard::Mode MpObjectReference::SaveModeFor(bool isLocationSaveNeeded,
@@ -1402,6 +1412,13 @@ void MpObjectReference::ApplyChangeForm(const MpChangeForm& changeForm)
     RequestReloot(ms);
   }
 
+  // A reference saved with a delete time (a drop, Thornswood #3498) is
+  // deleted at it, even when the server was down then: a time already passed
+  // fires on the first tick.
+  if (changeForm.deleteDatetime && !changeForm.isDeleted) {
+    ArmDeleteTimer(changeForm.deleteDatetime);
+  }
+
   // Perform all required grid operations
   // Mirrors MpActor impl
   if (!AsActor()) {
@@ -1585,7 +1602,7 @@ void MpObjectReference::GivePickupItemsToActivationSource(
     uint32_t resultingCount =
       std::max(kCountDefault, std::max(countRecord, countChangeForm));
 
-    if (pickupExtra) {
+    if (const auto& pickupExtra = GetPickupExtra()) {
       activationSource.AddItems(
         { Inventory::Entry(resultItem, resultingCount, *pickupExtra) });
     } else {
@@ -1597,13 +1614,52 @@ void MpObjectReference::GivePickupItemsToActivationSource(
 void MpObjectReference::SetPickupExtra(
   const std::optional<Inventory::ExtraData>& extra)
 {
-  pickupExtra = extra;
+  EditChangeForm(
+    [&](MpChangeFormREFR& changeForm) { changeForm.pickupExtra = extra; });
 }
 
 const std::optional<Inventory::ExtraData>& MpObjectReference::GetPickupExtra()
   const noexcept
 {
-  return pickupExtra;
+  return ChangeForm().pickupExtra;
+}
+
+void MpObjectReference::SetDeleteDatetime(
+  std::chrono::system_clock::time_point when)
+{
+  const auto ms = static_cast<uint64_t>(std::max<int64_t>(
+    1,
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      when.time_since_epoch())
+      .count()));
+  EditChangeForm(
+    [&](MpChangeFormREFR& changeForm) { changeForm.deleteDatetime = ms; });
+  ArmDeleteTimer(ms);
+}
+
+void MpObjectReference::ArmDeleteTimer(uint64_t deleteDatetimeMs)
+{
+  auto worldState = GetParent();
+  if (!worldState) {
+    return;
+  }
+  const std::chrono::system_clock::time_point when{ std::chrono::milliseconds(
+    deleteDatetimeMs) };
+  const auto wait = std::max(
+    std::chrono::system_clock::duration::zero(),
+    std::chrono::duration_cast<std::chrono::system_clock::duration>(
+      when - worldState->GetTimerNow()));
+  worldState->SetTimer(wait)
+    .Then([worldState, formId = GetFormId(), self = this](Viet::Void) {
+      // The same reference, not one made again with its id since.
+      auto form = worldState->LookupFormById(formId);
+      if (form.get() != self || self->IsDeleted()) {
+        return;
+      }
+      spdlog::trace("MpObjectReference {:x} - deleted at its delete time",
+                    formId);
+      self->Delete();
+    });
 }
 
 void MpObjectReference::ProcessActivateNormal(
@@ -1741,6 +1797,15 @@ void MpObjectReference::ProcessActivateNormal(
         this->occupant->RemoveEventSink(this->occupantDisableSink);
       }
 
+      // THORNSWOOD PATCH (Thornswood #3159). A bench's stock opens as the
+      // bench is taken, and its pack is sent before the bench is opened on
+      // the client. Somebody else who held the bench until now has left it,
+      // so theirs closes. See MpActor::BenchStock.
+      if (this->occupant && this->occupant != actorActivator) {
+        this->occupant->CloseBenchStock(GetFormId());
+      }
+      actorActivator->OpenBenchStock(GetFormId());
+
       // SendOpenContainer being used to activate the object
       // TODO: rename SendOpenContainer to SendActivate
       activationSource.SendOpenContainer(GetFormId());
@@ -1788,6 +1853,9 @@ bool MpObjectReference::ProcessActivateSecond(
     if (this->occupant == &activationSource) {
       this->occupant->RemoveEventSink(this->occupantDestroySink);
       this->occupant = nullptr;
+      // THORNSWOOD PATCH (Thornswood #3159). Leaving the bench closes its
+      // stock. See MpActor::BenchStock.
+      actorActivator->CloseBenchStock(GetFormId());
       return true;
     }
   }
@@ -2048,8 +2116,50 @@ void MpObjectReference::SendInventoryUpdate()
   auto actor = AsActor();
   if (actor) {
     SetInventoryMessage message;
-    message.inventory = actor->GetInventory();
+    // THORNSWOOD PATCH (Thornswood #3159): with a bench's stock in it while
+    // one is open. See MpActor::BenchStock.
+    message.inventory = actor->GetInventoryWithBenchStock();
     actor->SendToUserDeferred(message, true, kChannelSetInventory, true);
+    return;
+  }
+
+  // THORNSWOOD PATCH (Thornswood #3159). A container in somebody's open bench
+  // stock is part of what their client is shown, so a change to it is sent
+  // to them as well, at the end of the tick like their own. A reader whose
+  // stock no longer names this container is passed over and dropped.
+  if (pImpl->benchStockReaders.empty()) {
+    return;
+  }
+  auto worldState = GetParent();
+  auto readers = pImpl->benchStockReaders;
+  for (uint32_t readerId : readers) {
+    std::shared_ptr<MpForm> form;
+    if (worldState) {
+      form = worldState->LookupFormById(readerId);
+    }
+    auto refr = form ? form->AsObjectReference() : nullptr;
+    auto reader = refr ? refr->AsActor() : nullptr;
+    bool reads = false;
+    if (reader) {
+      const auto& stock = reader->GetBenchStock();
+      reads = stock && stock->open &&
+        std::find(stock->containerIds.begin(), stock->containerIds.end(),
+                  GetFormId()) != stock->containerIds.end();
+    }
+    if (!reads) {
+      pImpl->benchStockReaders.erase(readerId);
+      continue;
+    }
+    reader->SendInventoryUpdate();
+  }
+}
+
+void MpObjectReference::SetBenchStockReader(uint32_t actorId, bool reading)
+{
+  if (reading) {
+    pImpl->benchStockReaders.insert(actorId);
+  } else {
+    pImpl->benchStockReaders.erase(actorId);
   }
 }
 

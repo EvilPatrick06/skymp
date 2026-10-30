@@ -16,7 +16,8 @@
 // Also koa-static's behaviour as serve("data") had it: GET and HEAD only, 404
 // for nothing there, nothing under a name starting with a dot, nothing outside
 // the folder, index.html for a folder, a .gz beside the file, the type from
-// the extension, Cache-Control max-age=0.
+// the extension, Cache-Control max-age=0. And never a master, an archive or a
+// script, however its name is written (Thornswood #3927).
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),os=require('node:os'),http=require('node:http'),Module=require('node:module'),zlib=require('node:zlib');
 const ts=require('typescript');
 const root=path.join(__dirname,'..');
@@ -152,10 +153,27 @@ async function check(name,fn){
   await check('only GET and HEAD are served',async()=>{
     assert.equal((await ask(port,'POST','/online.json')).status,404);
   });
-  await check('the routes in front still refuse scripts and plugins',async()=>{
+  await check('scripts and plugins are refused',async()=>{
     put('scripts/x.pex','x');put('x.esp','x');
     assert.equal((await ask(port,'GET','/scripts/x.pex')).status,403);
     assert.equal((await ask(port,'GET','/x.esp')).status,403);
+  });
+  // The refusal is for the file the port would open, so it holds however the
+  // name is written (Thornswood #3927): escaped, in capitals (on Windows, the
+  // box, /Skyrim.ESM opens Skyrim.esm), or in a form Windows opens as the
+  // same file (a dot or space at the end, a stream after a colon).
+  await check('a master, an archive or a script is refused however its name is written',async()=>{
+    put('Skyrim.esm','master');put('Upper.ESM','master');put('Data.bsa','archive');put('Scripts/y.pex','y');
+    for(const p of ['/Skyrim.esm','/Skyrim.%65sm','/Skyrim%2Eesm','/Upper.ESM','/Data.%62sa','/Data.BSA','/%73cripts/x.pex','/Scripts/y.pex',
+        '/Skyrim.esm.','/Skyrim.esm%20','/Skyrim.esm%3A%3A%24DATA','/scripts./x.pex','/x.esl','/x.ESP']){
+      const r=await ask(port,'GET',p);
+      assert.equal(r.status,403,p+' answered '+r.status+': '+JSON.stringify(r.body.toString()));
+    }
+  });
+  await check('a name that only holds the letters of an extension is served',async()=>{
+    put('responses.json','{"r":1}');put('besm/espanol.json','{"e":1}');
+    assert.equal((await ask(port,'GET','/responses.json')).status,200);
+    assert.equal((await ask(port,'GET','/besm/espanol.json')).status,200);
   });
 
   // The race, both ways round: a file replaced by a longer one, and by a

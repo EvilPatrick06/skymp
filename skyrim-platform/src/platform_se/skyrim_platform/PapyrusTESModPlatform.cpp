@@ -278,12 +278,17 @@ static RE::TESNPC* CloneNpc(uint32_t npcId, AiPackagesMode aiPackagesMode)
       break;
   }
 
-  auto sourceFaceData = npc_->faceData;
-  npc_->faceData = new RE::TESNPC::FaceData;
-  if (!npc_->faceData) {
-    return nullptr;
+  // The memcpy above left the clone pointing at the source's face data. It
+  // gets a copy of its own from the game's heap: the game frees faceData
+  // through its own allocator, so a block from this DLL's operator new is one
+  // that allocator never wrote (Thornswood #2025).
+  if (auto sourceFaceData = npc_->faceData) {
+    npc_->faceData = RE::malloc<RE::TESNPC::FaceData>();
+    if (!npc_->faceData) {
+      return nullptr;
+    }
+    *npc_->faceData = *sourceFaceData;
   }
-  *npc_->faceData = *sourceFaceData;
 
   return npc;
 }
@@ -445,27 +450,26 @@ void TESModPlatform::ResizeHeadpartsArray(IVM* vm, StackID stackId,
   if (!npc)
     return;
 
-  // A MEASUREMENT FOR THORNSWOOD #2025, not a fix. Quitting to the main menu
-  // crashes as TESNPC::Revert (24779) frees a member of the player's base
-  // record through the game's allocator, and the block's header is one that
-  // allocator never wrote. The suspect is this array: it comes from this
-  // DLL's own operator new, not the game's heap, and the array it replaces
-  // is never freed. This line writes the array's address for each record, so
-  // the address freed in the next crash log's registers can be compared with
-  // it. skyrim-platform.log flushes at info, so the line outlives the crash.
-  // Remove it once #2025 has its answer.
+  // THORNSWOOD #2025. Quitting to the main menu crashed as TESNPC::Revert
+  // (24779) freed a member of the player's base record through the game's
+  // allocator, and the block's header was one that allocator never wrote.
+  // This array came from this DLL's own operator new; the game frees it
+  // through its own heap, so it is allocated there. The array it replaces is
+  // not freed here: a clone made by CloneNpc shares its source's array until
+  // this call, so freeing it would free the source record's array.
+  //
+  // The log line writes the array's address for each record, so a quit crash
+  // that still happens can be read against the address freed in its crash
+  // log's registers. skyrim-platform.log flushes at info, so the line
+  // outlives the crash. Remove it once #2025 is closed.
   const void* before = npc->headParts;
 
   if (newSize <= 0) {
     npc->headParts = nullptr;
     npc->numHeadParts = 0;
   } else {
-    npc->headParts = new RE::BGSHeadPart*[newSize];
-    npc->numHeadParts = newSize;
-
-    for (int8_t i = 0; i < npc->numHeadParts; ++i) {
-      npc->headParts[i] = nullptr;
-    }
+    npc->headParts = RE::calloc<RE::BGSHeadPart*>(newSize);
+    npc->numHeadParts = npc->headParts ? newSize : 0;
   }
 
   spdlog::info("[#2025] ResizeHeadpartsArray npc {:08X}: headParts {:#X} -> "
@@ -491,7 +495,9 @@ void TESModPlatform::ResizeTintsArray(IVM* vm, StackID stackId,
 
   pc->GetTintList()->resize(newSize);
   for (auto& mask : *pc->GetTintList()) {
-    mask = (RE::TintMask*)new ::TintMask;
+    // From the game's heap, which is what frees the player's tint masks
+    // (Thornswood #2025). Zeroed, as ::TintMask's constructor leaves it.
+    mask = (RE::TintMask*)RE::calloc<::TintMask>(1);
   }
 }
 
