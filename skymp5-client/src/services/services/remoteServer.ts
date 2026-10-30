@@ -254,6 +254,11 @@ export class RemoteServer extends ClientListener {
         return;
       }
 
+      // THORNSWOOD PATCH (Thornswood #3159). See packBeforeBench.
+      if (refr.getBaseObject()?.getType() === FormType.Furniture) {
+        await this.packBeforeBench();
+      }
+
       refr.activate(Game.getPlayer(), true);
 
       const baseObject = refr.getBaseObject();
@@ -308,6 +313,51 @@ export class RemoteServer extends ClientListener {
         });
       })();
     });
+  }
+
+  /*
+    THORNSWOOD PATCH (Thornswood #3159). A bench opens on the pack the server
+    sent last, put into the game first.
+
+    The game's crafting menu lists what it can make from the pack as it opens,
+    and this client applies no inventory while that menu is open
+    (isBadMenuShown). A bench that draws from chests is sent the pack with
+    the chests' materials in it just before it is opened (the server's
+    MpActor::OpenBenchStock), and the only thing between that and the menu was
+    the tenth of a second above, which does not wait for anything: the apply
+    goes through the game's inventory queue over later frames. So here the
+    queue is let finish what it already holds, the server's pack is applied if
+    the game's still differs from it, and the bench opens once the queue has
+    done that too (getInventoryQueueFence says when work queued before it has
+    run). Waiting for the queue first is what keeps an apply already on its
+    way from being counted twice, as the owner's spawn does
+    (ownerInventoryPending).
+
+    Nothing is applied when the periodic apply would not apply either: while
+    the owner's inventory is settling at a spawn, while a menu is open, or with
+    no pack from the server yet. The bench then opens as it always did.
+  */
+  private async packBeforeBench(): Promise<void> {
+    const pc = Game.getPlayer();
+    const inv = getPcInventory();
+    if (!pc || !inv || storage['ownerInventorySettling'] === true || isBadMenuShown() || Utility.isInMenuMode()) {
+      return;
+    }
+    await this.inventoryQueueRan();
+    if (getDiff(inv, getInventory(pc), true).entries.length === 0) {
+      return;
+    }
+    // The periodic apply waits its five seconds from this one.
+    pcInvLastApply = Date.now();
+    applyInventory(pc, inv, false, true);
+    await this.inventoryQueueRan();
+  }
+
+  private async inventoryQueueRan(): Promise<void> {
+    const ran = this.sp.getInventoryQueueFence();
+    while (!ran()) {
+      await Utility.wait(0.05);
+    }
   }
 
   private onTeleportMessage(event: ConnectionMessage<TeleportMessage> | ConnectionMessage<TeleportMessage2>): void {

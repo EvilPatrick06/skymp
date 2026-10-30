@@ -1,5 +1,7 @@
 #include "MpChangeForms.h"
 #include "JsonUtils.h"
+#include "archives/JsonInputArchive.h"
+#include "archives/JsonOutputArchive.h"
 #include <spdlog/spdlog.h>
 
 namespace {
@@ -18,6 +20,17 @@ std::vector<FormDesc> ToFormDescsArray(const std::vector<std::string>& strings)
                  [](const std::string& v) { return FormDesc::FromString(v); });
   return res;
 }
+}
+
+nlohmann::json MpChangeForm::PickupExtraToJson(
+  const std::optional<Inventory::ExtraData>& extra)
+{
+  if (!extra) {
+    return nullptr;
+  }
+  JsonOutputArchive ar;
+  const_cast<Inventory::ExtraData&>(*extra).Serialize(ar);
+  return std::move(ar.j);
 }
 
 nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm)
@@ -98,6 +111,14 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm)
     res["displayName"] = *changeForm.displayName;
   }
 
+  if (changeForm.pickupExtra.has_value()) {
+    res["pickupExtra"] = PickupExtraToJson(changeForm.pickupExtra);
+  }
+
+  if (changeForm.deleteDatetime) {
+    res["deleteDatetime"] = changeForm.deleteDatetime;
+  }
+
   if (changeForm.factions.has_value()) {
     auto factionsJson = nlohmann::json::array();
     for (int i = 0; i < static_cast<int>(changeForm.factions.value().size());
@@ -158,6 +179,8 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element)
     "magickaRespawnPercentage");
   static const JsonPointer staminaRespawnPercentage(
     "staminaRespawnPercentage");
+  static const JsonPointer pickupExtra("pickupExtra");
+  static const JsonPointer deleteDatetime("deleteDatetime");
 
   MpChangeForm res;
   ReadEx(element, recType, &res.recType);
@@ -377,6 +400,24 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element)
     }
 
     res.factions = factions;
+  }
+
+  if (element.at_pointer(pickupExtra.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    ReadEx(element, pickupExtra, &jTmp);
+    nlohmann::json j =
+      nlohmann::json::parse(static_cast<std::string>(simdjson::minify(jTmp)));
+    if (j.is_object()) {
+      Inventory::ExtraData extra;
+      JsonInputArchive ar(j);
+      extra.Serialize(ar);
+      res.pickupExtra = extra;
+    }
+  }
+
+  if (element.at_pointer(deleteDatetime.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    ReadEx(element, deleteDatetime, &res.deleteDatetime);
   }
 
   return res;

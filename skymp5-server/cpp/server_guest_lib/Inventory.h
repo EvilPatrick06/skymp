@@ -103,6 +103,23 @@ public:
   Inventory& AddItems(const std::vector<Entry>& entries);
   bool CanAddItems(const std::vector<Entry>& entries) const;
   Inventory& RemoveItems(const std::vector<Entry>& entries);
+
+  /*
+    THORNSWOOD PATCH (Thornswood #3163). The stacks a removal that names
+    only what an item is would take, for the removals the client asks for by
+    a base id alone: eating or drinking one, and a craft's inputs.
+
+    Each wanted entry takes from the stacks that match it exactly first,
+    then from the stacks that differ from it only in their name, in the
+    order they sit. So a named entry (food carrying its days left, "Venison
+    (6 days left)") can be eaten and cooked, while a stack that differs in
+    anything else (worn, tempered, enchanted, poisoned, a soul) is still
+    never taken for it. The answer is the stacks to take, each with its own
+    extra and the count to take from it, to hand to RemoveItems; nothing
+    here changes the inventory. Throws std::runtime_error, with
+    RemoveItems's words, when the stacks it may take hold too few.
+  */
+  std::vector<Entry> ResolveRemoval(const std::vector<Entry>& wanted) const;
   bool HasItem(uint32_t baseId) const;
   uint32_t GetItemCount(uint32_t baseId) const;
   uint32_t GetTotalItemCount() const;

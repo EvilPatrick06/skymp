@@ -16,8 +16,9 @@ const resolvePath = require("resolve-path");
 // A file replaced after the open is the next request's; this one is the file
 // that was opened, whole.
 //
-// Everything else is koa-static's behaviour with the options serve("data")
-// had (koa-static 5.0.0, koa-send 5.0.1): GET and HEAD only; the path
+// It also refuses the game's own files (isRefused, below). Everything else
+// is koa-static's behaviour with the options serve("data") had (koa-static
+// 5.0.0, koa-send 5.0.1): GET and HEAD only; the path
 // decoded, 400 when it does not decode; resolve-path's refusals, the same
 // library koa-send uses, so nothing outside the folder; nothing whose path
 // has a part starting with a dot; index.html for a path ending in a slash,
@@ -62,6 +63,23 @@ const openFile = async (full: string): Promise<Opened | "folder" | null> => {
 const isHidden = (root: string, full: string): boolean =>
   full.substr(root.length).split(path.sep).some((part) => part[0] === ".");
 
+// Never served: the game's masters and plugins, its archives, and anything
+// under a scripts folder (Thornswood #3927). This was three koa-router routes
+// in ui.ts matched against the URL as it came, escaped and case and all, so
+// /Skyrim.%65sm, /Data.%62sa and /%73cripts/x.pex went past them to the
+// files, and on Windows, the box, so did /Skyrim.ESM. It is checked here,
+// on the path this opens, after decoding. Each part is read the way Windows
+// opens it, so a part is the same name in any case, without a stream after a
+// colon, and without dots and spaces at its end.
+const refusedExtensions = [".esm", ".esp", ".esl", ".bsa"];
+const asOpened = (part: string): string =>
+  part.split(":")[0].replace(/[. ]+$/, "").toLowerCase();
+const isRefused = (root: string, full: string): boolean => {
+  const parts = full.substr(root.length).split(path.sep).filter((part) => part !== "").map(asOpened);
+  return parts.includes("scripts") ||
+    refusedExtensions.includes(path.extname(parts[parts.length - 1] || ""));
+};
+
 const send = async (ctx: any, root: string): Promise<boolean> => {
   let requested: string = ctx.path;
   const trailingSlash = requested[requested.length - 1] === "/";
@@ -77,6 +95,9 @@ const send = async (ctx: any, root: string): Promise<boolean> => {
   let full: string = resolvePath(root, requested);
   if (isHidden(root, full)) {
     return false;
+  }
+  if (isRefused(root, full)) {
+    ctx.throw(403);
   }
 
   let opened: Opened | "folder" | null = null;

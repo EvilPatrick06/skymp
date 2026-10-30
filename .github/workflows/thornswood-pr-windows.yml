@@ -13,10 +13,27 @@
 # first time was 30. vcpkg now restores those from GitHub Packages, and the
 # coverage run checked nothing test_unit does not, so a build is the
 # configure, the compile (14 minutes) and the tests (about 3).
-# Upstream's workflows that would start here (the four that dispatch upstream's
+#
+# HOW LONG A JOB MAY RUN (Thornswood #3557). Every job sets timeout-minutes,
+# as every Thornswood workflow does; without it GitHub waits 360 minutes, and
+# a hung vcpkg or CMake step would hold the runner and this workflow's
+# concurrency group that long, since a push never cancels an older push's
+# build. Measured 27 Oct over all 177 runs since 5 Oct: a build with the
+# library cache takes 20 to 45 minutes (median 30); one that builds every
+# library again, as after a vcpkg pin change, took 54 to 67. Twice the
+# slowest is 135, for build-pr and build alike, since a pull request that
+# moves the pin builds every library too. The Ubuntu job never took more
+# than 20 seconds, so it gets 10 minutes.
+# Upstream's workflows on this branch (the four that dispatch upstream's
 # installer, the Linux builds, the formatting, Prettier and dependent issue
 # checks) carry `if: github.repository == 'skyrim-multiplayer/skymp'`, so they
-# keep working upstream and are skipped here.
+# keep working upstream and are skipped here. That guard is on this branch
+# only. A schedule, an issue event and a push to main run the copies on the
+# fork's main, which is upstream's as it was and has no guard: there
+# "PR Windows Flatrim (AE/SE)" and "PR Windows Skyrim VR" run every night and
+# on every push to main, and "Build & Push skymp-vcpkg-deps" fails on every
+# push to main for want of Docker Hub secrets (Thornswood #3594, #3404).
+# Nothing of Thornswood's reads those runs.
 #
 # Why GitHub's runner and not the VPS: this repository is public, so its
 # minutes on GitHub's standard runners cost nothing, and a self-hosted runner
@@ -42,17 +59,28 @@
 #   build\skymp5-scripts\pex\           Papyrus the build compiled, when it did
 #   build\licences\                     the licence text of every vcpkg
 #                                       library whose code is in one of the
-#                                       four native client files, and
-#                                       licences.json, which says which is in
-#                                       which (misc\thornswood\Write-ClientLicences.ps1,
-#                                       Thornswood #3099)
+#                                       four native client files, of the
+#                                       fork's own folders under a notice of
+#                                       their own and of the npm packages in
+#                                       skymp5-client.js, and licences.json,
+#                                       which says which is in which
+#                                       (misc\thornswood\Write-ClientLicences.ps1,
+#                                       Thornswood #3099, #3751)
 #   fork-build.json                     the commit, this run, and each file's
 #                                       sha256, size and time
 # A zip keeps a file's time without its zone, so the times go in
 # fork-build.json in UTC and engine.yml puts them back: the record's builtUtc
 # is the binary's time. A pull request's build keeps one too, for 14 days, so
 # a fork change can be tried before it merges; engine.yml takes only a push to
-# thornswood/engine-changes.
+# thornswood/engine-changes, and a push's is kept 90.
+#
+# NOTHING ELSE IS KEPT BUT LOGS (Thornswood #3675, #3691). pr_base's own
+# uploads of the build (dist, the client js, server-dist, the Skyrim Platform
+# and papyrus-vm Nexus files) were about 376 MB a run, kept 90 days, and
+# nothing read them: thornswood-engine-<commit> holds every file Thornswood
+# takes. So this passes UPLOAD_BUILD "false" and SP_NEXUS_ARTIFACT_NAME
+# "nope", and the logs pr_base keeps (vcpkg logs, CMake profiling, msbuild
+# files) go after 7 days, which is long enough to read a failed build's.
 #
 # LINE ENDS AS ONE BUILDS. The image's git turns every text file to CR LF on
 # checkout (core.autocrlf true in its system config). The machine that builds
@@ -60,6 +88,14 @@
 # package.json, yarn.lock and bundle are those bytes; measured 17 Oct, the
 # pull request build's package.json was 1,561 bytes with CR LF, the recorded
 # one 1,517. So this checks out with core.autocrlf false, the way One does.
+#
+# EVERY ACTION BY COMMIT (Thornswood #2761). A tag on an action can be
+# repointed at any commit by whoever owns it, and this job builds the server
+# and the client Thornswood ships. So every `uses:` in every workflow here and
+# in pr_base names a full length commit SHA with its tag in a comment, and
+# misc\thornswood\Test-ActionPins.ps1, a step of this build, fails on one that
+# does not. Dependabot's github-actions entry (dependabot.yml on main) moves
+# the pins, one grouped pull request a month.
 
 name: Thornswood PR Windows
 
@@ -99,10 +135,11 @@ jobs:
         run: node skymp5-client/test-disabled-stays.js
   save-directory-linux:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: false
       - name: Check POSIX directory initialization
@@ -120,29 +157,45 @@ jobs:
             misc/tests/whole_file_write_test.cpp -o "$RUNNER_TEMP/whole-file-write-test"
           mkdir -p "$RUNNER_TEMP/whole-file-write-fixtures"
           "$RUNNER_TEMP/whole-file-write-test" "$RUNNER_TEMP/whole-file-write-fixtures"
-  build:
+  # THE LIBRARY CACHE (Thornswood #2760). vcpkg keeps the libraries it
+  # built in GitHub Packages, so the next build does not build them all
+  # again, and the push build below, the one Thornswood records and ships,
+  # restores them from there. Only that push build may write the cache. A
+  # pull request builds the same steps with a read-only token and a read-only
+  # vcpkg source, so unreviewed code on a branch can never put a library in
+  # the cache the shipped engine is built from. Pull requests from outside
+  # forks get a read-only token from GitHub anyway; a lane's branch in this
+  # repository would get a write token if the job asked for one. The fork's
+  # default token is read only.
+  build-pr:
+    if: github.event_name == 'pull_request'
     runs-on: windows-2022
-    # packages: write lets vcpkg keep the libraries it built in GitHub
-    # Packages, so the next build does not build them all again. The fork's
-    # default token is read only.
+    timeout-minutes: 135
     permissions:
       contents: read
-      packages: write
-    steps:
+      packages: read
+    env:
+      VCPKG_BINARY_SOURCES: 'clear;nuget,GitHub,read'
+    steps: &build-steps
       # The header, LINE ENDS AS ONE BUILDS. Before the checkout, so the fork
       # and its submodules (vcpkg among them) are checked out as committed.
       - name: Check out as committed, LF
         shell: pwsh
         run: git config --global core.autocrlf false
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
           submodules: 'true'
+      # The header, EVERY ACTION BY COMMIT. Before the build, so a tag pin
+      # fails in seconds rather than after it.
+      - name: Every action is pinned by commit
+        shell: pwsh
+        run: .\misc\thornswood\Test-ActionPins.ps1
       - uses: ./.github/actions/pr_base
         with:
           DESCRIPTION: 'Flatrim'
           SKYRIM_VR_FLAG: OFF
-          SP_NEXUS_ARTIFACT_NAME: Skyrim Platform %SP_VERSION%
+          SP_NEXUS_ARTIFACT_NAME: nope
           DEPLOY_BRANCH: ""
           DIST_ARTIFACT_NAME: dist
           SERVER_DIST_ARTIFACT_NAME: server-dist
@@ -150,6 +203,8 @@ jobs:
           NUGET_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NUGET_FEED_OWNER: ${{ github.repository_owner }}
           COVERAGE: "false"
+          UPLOAD_BUILD: "false"
+          ARTIFACT_RETENTION_DAYS: "7"
 
       # Read from each native client file's own program database, which only
       # this build folder has (Thornswood #3099; the script says how).
@@ -230,7 +285,7 @@ jobs:
           Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value ('days=' + $(if ($env:EVENT -eq 'push') { '90' } else { '14' }))
 
       - name: Keep the build Thornswood records
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: thornswood-engine-${{ github.sha }}
           path: ${{ steps.gather.outputs.dir }}
@@ -239,3 +294,14 @@ jobs:
           # dot included; engine.yml refuses a build missing one.
           include-hidden-files: true
           retention-days: ${{ steps.gather.outputs.days }}
+
+  build:
+    if: github.event_name == 'push'
+    runs-on: windows-2022
+    timeout-minutes: 135
+    # The workflow's own VCPKG_BINARY_SOURCES, readwrite: the header above
+    # build-pr, THE LIBRARY CACHE.
+    permissions:
+      contents: read
+      packages: write
+    steps: *build-steps
