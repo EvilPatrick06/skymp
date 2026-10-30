@@ -13,6 +13,7 @@ import { getAppearance } from "../../sync/appearance";
 import { ActorValues, getActorValues } from "../../sync/actorvalues";
 import { getEquipment } from "../../sync/equipment";
 import { nextHostAttempt } from "../../view/hostAttempts";
+import { traceHostedSend } from "../../view/spawnTrace";
 import { SkympClient } from "./skympClient";
 import { MessageWithRefrId } from "../events/sendMessageWithRefrIdEvent";
 import { UpdateMovementMessage } from "../messages/updateMovementMessage";
@@ -136,6 +137,11 @@ export class SendInputsService extends ClientListener {
                 reliability: "unreliable"
             });
             this.lastSendMovementMoment.set(refrIdStr, now);
+            if (_refrId !== undefined) {
+                // THORNSWOOD (Thornswood #1287). A hosted reference's place
+                // sent while it is still spawning; logs nothing otherwise.
+                traceHostedSend(owner.getFormID(), _refrId, message.data.pos);
+            }
         }
     }
 

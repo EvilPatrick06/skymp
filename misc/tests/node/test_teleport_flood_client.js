@@ -143,6 +143,7 @@ frame(); // RagdollService's first update writes the settings once
 count.damageMultWrites = 0;
 
 const sentMovement = [];
+const tracedHosted = [];
 class SendInputsBase {
   constructor() { this.controller = controller; this.lastSendMovementMoment = new Map(); }
   getInputOwner(refrId) { return refrId ? { getFormID: () => refrId } : character; }
@@ -152,6 +153,9 @@ const inputStubs = {
   MsgType: { UpdateMovement: 7 },
   getMovement: () => ({ worldOrCell: 0x1a26f, pos: [0, 0, 0], rot: [0, 0, 0] }),
   RemoteServer: {},
+  // The spawn log (Thornswood #1287): told of each hosted packet, and it
+  // writes only while that reference is spawning. Recorded here.
+  traceHostedSend: (localId, remoteId, pos) => { tracedHosted.push([localId, remoteId, pos]); },
 };
 const SendInputsUnderTest = new Function(...Object.keys(inputStubs), compile(inputsClass))(...Object.values(inputStubs));
 const sendInputs = new SendInputsUnderTest();
@@ -196,6 +200,8 @@ const teleport2 = (seq, x) => ({ t: 31, pos: [x, spot[1], spot[2]], rot: [0, 0, 
     sentMovement[0] && sentMovement[0].data.teleportSeq, 1232);
   expect('teleportSeq in a hosted actor\'s movement packet (none)',
     sentMovement[1] ? sentMovement[1].data.teleportSeq === undefined : false, true);
+  expect('the spawn log is told of the hosted packet only (#1287)',
+    tracedHosted.map((x) => [x[0], x[1]]), [[0xff000abc, 0xff000abc]]);
 
   // A teleport after that move starts its own removal and move.
   remoteServer.onTeleportMessage({ message: teleport2(1300, spot[0] + 50) });
