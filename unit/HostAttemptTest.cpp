@@ -133,8 +133,8 @@ TEST_CASE("Hosted creature ownership ends with its host session",
   }
 }
 
-TEST_CASE("A running hosted return stops when its inventory callback releases the host",
-          "[actor-runtime-identity][HostAttempt][espm]")
+TEST_CASE("A hosted NPC return never repopulates its vanilla inventory",
+          "[actor-runtime-identity][HostAttempt][NpcBodyLoot][espm]")
 {
   const bool reload=GENERATE(false,true);
   PartOne p;
@@ -164,14 +164,16 @@ TEST_CASE("A running hosted return stops when its inventory callback releases th
   ActionListener listener(p);RawMessageData raw;raw.userId=0;HostMessage msg;msg.remoteId=remoteId;
   listener.OnHostAttempt(raw,msg);
   remote.SetRespawnTime(1);remote.Kill();
-  const auto runtime=remote.GetRuntimeIdentity();
+  const auto inventory=remote.GetInventory();
   revoke=true;time+=std::chrono::seconds(2);p.worldState.Tick();
-  REQUIRE(called);
-  REQUIRE(remote.GetRuntimeIdentity()!=runtime);
-  if(reload){REQUIRE_FALSE(remote.GetChangeForm().baseContainerAdded);return;}
-  REQUIRE(remote.IsDead());
+  // There is no inventory refill/publication on this path now. The callback
+  // which would release or reload the host must not run. Synchronous return
+  // publication still has its separate ownership-boundary regression below.
+  REQUIRE_FALSE(called);
+  REQUIRE_FALSE(remote.IsDead());
   REQUIRE_FALSE(remote.IsRespawning());
-  REQUIRE(p.worldState.hosters.count(remoteId)==0);
+  REQUIRE(remote.GetInventory() == inventory);
+  REQUIRE(p.worldState.hosters.at(remoteId)==host);
 }
 
 TEST_CASE("A hosted return cannot revive after synchronous death publication changes its owner",

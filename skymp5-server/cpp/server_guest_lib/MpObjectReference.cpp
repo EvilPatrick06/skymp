@@ -1022,6 +1022,15 @@ void MpObjectReference::RemoveItem(uint32_t baseId, uint32_t count,
 void MpObjectReference::RemoveItems(
   const std::vector<Inventory::Entry>& entries, MpObjectReference* target)
 {
+  // Keep inherited gear in the authoritative inventory for combat, but refuse
+  // to turn it into somebody else's goods, even with an exact stack request.
+  const auto actor = AsActor();
+  if (target && actor && !actor->IsCreatedAsPlayer()) {
+    for (const auto& entry : entries) {
+      if (entry.count && entry.npcEquipment.value_or(false))
+        throw std::runtime_error("Inherited NPC equipment cannot be transferred");
+    }
+  }
   // Refused before the source gives anything up, so a target that can't
   // take the entries leaves both as they were.
   if (target && !target->GetInventory().CanAddItems(entries)) {
@@ -1052,6 +1061,14 @@ void MpObjectReference::RemoveItems(
 void MpObjectReference::RemoveAllItems(MpObjectReference* target)
 {
   auto prevInv = GetInventory();
+  const auto actor = AsActor();
+  if (target && actor && !actor->IsCreatedAsPlayer()) {
+    auto& entries = prevInv.entries;
+    entries.erase(std::remove_if(entries.begin(), entries.end(),
+      [](const Inventory::Entry& entry) {
+        return entry.npcEquipment.value_or(false);
+      }), entries.end());
+  }
   RemoveItems(prevInv.entries, target);
 }
 
@@ -2270,6 +2287,7 @@ void MpObjectReference::EnsureBaseContainerAdded(espm::Loader& espm)
   }
 
   auto actor = AsActor();
+  const bool inheritedNpcGear = actor && !actor->IsCreatedAsPlayer();
   const std::vector<FormDesc> kEmptyTemplateChain;
   const std::vector<FormDesc>& templateChain =
     actor ? actor->GetTemplateChain() : kEmptyTemplateChain;
@@ -2289,12 +2307,33 @@ void MpObjectReference::EnsureBaseContainerAdded(espm::Loader& espm)
     AddContainerObject(entry, &itemsToAdd);
     AddContainerObject(entry, &itemsToEquip);
   }
+  if (inheritedNpcGear) {
+    // Do not create vanilla pockets. Only equipment needed by the NPC's
+    // appearance and combat enters its inventory, with non-transferable origin.
+    for (auto it = itemsToAdd.begin(); it != itemsToAdd.end();) {
+      const auto record = espm.GetBrowser().LookupById(it->first).rec;
+      const auto type = record ? record->GetType().ToString() : "";
+      bool equipment = type == "WEAP" || type == "ARMO" || type == "AMMO" ||
+        type == "SCRL";
+      if (auto light = espm::Convert<espm::LIGH>(record)) {
+        equipment = (light->GetData(worldState->GetEspmCache()).data.flags &
+                     espm::LIGH::CanBeCarried) != 0;
+      }
+      if (equipment) {
+        ++it;
+      } else {
+        itemsToEquip.erase(it->first);
+        it = itemsToAdd.erase(it);
+      }
+    }
+  }
   if (actor) {
     Equipment eq;
     for (auto& p : itemsToEquip) {
       Inventory::Entry e;
       e.baseId = p.first;
       e.count = p.second;
+      if (inheritedNpcGear) e.npcEquipment = true;
       e.SetWorn(Inventory::Worn::Right);
       eq.inv.AddItems({ e });
     }
@@ -2303,7 +2342,9 @@ void MpObjectReference::EnsureBaseContainerAdded(espm::Loader& espm)
 
   std::vector<Inventory::Entry> entries;
   for (auto& p : itemsToAdd) {
-    entries.push_back({ p.first, p.second });
+    Inventory::Entry entry(p.first, p.second);
+    if (inheritedNpcGear) entry.npcEquipment = true;
+    entries.push_back(entry);
   }
   // AddItems marks a nonempty container in the same edit as its inventory.
   // Finish the empty case before publication can reload or replace this form.

@@ -79,11 +79,13 @@ bool Inventory::Entry::EqualExceptCount(const Inventory::Entry& other) const
   // nullopt mismatch. Logically it should be the same
   return std::make_tuple(baseId, health, enchantmentId, maxCharge,
                          removeEnchantmentOnUnequip, chargePercent, name, soul,
-                         poisonId, poisonCount, GetWorn()) ==
+                         poisonId, poisonCount, GetWorn(),
+                         npcEquipment.value_or(false)) ==
     std::make_tuple(other.baseId, other.health, other.enchantmentId,
                     other.maxCharge, other.removeEnchantmentOnUnequip,
                     other.chargePercent, other.name, other.soul,
-                    other.poisonId, other.poisonCount, other.GetWorn());
+                    other.poisonId, other.poisonCount, other.GetWorn(),
+                    other.npcEquipment.value_or(false));
 }
 
 Inventory& Inventory::AddItem(uint32_t baseId, uint32_t count)
