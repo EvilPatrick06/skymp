@@ -270,6 +270,22 @@ runs:
             -password "${{ inputs.NUGET_GITHUB_TOKEN }}"
         }
 
+    # THORNSWOOD (Thornswood #5142). The configure downloads the five masters
+    # the unit tests read (cmake/download_skyrim_data.cmake, -DDOWNLOAD_SKYRIM_DATA=ON
+    # below) from GitLab, unauthenticated, on every build. On 31 Oct 2026 run
+    # 41242445158 stopped there on GitLab's 429 for the runner's address
+    # (ratelimit-name unauthenticated_traffic_per_ip), before anything was
+    # built. The files are fixed by the sha256s in that cmake file, so they
+    # are kept in the Actions cache under a key made from it: a build
+    # restores them, and the configure downloads only when no cache holds
+    # that set. The configure still holds every restored file to its sha256.
+    # A pull request restores what a push to its base branch saved.
+    - name: Restore the masters the unit tests read
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{github.workspace}}/skyrim_data_files
+        key: skyrim-masters-${{ hashFiles('cmake/download_skyrim_data.cmake') }}
+
     - name: Configure CMake
       # Configure CMake in a 'build' subdirectory. `CMAKE_BUILD_TYPE` is only required if you are using a single-configuration generator such as make.
       # See https://cmake.org/cmake/help/latest/variable/CMAKE_BUILD_TYPE.html?highlight=cmake_build_type
