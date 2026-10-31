@@ -128,6 +128,18 @@ public:
   // Used for Quest (QUST) synchronization
   std::optional<std::vector<Quest>> quests;
 
+  // THORNSWOOD PATCH (Thornswood #3498). A reference an actor dropped: the
+  // extra of the entry it was dropped as (MpObjectReference::SetPickupExtra,
+  // #1719), and the moment it is deleted, in milliseconds since the epoch, or
+  // 0 for never (MpObjectReference::SetDeleteDatetime). Both are saved, so a
+  // drop that outlives a restart is still the piece that was dropped and
+  // still goes when its time is up, even when the server was down then.
+  std::optional<Inventory::ExtraData> pickupExtra;
+  uint64_t deleteDatetime = 0;
+
+  static nlohmann::json PickupExtraToJson(
+    const std::optional<Inventory::ExtraData>& extra);
+
   // Please update 'ActorTest.cpp' when adding new Actor-related rows
 
   DynamicFields dynamicFields;
@@ -142,7 +154,8 @@ public:
       equipment.ToJson(), actorValues.ToTuple(), healthRespawnPercentage,
       magickaRespawnPercentage, staminaRespawnPercentage, spawnPoint,
       dynamicFields, spawnDelay, learnedSpells, templateChain, lastAnimation,
-      setNodeTextureSet, setNodeScale, displayName);
+      setNodeTextureSet, setNodeScale, displayName,
+      PickupExtraToJson(pickupExtra), deleteDatetime);
   }
 
   static nlohmann::json ToJson(const MpChangeFormREFR& changeForm);

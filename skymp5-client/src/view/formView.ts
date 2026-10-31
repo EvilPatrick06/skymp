@@ -6,6 +6,7 @@ import { RespawnNeededError } from "../lib/errors";
 import { FormModel } from "./model";
 import { applyMovement } from "../sync/movementApply";
 import { SpawnProcess } from "./spawnProcess";
+import { traceRespawnNeeded, traceSpawnChosen } from "./spawnTrace";
 import { ObjectReferenceEx } from "../extensions/objectReferenceEx";
 import { PlayerCharacterDataHolder } from "./playerCharacterDataHolder";
 import { getMovement } from "../sync/movementGet";
@@ -152,12 +153,17 @@ export class FormView {
       let refr = ObjectReference.from(Game.getFormEx(this.refrId));
 
       let respawnRequired = false;
+      // Why, for the spawn log only (Thornswood #1287).
+      let respawnReason = "";
       if (!refr) {
         respawnRequired = true;
+        respawnReason = "no-reference";
       } else if (!refr.getBaseObject()) {
         respawnRequired = true;
+        respawnReason = "no-base";
       } else if ((refr.getBaseObject() as Form).getFormID() !== base.getFormID()) {
         respawnRequired = true;
+        respawnReason = "base-changed";
       }
 
       if (respawnRequired) {
@@ -288,6 +294,18 @@ export class FormView {
         }
 
         if (refr) {
+          // THORNSWOOD (Thornswood #1287). One "chosen" line in
+          // thornswood-spawn.log before the spawn runs. Reads only.
+          traceSpawnChosen({
+            remote: model.refrId || 0,
+            local: refr.getFormID(),
+            base: base.getFormID(),
+            method: adoptedNow ? "adopted" : (spawnUsingStubMethod ? "stub" : "placeAtMe"),
+            reason: respawnReason,
+            target: spawnPos,
+            hostedByOther: !!model.isHostedByOther,
+            isDead: !!model.isDead,
+          });
           (adoptedNow ? spawnMethodOriginal : spawnMethod).triggerSpawnProcess(refr, spawnPos, model.appearance || null, () => {
             this.ready = true;
             this.spawnMoment = Date.now();
@@ -493,6 +511,7 @@ export class FormView {
             applyMovement(refr, model.movement, !!model.isMyClone);
           } catch (e) {
             if (e instanceof RespawnNeededError) {
+              traceRespawnNeeded("cell", model.refrId, this.refrId);
               this.lastWorldOrCell = model.movement.worldOrCell;
               this.destroy();
               this.refrId = 0;

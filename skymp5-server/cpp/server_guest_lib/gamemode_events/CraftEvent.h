@@ -11,16 +11,39 @@ class MpActor;
 class CraftEvent : public GameModeEvent
 {
 public:
+  // THORNSWOOD PATCH (Thornswood #3159). An input the pack lacks, taken from
+  // a container of the bench's open stock (MpActor::BenchStock). The craft's
+  // entries are what it takes in all; these are the part of them that comes
+  // out of a container, and the pack gives the rest.
+  struct StockDraw
+  {
+    uint32_t containerId = 0;
+    Inventory::Entry entry;
+  };
+
   CraftEvent(MpActor* actor_, uint32_t craftedItemBaseId_, uint32_t count_,
              uint32_t recipeId_,
              const std::vector<Inventory::Entry>& entries_,
              uint32_t workbenchId_ = 0,
              std::optional<std::vector<uint32_t>> effects_ = std::nullopt,
+             std::vector<StockDraw> stockDraws_ = {},
              std::optional<Inventory::Made> made_ = std::nullopt);
 
   const char* GetName() const override;
 
   std::string GetArgumentsJsonArray() const override;
+
+  // THORNSWOOD PATCH (Thornswood #3161). onCraft's seven arguments, which
+  // onCraftWork (CraftWorkEvent.h) is asked with too, so a gamemode reads
+  // both the same way. onCraft adds an eighth, what the bench's stock gives
+  // (Thornswood #3159), when stockDraws is passed; onCraftWork is asked
+  // before anything is drawn and has none.
+  static std::string ArgumentsJsonArray(
+    uint32_t actorId, uint32_t craftedItemBaseId, uint32_t count,
+    uint32_t recipeId, uint32_t workbenchId,
+    const std::optional<std::vector<uint32_t>>& effects,
+    const std::vector<Inventory::Entry>& entries,
+    const std::vector<StockDraw>* stockDraws = nullptr);
 
   // THORNSWOOD PATCH (Thornswood #2906). An onCraft listener may name what
   // this craft gives in place of the recipe's output: a cook's burnt meal or
@@ -42,6 +65,11 @@ public:
   void SetOutput(uint32_t baseId, uint32_t count);
   const std::optional<std::string>& GetOutputName() const;
   void SetOutputName(std::optional<std::string> name);
+
+  // Thornswood #1649. The contents the output goes in with: a brew's
+  // bottle (made) while the output is still that bottle, and nothing once
+  // a listener has named another record, which has contents of its own.
+  std::optional<Inventory::Made> GetOutputMade() const;
 
 private:
   void OnFireSuccess(WorldState* worldState) override;
@@ -78,6 +106,10 @@ private:
 
   // OnFireSuccess-specific arguments
   const std::vector<Inventory::Entry>& entries;
+
+  // THORNSWOOD PATCH (Thornswood #3159). The part of entries that comes out
+  // of the bench's stock, and the eighth argument. See StockDraw.
+  std::vector<StockDraw> stockDraws;
 
   // What OnFireSuccess adds (Thornswood #2906): the recipe's output unless a
   // listener named another.
