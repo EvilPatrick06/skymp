@@ -141,6 +141,8 @@ jobs:
           node-version: '22'
       - name: Disabled and harvested references, trees and flora
         run: node skymp5-client/test-disabled-stays.js
+      - name: The browser is shown at start, focused only by a plugin
+        run: node misc/tests/node/test_browser_start_focus.js
   save-directory-linux:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
