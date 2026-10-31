@@ -2265,6 +2265,9 @@ TEST_CASE("A brew with a work time is kept by its contents when its time is "
   bench.Crafter().AddItem(kBlueMountainFlower, 1);
   bench.Crafter().AddItem(kWheat, 1);
   bench.p.Tick();
+  // The actor's record gives it a pack of its own, the stand-in bottle
+  // (a real potion record) among it, so counts are taken against this.
+  const Inventory before = bench.Crafter().GetInventory();
 
   Inventory::Made bottle = Bottle({ kRestoreHealth, kFortifyHealth });
   Inventory::Round(bottle);
@@ -2293,10 +2296,13 @@ TEST_CASE("A brew with a work time is kept by its contents when its time is "
     }
   }
   REQUIRE(kept == 1);
-  REQUIRE(bench.Crafter().GetInventory().GetItemCount(kBrewedBottle) == 0);
+  // The session's bottle id is never what the pack gets.
+  REQUIRE(bench.Crafter().GetInventory().GetItemCount(kBrewedBottle) ==
+          before.GetItemCount(kBrewedBottle));
   REQUIRE(bench.Crafter().GetInventory().GetItemCount(kBlueMountainFlower) ==
-          0);
-  REQUIRE(bench.Crafter().GetInventory().GetItemCount(kWheat) == 0);
+          before.GetItemCount(kBlueMountainFlower) - 1);
+  REQUIRE(bench.Crafter().GetInventory().GetItemCount(kWheat) ==
+          before.GetItemCount(kWheat) - 1);
 
   // The client is told the contents, so it can build the bottle under the
   // made id before it puts it back.
@@ -2318,6 +2324,7 @@ TEST_CASE("A brew with a work time and no believable bottle is refused "
   bench.Crafter().AddItem(kBlueMountainFlower, 1);
   bench.Crafter().AddItem(kWheat, 1);
   bench.p.Tick();
+  const Inventory before = bench.Crafter().GetInventory();
   RawMessageData msgData;
   msgData.userId = 0;
 
@@ -2326,9 +2333,7 @@ TEST_CASE("A brew with a work time and no believable bottle is refused "
     msgData, Brew({ kBlueMountainFlower, kWheat }));
   REQUIRE(bench.gamemode->asked == 0);
   REQUIRE(bench.Working() == 0);
-  REQUIRE(bench.Crafter().GetInventory().GetItemCount(kBlueMountainFlower) ==
-          1);
-  REQUIRE(bench.Crafter().GetInventory().GetItemCount(kWheat) == 1);
+  REQUIRE(bench.Crafter().GetInventory() == before);
 
   bench.gamemode->time = std::chrono::milliseconds(0);
   bench.GiveWarhammerMakings();
