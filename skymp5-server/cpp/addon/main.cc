@@ -1,3 +1,4 @@
+#include "BotClientBinding.h"
 #include "CrashReporting.h"
 #include "ScampServer.h"
 
@@ -16,6 +17,8 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     std::cerr << "A native crash of this server will not be recorded: "
               << crashReporting << std::endl;
   }
+  // Thornswood #5196: scripted test bots connect with this.
+  BotClientBinding::Init(env, exports);
   return ScampServer::Init(env, exports);
 }
 
