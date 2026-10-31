@@ -1,0 +1,286 @@
+# Signs a Thornswood release manifest (Thornswood #2903, #2163).
+#
+# WHY HERE. Every Thornswood release since 19 Oct, dev included, publishes a
+# release manifest, release.json, and a Windows catalog over it signed by the
+# ThornswoodRelease certificate profile (Thornswood's Publish-Update.ps1,
+# "signed manifest"). Until now only Patrick's own machine could sign, with
+# his Azure sign in, so every Ship needed it. Patrick's A of 20 Oct on #2903:
+# the signing moves here, to GitHub's runner in this public repository, whose
+# minutes cost nothing, so a release can be built and published from anywhere.
+#
+# WHAT IT DOES. A Ship sends release.json, base64, with its sha256, and the
+# signing client pin, the Azure account and the expected signer as Thornswood
+# holds them (scripts\release\Setup-ShipMachine.ps1, records\signing\
+# metadata.json, launcher\app\Updater.cs). This job, on windows-latest:
+#   1. holds the manifest to its sha256 and to the manifest's shape;
+#   2. makes the catalog over it, as Thornswood's Release-Manifest.ps1 does
+#      (New-FileCatalog, version 2, the manifest its one member);
+#   3. fetches Microsoft's signing client from nuget.org and holds it to the
+#      pinned sha256 before anything is unpacked;
+#   4. signs in to Azure with the federated identity (OIDC): GitHub mints a
+#      token for this job only, through the "thornswood-signing" environment,
+#      which only main may use. No secret is stored anywhere;
+#   5. signs the catalog with signtool and the signing client, the command
+#      Thornswood's Sign-Artifact.ps1 runs, with Microsoft's timestamp;
+#   6. reads it back: Authenticode Valid, the signer naming the expected
+#      signer, and the catalog still holding the manifest;
+#   7. keeps the signed catalog as the artifact release-cat-<request>, for a
+#      day. The Ship downloads it, then holds it to the launcher's own
+#      signature check (Signature.cs) on a Windows machine that holds no
+#      signing setup, before anything is published.
+# The manifest lists hashes only: nothing secret goes in or out.
+#
+# THE LAUNCHER IS CHECKED HERE FIRST (Thornswood #3312). Since #3312 a
+# release launcher may be signed by Thornswood's release.yml on its VPS
+# fallback, on runner 3, when GitHub's hosted runner has no minutes. So that
+# the box that signed is never the only machine that checked it, the job
+# "launcher" below fetches the launcher this release names from the site
+# (launcher_url, https://thornswood.net/feed[-dev]/assets/<sha256>, where
+# Thornswood's Publish-Update.ps1 put it before it asked for this), holds it to the
+# sha256 the manifest lists, and runs the launcher's own signature check on
+# it: Authenticode Valid, the signer naming the expected signer, a
+# timestamp, and Thornswood's launcher\app\Signature.cs, which the Ship sends
+# as signature_cs_gz, gzipped and base64 (so the whole dispatch stays inside
+# Windows' 32,767 character command line). Only when it passes does "sign" run. "launcher"
+# has no id-token and no environment: the C# it compiles comes from the
+# request, and a job that compiles a request's code never gets the Azure
+# token.
+#
+# WHO CAN RUN IT. workflow_dispatch only, so only people who can write to this
+# repository. A pull request never gets the environment, and so never the
+# Azure token: the environment allows main alone. Never add a pull_request or
+# push trigger here, and never a self-hosted runner.
+
+# ON BOTH BRANCHES (Thornswood #5154). GitHub starts a workflow_dispatch
+# workflow only when its file is on the default branch, and since #5154 that
+# is thornswood/engine-changes, not main. Thornswood still starts this one on
+# main (Sign-OnGitHub.ps1 asks for --ref main, and the job runs only there),
+# so main's copy is the one that runs; this copy on thornswood/engine-changes
+# is what lets GitHub start it. Change both together.
+#
+name: Thornswood sign manifest
+run-name: sign ${{ inputs.request }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      request:
+        description: The Ship's own name for this request (letters, digits, . _ -); the artifact is release-cat-<request>
+        required: true
+      manifest:
+        description: release.json, base64
+        required: true
+      manifest_sha256:
+        description: sha256 of release.json
+        required: true
+      client_version:
+        description: Microsoft.ArtifactSigning.Client version Thornswood pins
+        required: true
+      client_sha256:
+        description: sha256 of that nupkg
+        required: true
+      endpoint:
+        description: Artifact Signing endpoint (records\signing\metadata.json)
+        required: true
+      account:
+        description: Artifact Signing account name
+        required: true
+      certificate_profile:
+        description: Certificate profile name
+        required: true
+      expected_signer:
+        description: What the signer's subject must contain (Updater.cs ExpectedSigner)
+        required: true
+      signature_cs_gz:
+        description: Thornswood's launcher\app\Signature.cs, the launcher's own signature check, gzipped and base64
+        required: true
+      launcher_url:
+        description: Where the site serves the launcher this release names (https://thornswood.net/feed[-dev]/assets/<sha256>)
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: thornswood-sign-${{ inputs.request }}
+  cancel-in-progress: false
+
+jobs:
+  launcher:
+    name: Check the launcher the release names
+    if: github.repository == 'EvilPatrick06/skymp' && github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    steps:
+      # Inputs reach the script through env, never pasted into script text.
+      - name: Fetch the launcher from the site and run the launcher's own check
+        shell: pwsh
+        env:
+          MANIFEST: ${{ inputs.manifest }}
+          MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
+          EXPECTED_SIGNER: ${{ inputs.expected_signer }}
+          SIGNATURE_CS_GZ: ${{ inputs.signature_cs_gz }}
+          LAUNCHER_URL: ${{ inputs.launcher_url }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Stop-Job([string]$m) { Write-Host "::error::$m"; exit 1 }
+          if ($env:MANIFEST_SHA256 -notmatch '^[0-9a-fA-F]{64}$') { Stop-Job 'manifest_sha256 is not a sha256' }
+          if (-not $env:EXPECTED_SIGNER) { Stop-Job 'expected_signer is empty' }
+          try { $bytes = [Convert]::FromBase64String($env:MANIFEST) } catch { Stop-Job 'the manifest is not base64' }
+          $sha = [Security.Cryptography.SHA256]::Create()
+          $got = -join ($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') })
+          if ($got -ne $env:MANIFEST_SHA256.ToLowerInvariant()) { Stop-Job "the manifest is $got, not the $($env:MANIFEST_SHA256) the Ship sent" }
+          try { $m = [Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json } catch { Stop-Job 'the manifest is not JSON' }
+          $l = @(@($m.assets) | Where-Object { [string]$_.what -match '^launcher( |$)' })
+          if ($l.Count -ne 1) { Stop-Job "the manifest lists $($l.Count) launchers, not one" }
+          $want = ([string]$l[0].sha256).ToLowerInvariant()
+          if ($want -notmatch '^[0-9a-f]{64}$') { Stop-Job 'the manifest lists the launcher with no sha256' }
+          # The feed's own launcherUrl: a dev feed may name main's launcher
+          # from main's store, so the folder is the feed's word, held here to
+          # the site and to the sha256 the manifest lists.
+          $url = [string]$env:LAUNCHER_URL
+          if ($url -notmatch '^https://thornswood\.net/feed(-dev)?/assets/([0-9a-f]{64})$' -or $Matches[2] -ne $want) { Stop-Job "launcher_url '$url' is not the site's address for the launcher the manifest lists ($want)" }
+
+          $work = Join-Path $env:RUNNER_TEMP 'launcher'
+          New-Item -ItemType Directory -Force -Path $work | Out-Null
+          $exe = Join-Path $work 'Thornswood.exe'
+          Invoke-WebRequest -Uri $url -OutFile $exe -UseBasicParsing -TimeoutSec 300
+          $have = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($have -ne $want) { Stop-Job "the launcher at $url is $have, not the $want the manifest lists" }
+
+          $sig = Get-AuthenticodeSignature -LiteralPath $exe
+          if ($sig.Status -ne 'Valid') { Stop-Job "$($l[0].what) reads $($sig.Status), not Valid" }
+          $who = [string]$sig.SignerCertificate.Subject
+          if ($who.IndexOf($env:EXPECTED_SIGNER, [StringComparison]::OrdinalIgnoreCase) -lt 0) { Stop-Job "$($l[0].what) is signed by '$who', which does not contain '$($env:EXPECTED_SIGNER)'" }
+          if (-not $sig.TimeStamperCertificate) { Stop-Job "$($l[0].what) has no timestamp" }
+
+          # Signature.cs as Thornswood's Assert-PublishSigned.ps1 compiles it:
+          # under a namespace named for its hash, then Signature.Refusal.
+          try {
+            $gz = New-Object IO.Compression.GZipStream((New-Object IO.MemoryStream(, [Convert]::FromBase64String($env:SIGNATURE_CS_GZ))), [IO.Compression.CompressionMode]::Decompress)
+            $src = (New-Object IO.StreamReader($gz, [Text.Encoding]::UTF8)).ReadToEnd()
+          } catch { Stop-Job 'signature_cs_gz is not gzipped base64' }
+          if ($src -notmatch '(?m)^namespace Thornswood\s*$' -or $src -notmatch 'public static string Refusal\(string path, string expectedSigner, out string said\)') { Stop-Job 'signature_cs_gz is not the launcher''s Signature.cs' }
+          $hash = -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($src)) | Select-Object -First 8 | ForEach-Object { $_.ToString('x2') })
+          $ns = 'ThornswoodSign' + $hash
+          Add-Type -TypeDefinition ([regex]::Replace($src, '(?m)^namespace Thornswood\s*$', ('namespace ' + $ns))) -Language CSharp
+          $said = ''
+          $why = (($ns + '.Signature') -as [type])::Refusal($exe, $env:EXPECTED_SIGNER, [ref]$said)
+          if ($why) { Stop-Job "$($l[0].what): the launcher's own check refuses it: $why" }
+          Write-Host ("{0}, sha256 {1}, from {2}: signed by {3}, timestamped, and the launcher's own check accepts it ({4})" -f $l[0].what, $want, $url, $who, $said)
+
+  sign:
+    name: Sign the release manifest's catalog
+    needs: launcher
+    if: github.repository == 'EvilPatrick06/skymp' && github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    environment: thornswood-signing
+    permissions:
+      contents: read
+      id-token: write
+    timeout-minutes: 15
+    steps:
+      # Inputs reach the scripts through env, never pasted into script text.
+      - name: Hold the manifest and the pins, then make the catalog
+        shell: pwsh
+        env:
+          REQUEST: ${{ inputs.request }}
+          MANIFEST: ${{ inputs.manifest }}
+          MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
+          CLIENT_VERSION: ${{ inputs.client_version }}
+          CLIENT_SHA256: ${{ inputs.client_sha256 }}
+          ENDPOINT: ${{ inputs.endpoint }}
+          ACCOUNT: ${{ inputs.account }}
+          CERT_PROFILE: ${{ inputs.certificate_profile }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Stop-Job([string]$m) { Write-Host "::error::$m"; exit 1 }
+          if ($env:REQUEST -notmatch '^[A-Za-z0-9._-]{1,100}$') { Stop-Job 'the request name is not letters, digits, dots, dashes and underscores' }
+          if ($env:MANIFEST_SHA256 -notmatch '^[0-9a-fA-F]{64}$') { Stop-Job 'manifest_sha256 is not a sha256' }
+          if ($env:CLIENT_SHA256 -notmatch '^[0-9a-fA-F]{64}$') { Stop-Job 'client_sha256 is not a sha256' }
+          if ($env:CLIENT_VERSION -notmatch '^\d+(\.\d+){1,3}$') { Stop-Job 'client_version is not a version' }
+          if ($env:ENDPOINT -notmatch '^https://[a-z0-9]+\.codesigning\.azure\.net/?$') { Stop-Job 'endpoint is not an Artifact Signing endpoint' }
+          foreach ($v in $env:ACCOUNT, $env:CERT_PROFILE) { if ($v -notmatch '^[A-Za-z0-9-]{3,100}$') { Stop-Job "'$v' is not an Artifact Signing name" } }
+          try { $bytes = [Convert]::FromBase64String($env:MANIFEST) } catch { Stop-Job 'the manifest is not base64' }
+          $sha = [Security.Cryptography.SHA256]::Create()
+          $got = -join ($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') })
+          if ($got -ne $env:MANIFEST_SHA256.ToLowerInvariant()) { Stop-Job "the manifest is $got, not the $($env:MANIFEST_SHA256) the Ship sent" }
+          try { $m = [Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json } catch { Stop-Job 'the manifest is not JSON' }
+          foreach ($k in 'schema', 'release', 'channel', 'assets') { if (-not $m.PSObject.Properties[$k]) { Stop-Job "the manifest has no $k" } }
+          if ($m.schema -ne 1) { Stop-Job "the manifest is schema $($m.schema), and this signs schema 1" }
+          foreach ($a in @($m.assets)) { if ([string]$a.sha256 -notmatch '^[0-9a-f]{64}$') { Stop-Job "the manifest lists $($a.what) with no sha256" } }
+          Write-Host ("release {0} on {1}, {2} asset(s), manifest sha256 {3}" -f $m.release, $m.channel, @($m.assets).Count, $got)
+
+          $work = Join-Path $env:RUNNER_TEMP 'sign'
+          $files = Join-Path $work 'files'
+          New-Item -ItemType Directory -Force -Path $files | Out-Null
+          [IO.File]::WriteAllBytes((Join-Path $files 'release.json'), $bytes)
+          $cat = Join-Path $work 'release.cat'
+          New-FileCatalog -Path $files -CatalogFilePath $cat -CatalogVersion 2.0 | Out-Null
+          if (-not (Test-Path -LiteralPath $cat)) { Stop-Job 'New-FileCatalog wrote no catalog' }
+
+          $id = 'Microsoft.ArtifactSigning.Client'
+          $url = "https://api.nuget.org/v3-flatcontainer/$($id.ToLowerInvariant())/$($env:CLIENT_VERSION)/$($id.ToLowerInvariant()).$($env:CLIENT_VERSION).nupkg"
+          $pkg = Join-Path $work 'client.nupkg'
+          Invoke-WebRequest -Uri $url -OutFile $pkg -UseBasicParsing -TimeoutSec 600
+          $have = (Get-FileHash -LiteralPath $pkg -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($have -ne $env:CLIENT_SHA256.ToLowerInvariant()) { Stop-Job "the signing client from nuget.org is $have, not the pinned $($env:CLIENT_SHA256). Nothing was unpacked." }
+          $client = Join-Path $work 'client'
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [IO.Compression.ZipFile]::ExtractToDirectory($pkg, $client)
+          $dlib = Join-Path $client 'bin\x64\Azure.CodeSigning.Dlib.dll'
+          if (-not (Test-Path -LiteralPath $dlib)) { Stop-Job 'the signing client has no bin\x64\Azure.CodeSigning.Dlib.dll' }
+          $meta = Join-Path $work 'metadata.json'
+          [IO.File]::WriteAllText($meta, ([ordered]@{ Endpoint = $env:ENDPOINT; CodeSigningAccountName = $env:ACCOUNT; CertificateProfileName = $env:CERT_PROFILE } | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
+
+      - name: Sign in to Azure with the release identity (OIDC, no secret)
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ vars.AZURE_SIGNING_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_SIGNING_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SIGNING_SUBSCRIPTION_ID }}
+
+      - name: Sign the catalog and read it back
+        shell: pwsh
+        env:
+          EXPECTED_SIGNER: ${{ inputs.expected_signer }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Stop-Job([string]$m) { Write-Host "::error::$m"; exit 1 }
+          $work = Join-Path $env:RUNNER_TEMP 'sign'
+          $cat = Join-Path $work 'release.cat'
+          # Newest first: older SDKs' signtool cannot drive the signing client
+          # (Thornswood's Sign-Artifact.ps1 looks the same way).
+          $signtool = $null
+          foreach ($r in "${env:ProgramFiles(x86)}\Windows Kits\10\bin", "$env:ProgramFiles\Windows Kits\10\bin") {
+            if (-not (Test-Path -LiteralPath $r)) { continue }
+            $found = Get-ChildItem -LiteralPath $r -Recurse -Filter 'signtool.exe' -EA SilentlyContinue |
+                     Where-Object { $_.FullName -match '\\x64\\' } | Sort-Object FullName -Descending | Select-Object -First 1
+            if ($found) { $signtool = $found.FullName; break }
+          }
+          if (-not $signtool) { Stop-Job 'signtool.exe was not found on the runner' }
+          Write-Host "signtool: $signtool"
+          $ErrorActionPreference = 'Continue'
+          & $signtool sign /v /debug /fd SHA256 /tr 'http://timestamp.acs.microsoft.com' /td SHA256 `
+            /dlib (Join-Path $work 'client\bin\x64\Azure.CodeSigning.Dlib.dll') /dmdf (Join-Path $work 'metadata.json') $cat 2>&1 | ForEach-Object { Write-Host "  $_" }
+          if ($LASTEXITCODE -ne 0) { Stop-Job "signtool exited $LASTEXITCODE" }
+          $ErrorActionPreference = 'Stop'
+          $sig = Get-AuthenticodeSignature -LiteralPath $cat
+          if ($sig.Status -ne 'Valid') { Stop-Job "the signed catalog reads back $($sig.Status)" }
+          $who = [string]$sig.SignerCertificate.Subject
+          if ($who.IndexOf($env:EXPECTED_SIGNER, [StringComparison]::OrdinalIgnoreCase) -lt 0) { Stop-Job "the catalog is signed by '$who', which does not contain '$($env:EXPECTED_SIGNER)'" }
+          if (-not $sig.TimeStamperCertificate) { Stop-Job 'the signature has no timestamp' }
+          $st = [string](Test-FileCatalog -Path (Join-Path $work 'files') -CatalogFilePath $cat)
+          if ($st -ne 'Valid') { Stop-Job "the signed catalog does not hold the manifest (Test-FileCatalog said $st)" }
+          $catSha = (Get-FileHash -LiteralPath $cat -Algorithm SHA256).Hash.ToLowerInvariant()
+          Write-Host "signed by $who, timestamped; release.cat sha256 $catSha"
+
+      - name: Keep the signed catalog for the Ship
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-cat-${{ inputs.request }}
+          path: ${{ runner.temp }}/sign/release.cat
+          if-no-files-found: error
+          retention-days: 1

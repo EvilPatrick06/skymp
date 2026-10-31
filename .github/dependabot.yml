@@ -7,3 +7,81 @@ updates:
     open-pull-requests-limit: 0
     ignore:
       - dependency-name: "*"
+
+  # Thornswood's entries (Thornswood #2759, #3683). Everything above is
+  # upstream's and is left as it is.
+  #
+  # Dependabot reads this file only from the default branch. That was main,
+  # which is not what Thornswood builds; since Thornswood #5154 (Patrick's A
+  # of 31 Oct 2026) the default is thornswood/engine-changes, the branch its
+  # server, client and UI come from, so this file is on that branch too. Each
+  # entry below still names that branch as its target-branch, so the entries
+  # read the same lockfiles whichever branch is the default.
+  #
+  # The three directories are the ones whose lockfiles ship: skymp5-server is
+  # bundled by esbuild into dist_back/skymp5-server.js on the game server,
+  # skymp5-client into the client script every install gets, and skymp5-front
+  # into the in-game UI. The tools under skyrim-platform/tools and
+  # misc/prettier are build helpers that ship nothing.
+  #
+  # Security alerts read the default branch only, so until #5154 they never
+  # saw these lockfiles; with thornswood/engine-changes the default they do.
+  # Version updates are the watch: a fixed release of a
+  # package with an advisory is a newer version, and this opens a pull request
+  # for it. Every bump for a directory, major ones included, comes in one
+  # grouped pull request a month (Patrick, 26 Oct 2026, q-3691-sec-updates B).
+  # Security updates stay off.
+  # A merged bump reaches Thornswood only through its usual one-engine pull
+  # request (Thornswood engine/README.md, "One engine").
+  - package-ecosystem: "npm"
+    directory: "/skymp5-server"
+    target-branch: "thornswood/engine-changes"
+    schedule:
+      interval: "monthly"
+    groups:
+      all:
+        patterns: ["*"]
+    commit-message:
+      prefix: "skymp5-server"
+
+  - package-ecosystem: "npm"
+    directory: "/skymp5-client"
+    target-branch: "thornswood/engine-changes"
+    schedule:
+      interval: "monthly"
+    groups:
+      all:
+        patterns: ["*"]
+    commit-message:
+      prefix: "skymp5-client"
+
+  - package-ecosystem: "npm"
+    directory: "/skymp5-front"
+    target-branch: "thornswood/engine-changes"
+    schedule:
+      interval: "monthly"
+    groups:
+      all:
+        patterns: ["*"]
+    commit-message:
+      prefix: "skymp5-front"
+
+  # The actions thornswood/engine-changes runs (Thornswood #2761). Every one is
+  # pinned by commit with its tag in a comment, and
+  # misc/thornswood/Test-ActionPins.ps1 on that branch fails the build on one
+  # that is not. This moves the pins: it looks the newer tag up and rewrites
+  # both the commit and the comment, every action in one grouped pull request
+  # a month, as the lockfiles above. "/" is .github/workflows; a composite
+  # action is read only where it is named.
+  - package-ecosystem: "github-actions"
+    directories:
+      - "/"
+      - "/.github/actions/pr_base"
+    target-branch: "thornswood/engine-changes"
+    schedule:
+      interval: "monthly"
+    groups:
+      all:
+        patterns: ["*"]
+    commit-message:
+      prefix: "actions"
