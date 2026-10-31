@@ -502,6 +502,10 @@ private:
                          const Inventory& remove, std::string& reason)
   {
     for (const auto& spent : remove.entries) {
+      if (spent.npcEquipment.value_or(false)) {
+        reason = "inherited NPC equipment is not merchant stock";
+        return false;
+      }
       if (spent.baseId == 0 || spent.count == 0) {
         reason = "invalid transfer entry";
         return false;

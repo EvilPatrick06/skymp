@@ -1854,6 +1854,9 @@ void MpActor::LoadFactions()
 
 std::map<uint32_t, uint32_t> MpActor::EvaluateDeathItem()
 {
+  // Thornswood assigns body piles and Hunter yields. Never roll the plugin's
+  // death list, including when deciding whether a respawn resets inventory.
+  if (!IsCreatedAsPlayer() && GetProfileId() < 0) return {};
   auto worldState = GetParent();
   if (!worldState) {
     return {};
@@ -2348,6 +2351,8 @@ BaseActorValues MpActor::GetMaximumValues()
 
 void MpActor::DropItem(const uint32_t baseId, const Inventory::Entry& entry)
 {
+  if (!IsCreatedAsPlayer() && entry.npcEquipment.value_or(false))
+    throw std::runtime_error("Inherited NPC equipment cannot be dropped");
   constexpr float kDeletionTimeSeconds = 2 * 60;
   constexpr size_t kDroppedItemsQueueMax = 10;
 
