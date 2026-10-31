@@ -6,6 +6,7 @@ import { RespawnNeededError } from "../lib/errors";
 import { FormModel } from "./model";
 import { applyMovement } from "../sync/movementApply";
 import { SpawnProcess } from "./spawnProcess";
+import { traceRespawnNeeded, traceSpawnChosen } from "./spawnTrace";
 import { ObjectReferenceEx } from "../extensions/objectReferenceEx";
 import { PlayerCharacterDataHolder } from "./playerCharacterDataHolder";
 import { getMovement } from "../sync/movementGet";
@@ -152,12 +153,17 @@ export class FormView {
       let refr = ObjectReference.from(Game.getFormEx(this.refrId));
 
       let respawnRequired = false;
+      // Why, for the spawn log only (Thornswood #1287).
+      let respawnReason = "";
       if (!refr) {
         respawnRequired = true;
+        respawnReason = "no-reference";
       } else if (!refr.getBaseObject()) {
         respawnRequired = true;
+        respawnReason = "no-base";
       } else if ((refr.getBaseObject() as Form).getFormID() !== base.getFormID()) {
         respawnRequired = true;
+        respawnReason = "base-changed";
       }
 
       if (respawnRequired) {
@@ -204,7 +210,21 @@ export class FormView {
           && storage["formViewFunc2Set"] === true;
         const spawnMethod = spawnUsingStubMethod ? spawnMethodStub : spawnMethodOriginal;
 
-        if (model.movement) {
+        // THORNSWOOD PATCH (Thornswood #2483). A kept NPC is the reference a
+        // plugin already placed: the server sends its id with 0x100000000
+        // added, so refrId - 0x100000000 is that placed reference. Spawning a
+        // second one left the plugin's copy standing at its authored spot until
+        // the world cleaner picked it at random, so for a moment every kept
+        // trader or animal stood twice. Take the placed one when it is there
+        // and usable; spawn only when it is not (unloaded, already cleaned, or
+        // a different base, e.g. leveled).
+        const adopted = FormView.findKeptPlacedRef(model.refrId, base);
+        let adoptedNow = false;
+        if (adopted) {
+          refr = adopted;
+          this.adoptedRefrId = adopted.getFormID();
+          adoptedNow = true;
+        } else if (model.movement) {
           refr = spawnMethod.spawn(base, model.movement.pos, model.movement.rot);
         } else {
           printConsole("model.movement was " + model.movement);
@@ -274,7 +294,19 @@ export class FormView {
         }
 
         if (refr) {
-          spawnMethod.triggerSpawnProcess(refr, spawnPos, model.appearance || null, () => {
+          // THORNSWOOD (Thornswood #1287). One "chosen" line in
+          // thornswood-spawn.log before the spawn runs. Reads only.
+          traceSpawnChosen({
+            remote: model.refrId || 0,
+            local: refr.getFormID(),
+            base: base.getFormID(),
+            method: adoptedNow ? "adopted" : (spawnUsingStubMethod ? "stub" : "placeAtMe"),
+            reason: respawnReason,
+            target: spawnPos,
+            hostedByOther: !!model.isHostedByOther,
+            isDead: !!model.isDead,
+          });
+          (adoptedNow ? spawnMethodOriginal : spawnMethod).triggerSpawnProcess(refr, spawnPos, model.appearance || null, () => {
             this.ready = true;
             this.spawnMoment = Date.now();
           });
@@ -335,8 +367,49 @@ export class FormView {
       });
     }
 
+    // THORNSWOOD PATCH (Thornswood #2483). An adopted placed reference is
+    // not ours to delete. Give back its cleaner protection now, and switch
+    // it off next frame unless this view has taken it again by then, so the
+    // plugin's copy never stands uncontrolled after the server lets it go.
+    const adoptedId = this.adoptedRefrId;
+    if (adoptedId) {
+      this.adoptedRefrId = 0;
+      SpApiInteractor.getControllerInstance().lookupListener(WorldCleanerService).modWcProtection(adoptedId, -1);
+      once("update", () => {
+        if (this.adoptedRefrId === adoptedId) {
+          return;
+        }
+        const ac = Actor.from(Game.getFormEx(adoptedId));
+        if (ac) {
+          TESModPlatform.setWeaponDrawnMode(ac, -1);
+          ac.disableNoWait(false);
+        }
+      });
+    }
+
     this.localImmortal = false;
     this.removeNickname();
+  }
+
+  // THORNSWOOD PATCH (Thornswood #2483). The placed reference a kept NPC
+  // stands for, when it can be used as the view's reference.
+  static findKeptPlacedRef(remoteRefrId: number | undefined, base: Form): Actor | null {
+    if (!remoteRefrId || remoteRefrId < 0x100000000) {
+      return null;
+    }
+    const placedId = remoteRefrId - 0x100000000;
+    if (placedId <= 0 || placedId >= 0xff000000 || placedId === 0x14) {
+      return null;
+    }
+    const ac = Actor.from(Game.getFormEx(placedId));
+    if (!ac || ac.getFormID() !== placedId || ac.isDeleted() || ac.isDisabled()) {
+      return null;
+    }
+    const placedBase = ac.getBaseObject();
+    if (!placedBase || placedBase.getFormID() !== base.getFormID()) {
+      return null;
+    }
+    return ac;
   }
 
   private lastHarvestedApply = 0;
@@ -438,6 +511,7 @@ export class FormView {
             applyMovement(refr, model.movement, !!model.isMyClone);
           } catch (e) {
             if (e instanceof RespawnNeededError) {
+              traceRespawnNeeded("cell", model.refrId, this.refrId);
               this.lastWorldOrCell = model.movement.worldOrCell;
               this.destroy();
               this.refrId = 0;
@@ -677,6 +751,7 @@ export class FormView {
   }
 
   private refrId = 0;
+  private adoptedRefrId = 0;
   private ready = false;
   private animState = this.getDefaultAnimState();
   private movState = {

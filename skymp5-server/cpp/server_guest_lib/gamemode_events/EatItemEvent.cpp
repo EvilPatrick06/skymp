@@ -15,6 +15,15 @@ EatItemEvent::EatItemEvent(MpActor* actor_, uint32_t baseId_,
 {
 }
 
+EatItemEvent::EatItemEvent(MpActor* actor_, uint32_t baseId_,
+                           std::vector<espm::Effects::Effect> madeEffects_)
+  : actor(actor_)
+  , baseId(baseId_)
+  , isAlchemyItem(true)
+  , madeEffects(std::move(madeEffects_))
+{
+}
+
 const char* EatItemEvent::GetName() const
 {
   return "onEatItem";
@@ -58,7 +67,9 @@ void EatItemEvent::OnFireSuccess(WorldState* worldState)
     return;
   }
   std::vector<espm::Effects::Effect> effects;
-  if (isAlchemyItem) {
+  if (madeEffects) {
+    effects = *madeEffects;
+  } else if (isAlchemyItem) {
     effects = espm::GetData<espm::ALCH>(baseId, worldState).effects;
   } else if (isIngredient) {
     // effects = espm::GetData<espm::INGR>(baseId, worldState).effects;
