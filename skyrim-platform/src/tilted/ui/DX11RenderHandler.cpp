@@ -55,6 +55,20 @@ void DX11RenderHandler::Render(
   }
   GetRenderTargetSize();
 
+  // Thornswood #3130: while the Loading Menu is open nothing of Skyrim's own
+  // loading screen reaches the screen; the frame is the page's dark under
+  // the page (LoadingScreen.h). The target cleared is the one the page is
+  // drawn to and sized from (GetRenderTargetSize), the frame being presented.
+  if (LoadingScreen::ShouldCover(Loading())) {
+    Microsoft::WRL::ComPtr<ID3D11RenderTargetView> pRenderTargetView;
+    m_pImmediateContext->OMGetRenderTargets(
+      1, pRenderTargetView.ReleaseAndGetAddressOf(), nullptr);
+    if (pRenderTargetView) {
+      m_pImmediateContext->ClearRenderTargetView(pRenderTargetView.Get(),
+                                                 LoadingScreen::kCover);
+    }
+  }
+
   m_pSpriteBatch->Begin(DirectX::SpriteSortMode_Deferred,
                         m_pStates->NonPremultiplied());
 

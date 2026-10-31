@@ -30,6 +30,34 @@ inline std::string Script(bool loading)
     "',{detail:{loading:" + v + "}}));}catch(e){}";
 }
 
+// Thornswood #3130, 31 Oct 2026: the game's own picture is cleared while the
+// Loading Menu is open, to the page's dark (#0b0907, the background of
+// game/ui/thornswood-loadscreen.js), before the page is drawn on it.
+//
+// Telling the page is not enough on its own. Script runs in the browser's
+// other process, which then lays the page out, paints it on its own threads
+// and hands the picture back (OnPaint), and only the Present after that
+// draws it. Until then the page's last picture is the one from before the
+// load, the see-through HUD, so for those first frames Skyrim's model and
+// hint showed through it. Patrick saw them flash at the loads on dev on
+// 31 Oct; that session's logs (dev 20261031-143003-dev, 3440x1440) have the
+// Loading Menu open at 15:00:12.110 in skyrim-platform.log and the page's
+// own "up at" clock at 15:00:12.313, so the page only began to change 203 ms
+// after the game's screen was up, and was then painted and drawn. Clearing
+// the frame at each Present while the menu is open means nothing of Skyrim's
+// loading screen is ever on the screen, however long the page takes: the
+// screen is the page's dark until the page's own picture, the loop and the
+// hint, is drawn over it.
+inline constexpr float kCover[4] = { 11.f / 255.f, 9.f / 255.f, 7.f / 255.f,
+                                     1.f };
+
+// The game's picture is cleared only while the game loads. Outside a load
+// the page is drawn over the game, never instead of it.
+inline bool ShouldCover(bool loading)
+{
+  return loading;
+}
+
 // The page is drawn when a plugin made it visible, and while the game loads
 // whatever a plugin said: a plugin cannot run during a load to show it.
 inline bool ShouldDraw(bool visible, bool loading)
