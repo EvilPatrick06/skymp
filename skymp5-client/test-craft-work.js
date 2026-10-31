@@ -28,7 +28,11 @@
 //      once;
 //   7. closing it with every craft made sends nothing;
 //   8. craftMade after the menu has closed changes nothing here, since the
-//      server's own inventory is applied then.
+//      server's own inventory is applied then;
+//   9. a brew sends what is in the bottle the game made (Thornswood #1649);
+//  10. craftMade for a brew builds the bottle under the server's made id
+//      (ensureMadePotion) with the contents it names, before it goes in;
+//  11. a brewed bottle that cannot be built is not put in.
 //
 // Against the code before the change (CRAFT=<that copy>), 2, 4, 6 and 7 fail:
 // the item stays in the pack, and nothing is put back or told to the server.
@@ -119,8 +123,21 @@ const controller = {
   },
 };
 
+// Thornswood #1649. sync/inventory's reading and building of brewed bottles:
+// a runtime bottle reads as BREW_CONTENTS, and a made id can be built unless
+// it is UNBUILDABLE.
+const BOTTLE = 0xff000801, MADE_ID = 0xff812345, UNBUILDABLE = 0xff8abcde;
+const BREW_CONTENTS = { name: 'Potion of Healing', poison: false,
+  effects: [{ effectId: 0x3eb15, magnitude: 15, area: 0, duration: 0 }] };
+const built = [];
+const inventoryStub = {
+  readMadePotion: function (f) { return f && f.getFormID() === BOTTLE ? BREW_CONTENTS : undefined; },
+  ensureMadePotion: function (id, made) { built.push([id, made]); return id !== UNBUILDABLE; },
+};
+
 class ClientListener { }
 const M = load(CRAFT, {
+  '../../sync/inventory': inventoryStub,
   './clientListener': { ClientListener: ClientListener },
   '../../view/worldViewMisc': { localIdToRemoteId: function (id) { return id; } },
   '../../messages': { MsgType: { CustomPacket: 1, CraftItem: 13 } },
@@ -184,6 +201,26 @@ yes('7. closing it with every craft made sends nothing', leaves().length === 1);
 const before = calls.length;
 serverSays({ customPacketType: 'craftMade', baseId: DAGGER, count: 1 });
 yes('8. craftMade after the menu has closed changes nothing here', calls.length === before);
+
+const ALCHEMY_INPUTS = [[0x4da25, 1], [0x4da24, 1]];
+openMenu();
+craft(ALCHEMY_INPUTS, BOTTLE, 1);
+const brew = sent(13)[sent(13).length - 1];
+yes('9. a brew sends what is in the bottle the game made',
+    brew.data.resultObjectId === BOTTLE && JSON.stringify(brew.data.resultPotion) === JSON.stringify(BREW_CONTENTS));
+
+const callsBeforeBrew = calls.length;
+serverSays({ customPacketType: 'craftMade', baseId: MADE_ID, count: 1, made: BREW_CONTENTS });
+const putBrew = calls.slice(callsBeforeBrew);
+yes('10. craftMade for a brew builds the bottle under the made id, then puts it in',
+    built.length === 1 && built[0][0] === MADE_ID && JSON.stringify(built[0][1]) === JSON.stringify(BREW_CONTENTS) &&
+    putBrew.length === 1 && putBrew[0][0] === 'addItem' && putBrew[0][1] === MADE_ID && sent(13).length === 5);
+
+craft(ALCHEMY_INPUTS, BOTTLE, 1);
+const callsBeforeBad = calls.length;
+serverSays({ customPacketType: 'craftMade', baseId: UNBUILDABLE, count: 1, made: BREW_CONTENTS });
+yes('11. a brewed bottle that cannot be built is not put in', calls.length === callsBeforeBad && built.length === 2);
+closeMenu();
 
 console.log('');
 console.log(pass + ' passed, ' + fail + ' failed');

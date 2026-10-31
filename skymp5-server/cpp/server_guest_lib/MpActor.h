@@ -130,6 +130,11 @@ public:
 
   [[nodiscard]] bool OnEquip(uint32_t baseId);
 
+  // Thornswood #1649. OnEquip of a base id no plugin has: a brewed bottle
+  // the pack holds by its contents (Inventory::Made). Drinks it, or for a
+  // poison only spends it, and takes one out of the pack.
+  [[nodiscard]] bool OnEquipMade(uint32_t baseId);
+
   // TODO: consider removing the entire DestroyEventSink feature because it's
   // only used in unit tests
   class DestroyEventSink

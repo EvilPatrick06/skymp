@@ -9,6 +9,7 @@
 #include <nlohmann/json.hpp>
 #include "CustomPacketMessage.h"
 #include "SetInventoryMessage.h"
+#include "archives/JsonOutputArchive.h"
 #include "gamemode_events/CraftEvent.h"
 #include "gamemode_events/CraftWorkEvent.h"
 #include "gamemode_events/GameModeEvent.h"
@@ -822,7 +823,24 @@ public:
   nlohmann::json effects;
 };
 
-CraftItemMessage Brew(std::vector<uint32_t> ingredients)
+// THORNSWOOD PATCH (Thornswood #1649). What the client reads off a bottle
+// the game brewed: these effects, in this order, at believable strengths.
+Inventory::Made Bottle(std::vector<uint32_t> mgefs, bool poison = false)
+{
+  Inventory::Made made;
+  made.name = poison ? "Weak Poison" : "Potion of Restore Health";
+  made.poison = poison;
+  for (auto id : mgefs) {
+    made.effects.push_back({ id, 12.5f, 0, 30 });
+  }
+  return made;
+}
+
+// A brew as the client sends it. Since Thornswood #1649 a brew carries what
+// is in the bottle (resultPotion); `bottle` is the effects it names, and with
+// none the message has no description, the way a client before #1649 sent it.
+CraftItemMessage Brew(std::vector<uint32_t> ingredients,
+                      std::vector<uint32_t> bottle = {})
 {
   CraftItemMessage msg;
   for (auto id : ingredients) {
@@ -830,6 +848,9 @@ CraftItemMessage Brew(std::vector<uint32_t> ingredients)
   }
   msg.data.workbench = kForge;
   msg.data.resultObjectId = kBrewedBottle;
+  if (!bottle.empty()) {
+    msg.data.resultPotion = Bottle(bottle);
+  }
   return msg;
 }
 }
@@ -898,7 +919,8 @@ TEST_CASE("onCraft's sixth argument names a brew's effects, and a brew off "
 
     gate->armed = true;
     p.GetActionListener().OnCraftItem(
-      msgData, Brew({ kBlueMountainFlower, kWheat }));
+      msgData,
+      Brew({ kBlueMountainFlower, kWheat }, { kRestoreHealth, kFortifyHealth }));
     gate->armed = false;
 
     REQUIRE(gate->asked == 1);
@@ -923,8 +945,8 @@ TEST_CASE("onCraft's sixth argument names a brew's effects, and a brew off "
     const Inventory before = ac.GetInventory();
 
     gate->armed = true;
-    p.GetActionListener().OnCraftItem(msgData,
-                                      Brew({ kLavender, kTundraCotton }));
+    p.GetActionListener().OnCraftItem(
+      msgData, Brew({ kLavender, kTundraCotton }, { kResistMagic }));
     gate->armed = false;
 
     REQUIRE(gate->asked == 1);
@@ -1287,6 +1309,77 @@ TEST_CASE("A craft's output name cannot be empty, and null names none "
   REQUIRE(!craft.GetOutputName().has_value());
 }
 
+TEST_CASE("A named output keeps a brew's contents only while it is the brew "
+          "(Thornswood #1649, #2906)",
+          "[Craft][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto gamemode = std::make_shared<NameCraftOutput>(p.worldState);
+  p.AddListener(gamemode);
+  RawMessageData msgData;
+  msgData.userId = 0;
+
+  Inventory::Made bottle = Bottle({ kRestoreHealth, kFortifyHealth });
+  Inventory::Round(bottle);
+  const uint32_t madeId = Inventory::MadeBaseId(bottle);
+  const auto madeCount = [&](MpActor& ac) {
+    uint32_t sum = 0;
+    for (auto& entry : ac.GetInventory().entries) {
+      if (entry.baseId == madeId && entry.made == bottle) {
+        sum += entry.count;
+      }
+    }
+    return sum;
+  };
+
+  {
+    // A master's double batch: the same bottle twice, contents and all.
+    auto& ac = MakeCrafter(p, kForge);
+    ac.AddItem(kBlueMountainFlower, 1);
+    ac.AddItem(kWheat, 1);
+    gamemode->baseId = madeId;
+    gamemode->count = 2;
+    gamemode->armed = true;
+    p.GetActionListener().OnCraftItem(
+      msgData,
+      Brew({ kBlueMountainFlower, kWheat }, { kRestoreHealth, kFortifyHealth }));
+    gamemode->armed = false;
+
+    REQUIRE(gamemode->seenBaseId == madeId);
+    CHECK(madeCount(ac) == 2);
+    CHECK(ac.GetInventory().GetItemCount(kBlueMountainFlower) == 0);
+
+    p.DestroyActor(0xff000000);
+    DoDisconnect(p, 0);
+  }
+
+  {
+    // Another record named in its place: that record, with nothing of the
+    // brew on it.
+    auto& ac = MakeCrafter(p, kForge);
+    ac.AddItem(kBlueMountainFlower, 1);
+    ac.AddItem(kWheat, 1);
+    const uint32_t daggers = ac.GetInventory().GetItemCount(kIronDagger);
+    gamemode->baseId = kIronDagger;
+    gamemode->count = 1;
+    gamemode->armed = true;
+    p.GetActionListener().OnCraftItem(
+      msgData,
+      Brew({ kBlueMountainFlower, kWheat }, { kRestoreHealth, kFortifyHealth }));
+    gamemode->armed = false;
+
+    CHECK(madeCount(ac) == 0);
+    CHECK(ac.GetInventory().GetItemCount(madeId) == 0);
+    CHECK(ac.GetInventory().GetItemCount(kIronDagger) == daggers + 1);
+    for (auto& entry : ac.GetInventory().entries) {
+      CHECK(!entry.made);
+    }
+
+    p.DestroyActor(0xff000000);
+    DoDisconnect(p, 0);
+  }
+}
+
 namespace {
 // THORNSWOOD PATCH (Thornswood #3161). Stands in for a gamemode's onCraftWork
 // handler naming how long a craft takes, the way setting craftWork does (the
@@ -1416,10 +1509,10 @@ public:
     return p.GetActionListener().GetCraftService()->GetWorkCount(0xff000000);
   }
 
-  // The "craftMade" packets sent to the crafter, as { baseId, count }.
-  std::vector<std::pair<uint32_t, uint32_t>> Made()
+  // The "craftMade" packets sent to the crafter, whole.
+  std::vector<nlohmann::json> MadePackets()
   {
-    std::vector<std::pair<uint32_t, uint32_t>> res;
+    std::vector<nlohmann::json> res;
     for (auto& m : p.Messages()) {
       auto packet = dynamic_cast<CustomPacketMessage*>(m.message.get());
       if (!packet || m.userId != 0) {
@@ -1427,9 +1520,19 @@ public:
       }
       auto content = nlohmann::json::parse(packet->contentJsonDump);
       if (content.value("customPacketType", "") == "craftMade") {
-        res.push_back({ content.at("baseId").get<uint32_t>(),
-                        content.at("count").get<uint32_t>() });
+        res.push_back(std::move(content));
       }
+    }
+    return res;
+  }
+
+  // The same, as { baseId, count }.
+  std::vector<std::pair<uint32_t, uint32_t>> Made()
+  {
+    std::vector<std::pair<uint32_t, uint32_t>> res;
+    for (auto& content : MadePackets()) {
+      res.push_back({ content.at("baseId").get<uint32_t>(),
+                      content.at("count").get<uint32_t>() });
     }
     return res;
   }
@@ -2152,4 +2255,91 @@ TEST_CASE("A named stack in the bench's stock is drawn when nothing plain is "
 
   p.DestroyActor(0xff000000);
   DoDisconnect(p, 0);
+}
+
+TEST_CASE("A brew with a work time is kept by its contents when its time is "
+          "up, and craftMade names them (Thornswood #1649, #3161)",
+          "[Craft][espm]")
+{
+  WorkBench bench;
+  bench.Crafter().AddItem(kBlueMountainFlower, 1);
+  bench.Crafter().AddItem(kWheat, 1);
+  bench.p.Tick();
+  // The actor's record gives it a pack of its own, the stand-in bottle
+  // (a real potion record) among it, so counts are taken against this.
+  const Inventory before = bench.Crafter().GetInventory();
+
+  Inventory::Made bottle = Bottle({ kRestoreHealth, kFortifyHealth });
+  Inventory::Round(bottle);
+  const uint32_t madeId = Inventory::MadeBaseId(bottle);
+  RawMessageData msgData;
+  msgData.userId = 0;
+
+  bench.gamemode->time = std::chrono::milliseconds(5000);
+  bench.p.GetActionListener().OnCraftItem(
+    msgData,
+    Brew({ kBlueMountainFlower, kWheat }, { kRestoreHealth, kFortifyHealth }));
+
+  // onCraftWork is asked about the bottle by its contents, as onCraft is.
+  REQUIRE(bench.gamemode->asked == 1);
+  REQUIRE(bench.gamemode->askedResult == madeId);
+  REQUIRE(bench.gamemode->crafts == 0);
+  REQUIRE(bench.Working() == 1);
+
+  bench.Pass(std::chrono::milliseconds(5000));
+  REQUIRE(bench.gamemode->crafts == 1);
+  REQUIRE(bench.Working() == 0);
+  uint32_t kept = 0;
+  for (auto& entry : bench.Crafter().GetInventory().entries) {
+    if (entry.baseId == madeId && entry.made == bottle) {
+      kept += entry.count;
+    }
+  }
+  REQUIRE(kept == 1);
+  // The session's bottle id is never what the pack gets.
+  REQUIRE(bench.Crafter().GetInventory().GetItemCount(kBrewedBottle) ==
+          before.GetItemCount(kBrewedBottle));
+  REQUIRE(bench.Crafter().GetInventory().GetItemCount(kBlueMountainFlower) ==
+          before.GetItemCount(kBlueMountainFlower) - 1);
+  REQUIRE(bench.Crafter().GetInventory().GetItemCount(kWheat) ==
+          before.GetItemCount(kWheat) - 1);
+
+  // The client is told the contents, so it can build the bottle under the
+  // made id before it puts it back.
+  auto packets = bench.MadePackets();
+  REQUIRE(packets.size() == 1);
+  REQUIRE(packets[0].at("baseId").get<uint32_t>() == madeId);
+  REQUIRE(packets[0].at("count").get<uint32_t>() == 1);
+  JsonOutputArchive expected;
+  expected.Serialize("made", bottle);
+  REQUIRE(packets[0].at("made") == expected.j.at("made"));
+}
+
+TEST_CASE("A brew with a work time and no believable bottle is refused "
+          "before onCraftWork is asked, and a forged craft's craftMade names "
+          "no contents (Thornswood #1649, #3161)",
+          "[Craft][espm]")
+{
+  WorkBench bench;
+  bench.Crafter().AddItem(kBlueMountainFlower, 1);
+  bench.Crafter().AddItem(kWheat, 1);
+  bench.p.Tick();
+  const Inventory before = bench.Crafter().GetInventory();
+  RawMessageData msgData;
+  msgData.userId = 0;
+
+  bench.gamemode->time = std::chrono::milliseconds(5000);
+  bench.p.GetActionListener().OnCraftItem(
+    msgData, Brew({ kBlueMountainFlower, kWheat }));
+  REQUIRE(bench.gamemode->asked == 0);
+  REQUIRE(bench.Working() == 0);
+  REQUIRE(bench.Crafter().GetInventory() == before);
+
+  bench.gamemode->time = std::chrono::milliseconds(0);
+  bench.GiveWarhammerMakings();
+  bench.CraftWarhammer();
+  auto packets = bench.MadePackets();
+  REQUIRE(packets.size() == 1);
+  REQUIRE(packets[0].at("baseId").get<uint32_t>() == kSteelWarhammer);
+  REQUIRE(!packets[0].contains("made"));
 }

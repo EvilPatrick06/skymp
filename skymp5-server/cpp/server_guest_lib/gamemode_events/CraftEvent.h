@@ -26,7 +26,8 @@ public:
              const std::vector<Inventory::Entry>& entries_,
              uint32_t workbenchId_ = 0,
              std::optional<std::vector<uint32_t>> effects_ = std::nullopt,
-             std::vector<StockDraw> stockDraws_ = {});
+             std::vector<StockDraw> stockDraws_ = {},
+             std::optional<Inventory::Made> made_ = std::nullopt);
 
   const char* GetName() const override;
 
@@ -65,6 +66,11 @@ public:
   const std::optional<std::string>& GetOutputName() const;
   void SetOutputName(std::optional<std::string> name);
 
+  // Thornswood #1649. The contents the output goes in with: a brew's
+  // bottle (made) while the output is still that bottle, and nothing once
+  // a listener has named another record, which has contents of its own.
+  std::optional<Inventory::Made> GetOutputMade() const;
+
 private:
   void OnFireSuccess(WorldState* worldState) override;
 
@@ -92,6 +98,11 @@ private:
   // ids a craft with no recipe carries, when the server can work them out (a
   // brew, CraftService::BrewEffects), and null when it cannot.
   std::optional<std::vector<uint32_t>> effects;
+
+  // THORNSWOOD PATCH (Thornswood #1649). A brewed bottle's contents. When
+  // set, craftedItemBaseId is Inventory::MadeBaseId of it and the bottle
+  // goes in the pack as an entry carrying it.
+  std::optional<Inventory::Made> made;
 
   // OnFireSuccess-specific arguments
   const std::vector<Inventory::Entry>& entries;

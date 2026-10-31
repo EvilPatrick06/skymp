@@ -19,9 +19,10 @@ class CraftService
 public:
   explicit CraftService(PartOne& partOne_);
 
-  void OnCraftItem(const RawMessageData& rawMsgData,
-                   const Inventory& inputObjects, uint32_t workbenchId,
-                   uint32_t resultObjectId);
+  void OnCraftItem(
+    const RawMessageData& rawMsgData, const Inventory& inputObjects,
+    uint32_t workbenchId, uint32_t resultObjectId,
+    const std::optional<Inventory::Made>& resultPotion = std::nullopt);
 
   // THORNSWOOD PATCH (Thornswood #3161). The person left the bench: its
   // menu closed, which is getting up from it. Every craft still being worked
@@ -63,6 +64,27 @@ public:
   std::optional<std::vector<uint32_t>> BrewEffects(
     const espm::CombineBrowser& br, const Inventory& inputObjects);
 
+  // THORNSWOOD PATCH (Thornswood #1649). What the server keeps of a brewed
+  // bottle, or nullopt when the brew is not believable and is refused.
+  //
+  // `effects` is BrewEffects of the inputs, the server's own answer to which
+  // effects are in it. `claimed` is what the client read off the bottle the
+  // game made. The client's list has to name exactly those effects, each
+  // once (the game orders them by cost, so the order may differ and is kept
+  // as the client gives it: the first is the one the game names the bottle
+  // after). What only the game knows, how strong and how long each one came
+  // out after the person's skill and perks, is taken from the client, held
+  // to at most kMadeScaleLimit times the strongest ingredient's own value
+  // for that effect, which is far above anything the alchemy perks and
+  // fortify gear reach, and only stops a number nothing could have brewed.
+  // The result is rounded (Inventory::Round), so its id is stable.
+  // public for CraftTest.cpp
+  static constexpr float kMadeScaleLimit = 64.f;
+  std::optional<Inventory::Made> MadePotion(
+    const espm::CombineBrowser& br, const Inventory& inputObjects,
+    const std::vector<uint32_t>& effects,
+    const std::optional<Inventory::Made>& claimed);
+
 private:
   // THORNSWOOD PATCH (Thornswood #3161). What a craft is, worked out from
   // what the client says went in and came out: the entries it takes, what
@@ -75,14 +97,20 @@ private:
     uint32_t outputCount = 0;
     uint32_t recipeId = 0;
     std::optional<std::vector<uint32_t>> effects;
+    // Thornswood #1649. A brew's bottle by its contents (MadePotion), and
+    // then outputBaseId is Inventory::MadeBaseId of it.
+    std::optional<Inventory::Made> made;
   };
 
   // What a craft that went through gave, which the client is told so it can
-  // put back the item it hid when the person pressed craft.
+  // put back the item it hid when the person pressed craft. Thornswood #1649:
+  // a brewed bottle's contents go with it, since its base id is a made id the
+  // client has to build (ensureMadePotion) before it can add it.
   struct Made
   {
     uint32_t baseId = 0;
     uint32_t count = 0;
+    std::optional<Inventory::Made> contents;
   };
 
   // A craft that is being worked or waits its turn, oldest first.
@@ -93,6 +121,9 @@ private:
     Inventory inputObjects;
     uint32_t workbenchId = 0;
     uint32_t resultObjectId = 0;
+    // Thornswood #1649: what the client read off a brewed bottle, worked out
+    // again when the time is up, the same as the inputs.
+    std::optional<Inventory::Made> resultPotion;
     std::chrono::milliseconds time{ 0 };
     // What the craft will take, held back from every later order of the
     // same person so two orders cannot both count the same ingot.
@@ -100,9 +131,12 @@ private:
   };
 
   // nullopt when this is no craft the server would carry out: not a bench,
-  // or a recipe that is not usable here. Logs why.
-  std::optional<Craft> WorkOut(MpActor* me, const Inventory& inputObjects,
-                               uint32_t workbenchId, uint32_t resultObjectId);
+  // a recipe that is not usable here, or a brew without a believable
+  // description of its bottle (Thornswood #1649). Logs why.
+  std::optional<Craft> WorkOut(
+    MpActor* me, const Inventory& inputObjects, uint32_t workbenchId,
+    uint32_t resultObjectId,
+    const std::optional<Inventory::Made>& resultPotion);
 
   // THORNSWOOD PATCH. The craft itself, split out of OnCraftItem so that
   // every way it can fail ends in the same place. True when it went through,
@@ -110,6 +144,7 @@ private:
   // what it gave, when it went through.
   bool CraftItem(MpActor* me, const Inventory& inputObjects,
                  uint32_t workbenchId, uint32_t resultObjectId,
+                 const std::optional<Inventory::Made>& resultPotion,
                  Made* made = nullptr);
 
   // THORNSWOOD PATCH (Thornswood #3161). Asks onCraftWork how long the
@@ -117,7 +152,9 @@ private:
   // reason is logged. `takes` is set to what the craft will take.
   std::optional<std::chrono::milliseconds> AskWorkTime(
     MpActor* me, const Inventory& inputObjects, uint32_t workbenchId,
-    uint32_t resultObjectId, std::vector<Inventory::Entry>& takes);
+    uint32_t resultObjectId,
+    const std::optional<Inventory::Made>& resultPotion,
+    std::vector<Inventory::Entry>& takes);
 
   void StartNextOrder(uint32_t actorId);
   void FinishOrder(uint32_t actorId, uint64_t orderId);
