@@ -28,12 +28,13 @@
 # installer, the Linux builds, the formatting, Prettier and dependent issue
 # checks) carry `if: github.repository == 'skyrim-multiplayer/skymp'`, so they
 # keep working upstream and are skipped here. That guard is on this branch
-# only. A schedule, an issue event and a push to main run the copies on the
-# fork's main, which is upstream's as it was and has no guard: there
-# "PR Windows Flatrim (AE/SE)" and "PR Windows Skyrim VR" run every night and
-# on every push to main, and "Build & Push skymp-vcpkg-deps" fails on every
-# push to main for want of Docker Hub secrets (Thornswood #3594, #3404).
-# Nothing of Thornswood's reads those runs.
+# only. An issue event and a push to main run the copies on the fork's main,
+# which is upstream's as it was and has no guard: there a push to main runs
+# "PR Windows Flatrim (AE/SE)" and "PR Windows Skyrim VR", and "Build & Push
+# skymp-vcpkg-deps" fails for want of Docker Hub secrets (Thornswood #3594,
+# #3404). Nothing of Thornswood's reads those runs. A schedule runs only on
+# the default branch, which since Thornswood #5154 is this one, so upstream's
+# nightly builds now meet the guard and are skipped.
 #
 # Why GitHub's runner and not the VPS: this repository is public, so its
 # minutes on GitHub's standard runners cost nothing, and a self-hosted runner
@@ -121,12 +122,18 @@ on:
     branches: [ thornswood/engine-changes ]
   push:
     branches: [ thornswood/engine-changes ]
+  # A branch a workflow pushed with its own token, such as the upstream sync's
+  # upstream-sync/next (Thornswood #5154): that push, and a pull request that
+  # token opens, start no run, so the sync starts this. It builds as a pull
+  # request does, in build-pr, with a read-only token.
+  workflow_dispatch:
 
-# A pull request's newer push cancels its older build. A push to the branch
-# never cancels another: each commit of the engine keeps its own build.
+# A pull request's newer push cancels its older build, and a newer start by
+# hand on the same branch its older one. A push to the branch never cancels
+# another: each commit of the engine keeps its own build.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'push' && github.sha || 'pr' }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 env:
   BUILD_TYPE: Release
@@ -185,7 +192,7 @@ jobs:
   # repository would get a write token if the job asked for one. The fork's
   # default token is read only.
   build-pr:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     runs-on: windows-2022
     timeout-minutes: 135
     permissions:
