@@ -15,6 +15,15 @@ int main()
   assert(LoadingScreen::ShouldDraw(false, true));
   assert(LoadingScreen::ShouldDraw(true, true));
 
+  // The game's own picture is cleared only while the game loads, to the
+  // page's dark, opaque (#0b0907, thornswood-loadscreen.js).
+  assert(!LoadingScreen::ShouldCover(false));
+  assert(LoadingScreen::ShouldCover(true));
+  assert(LoadingScreen::kCover[0] == 11.f / 255.f);
+  assert(LoadingScreen::kCover[1] == 9.f / 255.f);
+  assert(LoadingScreen::kCover[2] == 7.f / 255.f);
+  assert(LoadingScreen::kCover[3] == 1.f);
+
   const std::string open = LoadingScreen::Script(true);
   const std::string closed = LoadingScreen::Script(false);
   assert(open != closed);
