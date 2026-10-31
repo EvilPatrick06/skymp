@@ -36,6 +36,29 @@ Backend GetBackend()
   return *g_backend;
 }
 
+/*
+  THORNSWOOD #3129. Whether the browser is shown and focused the moment it
+  exists, rather than when a plugin first asks for it.
+
+  The browser loads Data/Platform/UI/index.html when the game's renderer
+  starts, but plugins only run from the first tick after the game's data has
+  loaded (EventHandler, kDataLoaded), which on Thornswood's load order is
+  about fifteen seconds later. A page that needs no plugin to draw, like the
+  character choice at the main menu, sat drawn and hidden all that time while
+  the game's own menu picture was the only thing on screen. A plugin that
+  wants it hidden at the menu still says so on its first tick, as before.
+*/
+bool ShowAtStart()
+{
+  static std::optional<bool> g_showAtStart;
+  if (!g_showAtStart) {
+    auto settings = Settings::GetPlatformSettings();
+    g_showAtStart = settings->GetBool("Browser", "ShowAtStart", true);
+    logger::info("browser: ShowAtStart is {}", *g_showAtStart);
+  }
+  return *g_showAtStart;
+}
+
 bool IsVisible()
 {
   switch (GetBackend()) {

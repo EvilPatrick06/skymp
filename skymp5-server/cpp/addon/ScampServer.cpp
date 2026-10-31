@@ -34,6 +34,8 @@
 #include <cmath>
 #include <database_drivers/DatabaseFactory.h>
 #include <database_drivers/PrivateEconomyLedger.h>
+// After PrivateEconomyLedger.h, which brings in Windows.h on Windows already.
+#include "WholeFileWrite.h"
 #include <limits>
 #include <memory>
 #include <napi.h>
@@ -94,6 +96,7 @@ Napi::Object ScampServer::Init(Napi::Env env, Napi::Object exports)
       InstanceMethod("completeSavesForShutdown", &ScampServer::CompleteSavesForShutdown),
       InstanceMethod("validateInventoryTransaction", &ScampServer::ValidateInventoryTransaction),
       InstanceMethod("writePrivateEconomyLedger", &ScampServer::WritePrivateEconomyLedger),
+      InstanceMethod("writeFileWhole", &ScampServer::WriteFileWhole),
       InstanceMethod("tick", &ScampServer::Tick),
       InstanceMethod("on", &ScampServer::On),
       InstanceMethod("createActor", &ScampServer::CreateActor),
@@ -308,6 +311,14 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
       partOne->worldState.npcAllowEssential = v;
       spdlog::info("essential, protected and unique NPCs are {}",
                    v ? "allowed" : "skipped");
+    }
+
+    if (serverSettings.find("equipItemAttemptEnabled") !=
+        serverSettings.end()) {
+      bool v = serverSettings.at("equipItemAttemptEnabled").get<bool>();
+      partOne->worldState.equipItemAttemptEnabled = v;
+      spdlog::info("the gamemode's per-item equip check is {}",
+                   v ? "on" : "off");
     }
 
     if (serverSettings.find("equipmentSlotCheckEnabled") !=
@@ -547,6 +558,17 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
         (*it).get<std::set<std::string>>());
     }
 
+    if (auto it = serverSettings.find("forbiddenBaseContainer");
+        it != serverSettings.end() && it->is_array()) {
+      auto types = it->get<std::set<std::string>>();
+      partOne->worldState.SetForbiddenBaseContainerTypes(types);
+      for (auto& type : types) {
+        logger->info("'{}' references start with none of their record's "
+                     "contents",
+                     type);
+      }
+    }
+
     if (auto it = serverSettings.find("serverKey");
         it != serverSettings.end()) {
       auto serverKey = it.value();
@@ -609,6 +631,22 @@ Napi::Value ScampServer::WritePrivateEconomyLedger(const Napi::CallbackInfo& inf
     const auto servedDir = std::filesystem::u8path("data");
     ::WritePrivateEconomyLedger(privateDir, servedDir, name, bytes);
     return Napi::Boolean::New(info.Env(), true);
+  } catch (std::exception& e) {
+    throw Napi::Error::New(info.Env(), e.what());
+  }
+}
+
+// mp.writeFileWhole(path, text) (Thornswood #2740): text, as UTF-8, replaces
+// the file at path whole, for files other programs read while the server
+// runs. WholeFileWrite.h says how and why. Throws, and leaves the file as it
+// was, when it cannot.
+Napi::Value ScampServer::WriteFileWhole(const Napi::CallbackInfo& info)
+{
+  try {
+    const auto path = NapiHelper::ExtractString(info[0], "path");
+    const auto text = NapiHelper::ExtractString(info[1], "text");
+    WholeFileWrite::Write(std::filesystem::u8path(path), text);
+    return info.Env().Undefined();
   } catch (std::exception& e) {
     throw Napi::Error::New(info.Env(), e.what());
   }
@@ -811,7 +849,21 @@ Napi::Value ScampServer::CompareAndSetInventoryImpl(
       for (const auto* snapshot : { &expected, &replacement }) {
         for (const auto& entry : snapshot->entries) {
           const auto base = browser.LookupById(entry.baseId).rec;
-          if (!base || !espm::utils::IsItem(base->GetType())) {
+          // Thornswood #1649: a brewed bottle has no record; it is kept by
+          // its contents under the id those contents give, and each effect
+          // has to be a magic effect record.
+          const bool madeOk = entry.made && !entry.made->effects.empty() &&
+            entry.baseId == Inventory::MadeBaseId(*entry.made) &&
+            std::all_of(entry.made->effects.begin(),
+                        entry.made->effects.end(), [&](const auto& effect) {
+                          const auto mgef =
+                            browser.LookupById(effect.effectId).rec;
+                          return mgef && mgef->GetType() == "MGEF";
+                        });
+          if (entry.made && !madeOk) {
+            throw std::runtime_error("Invalid inventory transaction made item");
+          }
+          if (!madeOk && (!base || !espm::utils::IsItem(base->GetType()))) {
             throw std::runtime_error("Invalid inventory transaction base form");
           }
           for (const auto& field : { std::make_pair(entry.enchantmentId, "ENCH"),

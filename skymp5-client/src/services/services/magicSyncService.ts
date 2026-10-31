@@ -108,6 +108,11 @@ export class MagicSyncService extends ClientListener {
             // @ts-expect-error (TODO: Remove in 2.10.0)
             aimHeading: e.aimHeading,
             actorAnimationVariables: this.getAnimationVariablesFromActorConverted(e.caster.getFormID()),
+            // THORNSWOOD PATCH (Thornswood #2848): what this machine gave the
+            // cast's own effects (setCastDurationEvery). The server decides
+            // what everybody else's gives them. Not in the npm typings this
+            // client builds against, hence the cast.
+            durationMult: typeof (e as any).durationMult === 'number' ? (e as any).durationMult : 1,
         }
         return spellCastData;
     }

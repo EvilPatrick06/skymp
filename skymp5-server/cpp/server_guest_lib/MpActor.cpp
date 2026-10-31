@@ -17,6 +17,7 @@
 #include "WorldState.h"
 #include "gamemode_events/DeathEvent.h"
 #include "gamemode_events/DropItemEvent.h"
+#include "gamemode_events/DyingEvent.h"
 #include "gamemode_events/EatItemEvent.h"
 #include "gamemode_events/ReadBookEvent.h"
 #include "gamemode_events/RespawnEvent.h"
@@ -36,6 +37,7 @@
 #include <string>
 
 #include "ChangeValuesMessage.h"
+#include "SetInventoryMessage.h"
 #include "TeleportMessage.h"
 #include "UpdateEquipmentMessage.h"
 #include "UpdateMovementMessage.h"
@@ -80,6 +82,8 @@ struct MpActor::Impl
   uint32_t blockActiveCount = 0;
   std::vector<std::pair<uint32_t, MpObjectReference*>> droppedItemsQueue;
   std::optional<AnimationData> animationData;
+  // THORNSWOOD PATCH (Thornswood #3159). See MpActor::BenchStock.
+  std::optional<MpActor::BenchStock> benchStock;
   float serverMovementSpeed = 0;
   uint32_t serverCombatTarget = 0;
   std::chrono::steady_clock::time_point serverCombatUntil{};
@@ -107,6 +111,25 @@ uint64_t NextRuntimeIdentity() noexcept
   // Zero revokes identity permanently at exhaustion, including in the
   // noexcept disconnect path. Never wrap and reuse an earlier revision.
   return 0;
+}
+
+// THORNSWOOD (#1688). The SPIT type of a spell list entry. A leveled spell
+// list (LVSP) or a missing record is answered as a castable spell, so it is
+// never taken for one of the Player record's abilities.
+espm::SPEL::SpellType SpellTypeOf(WorldState* worldState,
+                                  uint32_t spellId)
+{
+  if (!worldState) {
+    return espm::SPEL::SpellType::Spell;
+  }
+  const auto lookupRes =
+    worldState->GetEspm().GetBrowser().LookupById(spellId);
+  const auto spel = espm::Convert<espm::SPEL>(lookupRes.rec);
+  if (!spel) {
+    return espm::SPEL::SpellType::Spell;
+  }
+  const auto data = spel->GetData(worldState->GetEspmCache());
+  return data.spellItem ? data.spellItem->type : espm::SPEL::SpellType::Spell;
 }
 
 void RestoreActorValuePatched(MpActor* actor, espm::ActorValue actorValue,
@@ -283,10 +306,10 @@ void MpActor::UpdateServerMovement(const NiPoint3& pos, const NiPoint3& angle,
     throw std::invalid_argument("Invalid NPC movement; use a bounded local route");
   }
   if (pos != GetPos()) {
-    SetPos(pos, SetPosMode::CalledByUpdateMovement);
+    SetPos(pos, SetPosMode::CalledByServerMovement);
   }
   if (angle != GetAngle()) {
-    SetAngle(angle, SetAngleMode::CalledByUpdateMovement);
+    SetAngle(angle, SetAngleMode::CalledByServerMovement);
   }
   pImpl->serverMovementSpeed = speed;
   SendServerStateToObservers(GetServerMovementMessage(), false);
@@ -497,6 +520,119 @@ void MpActor::SetLastAnimEvent(
 std::optional<AnimationData> MpActor::GetLastAnimEvent() const
 {
   return pImpl->animationData;
+}
+
+void MpActor::SetBenchStock(std::optional<BenchStock> stock)
+{
+  const bool wasOpen = pImpl->benchStock && pImpl->benchStock->open;
+  if (wasOpen) {
+    for (auto container : GetOpenBenchStock(pImpl->benchStock->workbenchId)) {
+      container->SetBenchStockReader(GetFormId(), false);
+    }
+  }
+  pImpl->benchStock = std::move(stock);
+  if (pImpl->benchStock) {
+    pImpl->benchStock->open = false;
+  }
+  if (wasOpen) {
+    SendInventoryUpdate();
+  }
+}
+
+const std::optional<MpActor::BenchStock>& MpActor::GetBenchStock() const
+{
+  return pImpl->benchStock;
+}
+
+bool MpActor::OpenBenchStock(uint32_t workbenchId)
+{
+  auto& stock = pImpl->benchStock;
+  if (!stock) {
+    return false;
+  }
+  if (stock->workbenchId != workbenchId) {
+    SetBenchStock(std::nullopt);
+    return false;
+  }
+  stock->open = true;
+  for (auto container : GetOpenBenchStock(workbenchId)) {
+    container->SetBenchStockReader(GetFormId(), true);
+  }
+  spdlog::info("MpActor::OpenBenchStock - actor {:#x} took bench {:#x}, "
+               "which may draw from {} container(s)",
+               GetFormId(), workbenchId, stock->containerIds.size());
+
+  /*
+    THE PACK WITH THE STOCK GOES FIRST. The inventory an actor is sent is
+    deferred to the end of the tick (SendInventoryUpdate), and the message
+    that opens the bench (SendOpenContainer) is not, so a deferred one would
+    reach the client after the crafting menu had opened, and the client
+    applies no inventory while that menu is open. So the pack with the stock
+    in it is sent now, before the caller opens the bench. The deferred one is
+    replaced as well, with the same pack, so nothing queued earlier in this
+    tick without the stock lands after it.
+  */
+  SendInventoryUpdate();
+  if (GetUserId() != Networking::InvalidUserId) {
+    SetInventoryMessage message;
+    message.inventory = GetInventoryWithBenchStock();
+    SendToUser(message, true);
+  }
+  return true;
+}
+
+void MpActor::CloseBenchStock(uint32_t workbenchId)
+{
+  if (pImpl->benchStock && pImpl->benchStock->workbenchId == workbenchId) {
+    SetBenchStock(std::nullopt);
+  }
+}
+
+std::vector<MpObjectReference*> MpActor::GetOpenBenchStock(
+  uint32_t workbenchId)
+{
+  std::vector<MpObjectReference*> res;
+  auto& stock = pImpl->benchStock;
+  auto worldState = GetParent();
+  if (!stock || !stock->open || stock->workbenchId != workbenchId ||
+      !worldState) {
+    return res;
+  }
+  for (uint32_t id : stock->containerIds) {
+    auto& form = worldState->LookupFormById(id);
+    auto refr = form ? form->AsObjectReference() : nullptr;
+    if (!refr || refr->IsDeleted() || refr->IsDisabled() || refr == this) {
+      continue;
+    }
+    res.push_back(refr);
+  }
+  return res;
+}
+
+Inventory MpActor::GetInventoryWithBenchStock()
+{
+  Inventory res = GetInventory();
+  if (!pImpl->benchStock || !pImpl->benchStock->open) {
+    return res;
+  }
+  for (auto container : GetOpenBenchStock(pImpl->benchStock->workbenchId)) {
+    for (const auto& entry : container->GetInventory().entries) {
+      // Thornswood #3163: a stack that differs from the plain item only in
+      // its name is one a craft can take (CraftService's PlanInputs), food
+      // carrying its days left in a chest above all, so it is shown too.
+      Inventory::Entry unnamed = entry;
+      unnamed.name.reset();
+      if (!entry.count ||
+          !unnamed.EqualExceptCount(Inventory::Entry(entry.baseId, 1))) {
+        continue;
+      }
+      std::vector<Inventory::Entry> one = { entry };
+      if (res.CanAddItems(one)) {
+        res.AddItems(one);
+      }
+    }
+  }
+  return res;
 }
 
 void MpActor::SetRaceMenuOpen(bool isOpen)
@@ -808,7 +944,7 @@ bool MpActor::OnEquip(uint32_t baseId)
   auto lookupRes = espm.GetBrowser().LookupById(baseId);
 
   if (!lookupRes.rec) {
-    return false;
+    return OnEquipMade(baseId);
   }
 
   const auto recordType = lookupRes.rec->GetType();
@@ -871,7 +1007,17 @@ bool MpActor::OnEquip(uint32_t baseId)
   }
 
   if (isIngredient || isPotion || spellLearned) {
-    RemoveItem(baseId, 1, nullptr);
+    /*
+      THORNSWOOD PATCH (Thornswood #3163). The client says what was eaten
+      by its base id alone, and food carries its days left on its name
+      ("Venison (6 days left)"), so the one eaten is taken from the plain
+      stack first and then from a stack that differs only in its name
+      (Inventory::ResolveRemoval). RemoveItem matched the plain entry
+      exactly, so eating a named one threw here after its effects had
+      landed and the server kept the food: a meal that cost nothing.
+    */
+    RemoveItems(GetInventory().ResolveRemoval({ Inventory::Entry(baseId, 1) }),
+                nullptr);
   }
 
   const VarValue args[] = {
@@ -880,6 +1026,53 @@ bool MpActor::OnEquip(uint32_t baseId)
 
   SendPapyrusEvent("OnObjectEquipped", args, std::size(args));
 
+  return true;
+}
+
+bool MpActor::OnEquipMade(uint32_t baseId)
+{
+  /*
+    THORNSWOOD PATCH (Thornswood #1649). Drinking a bottle somebody brewed.
+
+    Before, a brewed bottle was kept under the runtime id the brewing game
+    gave it, and OnEquip found no record for that id and stopped: the bottle
+    stayed in the server's pack however often it was drunk, onEatItem never
+    fired, and nothing it did reached the server. Now the pack holds it by
+    its contents, so the effects are right here.
+  */
+  const Inventory::Entry* held = nullptr;
+  for (const auto& entry : GetInventory().entries) {
+    if (entry.baseId == baseId && entry.made && entry.count > 0) {
+      held = &entry;
+      break;
+    }
+  }
+  if (!held) {
+    return false;
+  }
+
+  // One off the very stack it was drunk from, everything on it kept: a brew
+  // whose onCraft named its output (Thornswood #3026) carries that name too,
+  // and an entry of `made` alone would not match it.
+  Inventory::Entry one = *held;
+  one.count = 1;
+
+  if (!one.made->poison) {
+    std::vector<espm::Effects::Effect> effects;
+    for (const auto& e : one.made->effects) {
+      espm::Effects::Effect effect;
+      effect.effectId = e.effectId;
+      effect.magnitude = e.magnitude;
+      effect.areaOfEffect = e.area;
+      effect.duration = e.duration;
+      effects.push_back(effect);
+    }
+    EatItemEvent eatItemEvent(this, baseId, std::move(effects));
+    eatItemEvent.Fire(GetParent());
+  }
+
+  // A poison goes on the blade, not down the throat: it is only spent.
+  RemoveItems({ one });
   return true;
 }
 
@@ -1011,9 +1204,23 @@ void MpActor::SetPercentage(espm::ActorValue av, float percentage)
   if (IsDead() || pImpl->isRespawning) {
     return;
   }
+  // Thornswood #1626. The actor's own machine reported this zero, so a death
+  // the gamemode refuses is answered with the health it kept.
+  bool tellKeptHealth = false;
   if (av == espm::ActorValue::Health && percentage <= 0.f) {
-    Kill(nullptr);
-    return;
+    const auto keepAlive = GetParent()->LookupFormById(GetFormId());
+    const auto runtimeIdentity = GetRuntimeIdentity();
+    const auto kept = AskBeforeDeath(nullptr);
+    if (!HasRuntimeIdentity(runtimeIdentity) || IsDead() ||
+        pImpl->isRespawning) {
+      return;
+    }
+    if (!kept) {
+      Kill(nullptr);
+      return;
+    }
+    percentage = *kept;
+    tellKeptHealth = true;
   }
   EditChangeForm([&](MpChangeForm& changeForm) {
     switch (av) {
@@ -1034,6 +1241,13 @@ void MpActor::SetPercentage(espm::ActorValue av, float percentage)
   // Updating timestamp. Note: calling this multiple times for different AVs
   // is fine but might be slightly inefficient if batched.
   SetLastAttributesPercentagesUpdate(std::chrono::steady_clock::now());
+
+  if (tellKeptHealth) {
+    static const std::vector<espm::ActorValue> kHealthAvFilter = {
+      espm::ActorValue::Health
+    };
+    NetSendChangeValues(ChangeForm().actorValues, kHealthAvFilter);
+  }
 }
 
 void MpActor::SetPercentages(const ActorValues& actorValues,
@@ -1042,7 +1256,7 @@ void MpActor::SetPercentages(const ActorValues& actorValues,
   if (IsDead() || pImpl->isRespawning) {
     return;
   }
-  if (actorValues.healthPercentage == 0.f) {
+  if (actorValues.healthPercentage <= 0.f) {
     Kill(aggressor);
     return;
   }
@@ -1109,7 +1323,7 @@ void MpActor::NetSendChangeValues(
 }
 
 void MpActor::NetSetPercentages(
-  const ActorValues& actorValues, MpActor* aggressor,
+  const ActorValues& requestedActorValues, MpActor* aggressor,
   const std::optional<std::vector<espm::ActorValue>>& avFilter)
 {
   const auto keepAlive = GetParent()->LookupFormById(GetFormId());
@@ -1119,6 +1333,18 @@ void MpActor::NetSetPercentages(
     ? aggressor->GetParent()->LookupFormById(aggressor->GetFormId()) : nullptr;
   if (aggressor && keepAggressor.get() != aggressor) return;
   const auto aggressorRuntime = aggressor ? aggressor->GetRuntimeIdentity() : 0;
+  ActorValues actorValues = requestedActorValues;
+  // Thornswood #1626. A write that would kill asks the gamemode first, before
+  // the zero goes to any machine. A refusal sends the health it kept instead.
+  if (actorValues.healthPercentage <= 0.f && !IsDead() &&
+      !pImpl->isRespawning) {
+    const auto kept = AskBeforeDeath(aggressor);
+    if (!HasRuntimeIdentity(runtimeIdentity) ||
+        (aggressor && !aggressor->HasRuntimeIdentity(aggressorRuntime)))
+      return;
+    if (kept)
+      actorValues.healthPercentage = *kept;
+  }
   NetSendChangeValues(actorValues, avFilter);
   if (!HasRuntimeIdentity(runtimeIdentity) ||
       (aggressor && !aggressor->HasRuntimeIdentity(aggressorRuntime))) return;
@@ -1238,9 +1464,17 @@ bool MpActor::IsSpellLearnedFromBase(const uint32_t spellId) const
 
   for (auto npcSpellRaw : npcData.spells) {
     const auto npcSpell = npc.ToGlobalId(npcSpellRaw);
-    if (npcSpell == spellId) {
+    if (npcSpell != spellId) {
+      continue;
+    }
+    // THORNSWOOD (#1688). A person is created on the Player record, and the
+    // Player record's spell list is what a new game starts the player with:
+    // Flames and Healing, plus the PCHealRateCombat ability. A person holds
+    // the ability and none of the spells; those come from the server.
+    if (InheritsBaseSpell(GetBaseId(), SpellTypeOf(GetParent(), npcSpell))) {
       return true;
     }
+    break;
   }
 
   for (auto raceSpellRaw : raceData.spells) {
@@ -1251,6 +1485,16 @@ bool MpActor::IsSpellLearnedFromBase(const uint32_t spellId) const
   }
 
   return false;
+}
+
+bool MpActor::InheritsBaseSpell(uint32_t baseId,
+                                espm::SPEL::SpellType spellType)
+{
+  constexpr uint32_t kPlayerRecordId = 0x7;
+  if (baseId != kPlayerRecordId) {
+    return true;
+  }
+  return spellType == espm::SPEL::SpellType::Ability;
 }
 
 std::vector<uint32_t> MpActor::GetSpellList() const
@@ -1772,6 +2016,25 @@ void MpActor::Init(WorldState* worldState, uint32_t formId, bool hasChangeForm)
   }
 }
 
+std::optional<float> MpActor::AskBeforeDeath(MpActor* killer)
+{
+  DyingEvent dyingEvent(this, killer,
+                        ChangeForm().actorValues.healthPercentage);
+  if (dyingEvent.Fire(GetParent())) {
+    return std::nullopt;
+  }
+  const float kept = dyingEvent.GetKeptHealthPercentage();
+  if (!(kept > 0.f)) {
+    // Only when the health before the blow was already nothing and the
+    // listener wrote no other: there is no health to keep the actor at.
+    spdlog::warn("MpActor::AskBeforeDeath {:x} - onDying refused the death "
+                 "with no health to keep, so it goes ahead",
+                 GetFormId());
+    return std::nullopt;
+  }
+  return kept;
+}
+
 void MpActor::Kill(MpActor* killer, bool shouldTeleport)
 {
   spdlog::trace("MpActor::Kill {:x} - killer is {:x}", GetFormId(),
@@ -2252,41 +2515,17 @@ void MpActor::DropItem(const uint32_t baseId, const Inventory::Entry& entry)
   pImpl->droppedItemsQueue.push_back(
     std::make_pair(droppedItemFormId, placedObject));
 
-  auto time =
-    Viet::TimeUtils::To<std::chrono::milliseconds>(kDeletionTimeSeconds);
-
-  uint32_t formId = GetFormId();
-
-  // TODO: make timer group for better performance
-  worldState->SetTimer(time).Then([placedObject, worldState, droppedItemFormId,
-                                   editorId, this, formId](Viet::Void) {
-    bool actorStillAlive = this == worldState->LookupFormById(formId).get();
-    if (!actorStillAlive) {
-      return;
-    }
-    bool formStillAlive =
-      placedObject == worldState->LookupFormById(droppedItemFormId).get();
-    if (!formStillAlive) {
-      return;
-    }
-
-    if (placedObject->IsDeleted()) {
-      return;
-    }
-
-    spdlog::trace("MpActor::DropItem - deleting previously dropped {}",
-                  editorId);
-
-    // Item deleted, not in queue anymore
-    auto it = std::remove(this->pImpl->droppedItemsQueue.begin(),
-                          this->pImpl->droppedItemsQueue.end(),
-                          std::make_pair(droppedItemFormId, placedObject));
-    this->pImpl->droppedItemsQueue.erase(it,
-                                         this->pImpl->droppedItemsQueue.end());
-
-    placedObject->Delete();
-    ++g_numDrops;
-  });
+  // THORNSWOOD PATCH (Thornswood #3498). The deletion time is saved with the
+  // reference and its timer set again after a restart (MpObjectReference::
+  // SetDeleteDatetime), so a drop goes after kDeletionTimeSeconds even when
+  // the server restarts in between. The timer used to live here only, and a
+  // drop saved before a restart stayed in the world for good. A deleted drop
+  // leaves the queue above on this actor's next drop. Drops are counted here,
+  // as each one takes a form id.
+  ++g_numDrops;
+  placedObject->SetDeleteDatetime(
+    worldState->GetTimerNow() +
+    Viet::TimeUtils::To<std::chrono::milliseconds>(kDeletionTimeSeconds));
 }
 
 void MpActor::SetIsBlockActive(bool active)

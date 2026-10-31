@@ -116,6 +116,52 @@ TEST_CASE("An onEatItem listener scales a potion before it lands",
   REQUIRE(none == 0.1f);
 }
 
+TEST_CASE("Eating a potion off a stack that differs only in its name takes "
+          "it, plain stack first (Thornswood #3163)",
+          "[Restoration]")
+{
+  using namespace std::chrono_literals;
+  PartOne& p = GetPartOne();
+  DoConnect(p, 0);
+  p.CreateActor(0xff000000, { 0, 0, 0 }, 0, 0x3c);
+  p.SetUserActor(0, 0xff000000);
+
+  auto& ac = p.worldState.GetFormAt<MpActor>(0xff000000);
+  ac.SetLastAttributesPercentagesUpdate(std::chrono::steady_clock::now() -
+                                        10s);
+  Inventory::ExtraData extra;
+  extra.name = "Potion (3 days left)";
+  ac.AddItems({ Inventory::Entry(0x3EAE3, 2, extra) });
+  ac.SetPercentages({ 0.1f, 0.f, 0.f });
+
+  RawMessageData rawMsgData;
+  rawMsgData.userId = 0;
+  OnEquipMessage msg;
+  msg.baseId = 0x3EAE3;
+  p.GetActionListener().OnEquip(rawMsgData, msg);
+
+  // Until this the plain removal threw after the potion had landed, and the
+  // server kept both.
+  REQUIRE(ac.GetChangeForm().actorValues.healthPercentage == 1.0f);
+  REQUIRE(ac.GetInventory().GetItemCount(0x3EAE3) == 1);
+
+  ac.AddItem(0x3EAE3, 1);
+  p.GetActionListener().OnEquip(rawMsgData, msg);
+  // The actor's record gives it an outfit too, so only the potion's own
+  // entries are looked at.
+  std::vector<Inventory::Entry> potions;
+  for (auto& entry : ac.GetInventory().entries) {
+    if (entry.baseId == 0x3EAE3) {
+      potions.push_back(entry);
+    }
+  }
+  REQUIRE(potions.size() == 1);
+  REQUIRE(potions[0] == Inventory::Entry(0x3EAE3, 1, extra));
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
+
 namespace {
 // Thornswood #1383: counts onEatItem.
 class EatSeenListener : public FakeListener
