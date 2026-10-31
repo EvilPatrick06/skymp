@@ -20,11 +20,12 @@ void BrowserApiNirnLab::HandleSkseMessage(
 
 BrowserApiNirnLab::BrowserApiNirnLab()
 {
-  // Thornswood #3129: shown and focused from the start, see
-  // BrowserApi::ShowAtStart. ApiInit hands both to the browser it makes.
+  // Thornswood #3129: shown from the start, see BrowserApi::ShowAtStart.
+  // ApiInit hands it to the browser it makes. Not focused, as with Tilted
+  // (BrowserApiTilted::ShowAtStart): nothing on the page can act before a
+  // plugin runs, and the plugin that shows the choice focuses it.
   if (BrowserApi::ShowAtStart()) {
     wantedIsVisible = true;
-    wantedIsFocused = true;
   }
 
   NL::UI::SKSELoader::GetUIPlatformAPIWithVersionCheck(

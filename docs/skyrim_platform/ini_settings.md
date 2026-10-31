@@ -28,7 +28,7 @@ This section describes INI settings implemented in the current version of Skyrim
 
 - ```BackendName = auto``` - Browser backend to use.
     > ```off``` - disable browser; ```tilted``` - use Tilted UI (legacy); ```nirnlab``` - use NirnLab UI Platform; ```auto``` - automatic selection (currently falls back to tilted)
-- ```ShowAtStart = true``` - Show and focus the browser as soon as it exists, before any plugin runs (Thornswood #3129). Plugins only run from the first tick after the game's data has loaded, so with ```false``` a page that draws without a plugin stays hidden until a plugin calls ```browser.setVisible(true)```. A missing line counts as ```true```.
+- ```ShowAtStart = true``` - Show the browser as soon as it exists, before any plugin runs (Thornswood #3129). It is shown, not focused: focus hands the page the game's mouse, keyboard and cursor, which only works once the game's menus are followed (from the game's data loading) and only means something once a plugin can act on a click, so a plugin focuses it. Plugins only run from the first tick after the game's data has loaded, so with ```false``` a page that draws without a plugin stays hidden until a plugin calls ```browser.setVisible(true)```. A missing line counts as ```true```.
 
 ### Contributing new settings
 

@@ -37,8 +37,9 @@ Backend GetBackend()
 }
 
 /*
-  THORNSWOOD #3129. Whether the browser is shown and focused the moment it
-  exists, rather than when a plugin first asks for it.
+  THORNSWOOD #3129. Whether the browser is shown the moment it exists,
+  rather than when a plugin first asks for it. Shown, not focused: a plugin
+  focuses it (BrowserApiTilted::ShowAtStart says why).
 
   The browser loads Data/Platform/UI/index.html when the game's renderer
   starts, but plugins only run from the first tick after the game's data has
