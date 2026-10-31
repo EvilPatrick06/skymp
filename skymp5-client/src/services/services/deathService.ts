@@ -2,7 +2,7 @@ import { Actor } from "skyrimPlatform";
 import { ApplyDeathStateEvent } from "../events/applyDeathStateEvent";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { RespawnNeededError } from "../../lib/errors";
-import { AnimationEventName } from "../../sync/animation";
+import { AnimationEventName, StaggerEventName, takeStaggerFromNetwork } from "../../sync/animation";
 import { RagdollService } from "./ragdollService";
 
 export class DeathService extends ClientListener {
@@ -46,13 +46,19 @@ export class DeathService extends ClientListener {
     this.sp.hooks.sendAnimationEvent.add(
       {
         enter(ctx) {
+          // THORNSWOOD PATCH (Thornswood #489). A stagger the network sent
+          // for this actor plays; one this game raised on it is blanked.
+          // See staggersFromNetwork in sync/animation.ts.
+          if (takeStaggerFromNetwork(ctx.selfId)) {
+            return;
+          }
           ctx.animEventName = "";
         },
         leave() { },
       },
       0xff000000,
       0xffffffff,
-      "staggerStart"
+      StaggerEventName
     );
   }
 

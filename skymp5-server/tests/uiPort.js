@@ -17,7 +17,10 @@ function load(file,map){
   m._compile(out,file);return m.exports;
 }
 const metrics=load(path.join(root,'ts/systems/metricsSystem.ts'),{});
+const serveData=load(path.join(root,'ts/serveData.ts'),{});
 const servers=[];
+// Each started ui module, by its port, for what it says about itself.
+const uiAt=new Map();
 const calls=[];
 
 // One UI port as main() starts it. devServer true takes the path a server
@@ -28,15 +31,19 @@ async function start(devServer,allSettings={}){
   const mine=[];
   const ui=load(path.join(root,'ts/ui.ts'),{
     './systems/metricsSystem':metrics,
+    './serveData':serveData,
     axios:{__esModule:true,default:()=>devServer?Promise.resolve({}):Promise.reject(new Error('no dev server'))},
     http:{...http,createServer:(...a)=>{const s=http.createServer(...a);mine.push(s);servers.push(s);return s;}},
   });
   ui.setServer({onHttpRpcRunAttempt:(name,payload)=>{calls.push([name,payload]);return {ran:name};},getPrometheusMetrics:()=>''});
   const port=await freePort();
   ui.main({port:port-1,allSettings});
+  uiAt.set(port,ui);
   // main() listens once its dev server probe is answered; wait for those listens.
   const want=devServer?2:1;
   await new Promise((r)=>{const t=()=>mine.length===want&&mine.every(s=>s.listening)?r():setImmediate(t);t();});
+  // Every port this start listens on, so each can be called directly (Thornswood #1294).
+  start.ports=mine.map(s=>s.address().port);
   return port;
 }
 
@@ -119,6 +126,27 @@ async function check(name,fn){
       assert.equal(r.status,403);
       assert.deepEqual(calls,[]);
     });
+    // Thornswood #1294: every listener that exposes /rpc refuses another machine.
+    // With a UI dev server there are two: the proxy on the UI port and the app
+    // behind it on a port of its own, which listens on every address.
+    const behind=start.ports.filter(p=>p!==proxied);
+    await check('with a UI dev server, the app behind the proxy is a second listener',async()=>{
+      assert.equal(behind.length,1);
+    });
+    await check('an RPC from another machine straight to the app behind the proxy is refused',async()=>{
+      calls.length=0;
+      const r=await send('POST','/rpc/FromOutside',{...asJson({payload:1}),from,port:behind[0]});
+      assert.equal(r.status,403);
+      assert.deepEqual(calls,[]);
+    });
+    for(const variant of ['/rpc/FromOutside/','/RPC/FromOutside','/rpc/From%4Futside']){
+      await check('behind the proxy '+variant+' from another machine is refused too',async()=>{
+        calls.length=0;
+        const r=await send('POST',variant,{...asJson({payload:1}),from,port:proxied});
+        assert.equal(r.status,403);
+        assert.deepEqual(calls,[]);
+      });
+    }
     await check('behind the UI dev server proxy an RPC from this machine still runs',async()=>{
       calls.length=0;
       const r=await send('POST','/rpc/Echo',{...asJson({payload:2}),port:proxied});
@@ -131,6 +159,10 @@ async function check(name,fn){
   await check('with no metricsAuth set, /metrics answers nobody',async()=>{
     assert.equal((await send('GET','/metrics')).status,401);
   });
+  // index.ts times each server tick only when this says yes (Thornswood #3181).
+  await check('with no metricsAuth set, the ui says metrics are not served',async()=>{
+    assert.equal(uiAt.get(uiPort).metricsServed(),false);
+  });
   const withAuth=await start(false,{metricsAuth:{user:'scraper',password:'s3cret-for-this-test'}});
   await check('with metricsAuth set, /metrics wants its user and password',async()=>{
     assert.equal((await send('GET','/metrics',{port:withAuth})).status,401);
@@ -138,6 +170,9 @@ async function check(name,fn){
     const r=await send('GET','/metrics',{...basic('scraper','s3cret-for-this-test'),port:withAuth});
     assert.equal(r.status,200);
     assert.match(r.body,/skymp_connects_total/);
+  });
+  await check('with metricsAuth set, the ui says metrics are served',async()=>{
+    assert.equal(uiAt.get(withAuth).metricsServed(),true);
   });
   const oldPhrase="I know what I'm doing, disable metrics auth";
   const withPhrase=await start(false,{metricsAuth:{user:'scraper',password:oldPhrase}});

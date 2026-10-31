@@ -21,6 +21,8 @@ import {
   ActorBase,
   FormType,
   Form,
+  renameInventoryItems,
+  removeInventoryItems,
 } from "skyrimPlatform";
 
 export interface Extra {
@@ -48,18 +50,59 @@ export interface Inventory {
   entries: Entry[];
 }
 
-// 'loxsword (Legendary)' => 'loxsword'
-const getRealName = (s?: string): string => {
-  if (!s) {
-    return s as string;
-  }
+/*
+  THORNSWOOD PATCH (Thornswood #2146). A health is compared as the game's
+  reading of it, on both sides.
 
-  const arr = s.split(" ");
-  if (arr.length && arr[arr.length - 1].match(/^\(.*\)$/)) {
-    arr.pop();
+  extractExtraData reads the game's ExtraHealth to a tenth and leaves 1 out,
+  so a fine piece reads 1.1. The server keeps health as a float
+  (Inventory::ExtraData in Inventory.h) and the client gets it through
+  nlohmann::json, which writes a float as the double it widens to: 1.1 goes
+  out as 1.100000023841858, 1.2 as 1.2000000476837158 (measured with
+  nlohmann 3.11.3, 22 Oct). The two were compared with ===, so whenever the
+  server held a tempered piece, it never equalled the same piece in the
+  game. Every pass took it away and added it again, the add announced
+  itself, and the next pass found the same difference.
+
+  So both sides go through healthOf, the one reading, before they are
+  compared. What is sent to the game is still the server's own number.
+*/
+const healthOf = (e: Entry): number | undefined => {
+  if (typeof e.health !== "number") {
+    return undefined;
   }
-  return arr.join(" ");
+  const tenths = Math.round(e.health * 10) / 10;
+  // TESModPlatform::AddItemEx writes no ExtraHealth for 1, so 1 is none
+  return tenths === 1 ? undefined : tenths;
 };
+
+/*
+  THORNSWOOD PATCH (Thornswood #1651). What the game adds to a name, and only
+  that.
+
+  The game writes a tempered piece's level on the end of its name when it
+  draws it: ExtraTextDisplayData keeps the name it was given and its length
+  (customNameLength in CommonLib), and GetDisplayName adds " (Fine)" up to
+  " (Legendary)" (the sHealthDataPrefixWeap and sHealthDataPrefixArmo game
+  settings) for the piece's health. So "loxsword" reads back as "loxsword
+  (Legendary)", and a piece with no name of its own as "Iron Sword (Fine)".
+  A piece that is not tempered has a health of 1, which extractExtraData
+  leaves out, and gets nothing added.
+
+  This used to drop any trailing "(...)" from both names before comparing.
+  That made "Iron Sword (85%)" equal to "Iron Sword (84%)" and to a plain
+  "Iron Sword", so a piece the server renamed (a Thornswood piece carries its
+  condition on its name) never reached the game: getDiff found no difference
+  and applyInventory added nothing until the next login. Now a name equals
+  another exactly, or, on a tempered piece, with one level added to it.
+*/
+const isTempered = (e: Entry): boolean => (healthOf(e) ?? 1) > 1;
+
+// named is plain with the game's " (...)" level on the end
+const hasLevelAdded = (named: string, plain: string): boolean =>
+  named.length > plain.length &&
+  named.substring(0, plain.length) === plain &&
+  /^ \([^()]+\)$/.test(named.substring(plain.length));
 
 // 'aaaaaaaaaaaaaaaa' => 'aaa...'
 const cropName = (s?: string): string => {
@@ -77,37 +120,29 @@ const cropName = (s?: string): string => {
     : s;
 };
 
-const checkIfNameIsGeneratedByGame = (
-  aStr: string,
-  bStr: string,
-  formName: string
-) => {
-  if (!aStr.length && bStr.startsWith(formName)) {
-    const bEnding = bStr.substr(formName.length);
-    if (!bEnding.length || bEnding.match(/^\s\(.*\)$/)) {
-      return true;
-    }
-  }
-  return false;
-};
-
 const namesEqual = (a: Entry, b: Entry): boolean => {
-  const aStr = a.name || "";
-  const bStr = b.name || "";
-  if (cropName(getRealName(aStr)) === cropName(getRealName(bStr))) {
+  let aStr = a.name || "";
+  let bStr = b.name || "";
+  if (cropName(aStr) === cropName(bStr)) {
     return true;
   }
 
-  if (a.baseId === b.baseId) {
+  // No name is the base's own name: applyInventory writes the form's name
+  // on a piece the server sends without one.
+  if (a.baseId === b.baseId && (!aStr || !bStr)) {
     const form = Game.getFormEx(a.baseId);
-    if (form) {
-      const formName = form.getName();
-      if (
-        checkIfNameIsGeneratedByGame(aStr, bStr, formName) ||
-        checkIfNameIsGeneratedByGame(bStr, aStr, formName)
-      )
+    const formName = form ? form.getName() : "";
+    if (formName) {
+      aStr = aStr || formName;
+      bStr = bStr || formName;
+      if (cropName(aStr) === cropName(bStr)) {
         return true;
+      }
     }
+  }
+
+  if (isTempered(a) || isTempered(b)) {
+    return hasLevelAdded(aStr, bStr) || hasLevelAdded(bStr, aStr);
   }
 
   return false;
@@ -115,7 +150,7 @@ const namesEqual = (a: Entry, b: Entry): boolean => {
 
 const extrasEqual = (a: Entry, b: Entry, ignoreWorn = false) => {
   return (
-    a.health === b.health &&
+    healthOf(a) === healthOf(b) &&
     a.enchantmentId === b.enchantmentId &&
     a.maxCharge === b.maxCharge &&
     !!a.removeEnchantmentOnUnequip === !!b.removeEnchantmentOnUnequip &&
@@ -130,6 +165,12 @@ const extrasEqual = (a: Entry, b: Entry, ignoreWorn = false) => {
 
 export const inventoryEntriesEqual = (a: Entry, b: Entry, ignoreWorn = false): boolean =>
   a.baseId === b.baseId && extrasEqual(a, b, ignoreWorn);
+
+// Thornswood #1651. The same piece under another name: what a rename by the
+// server leaves behind.
+export const inventoryEntriesEqualExceptName = (a: Entry, b: Entry, ignoreWorn = false): boolean =>
+  a.baseId === b.baseId &&
+  extrasEqual({ ...a, name: undefined }, { ...b, name: undefined }, ignoreWorn);
 
 export const hasExtras = (e: Entry): boolean => {
   return !extrasEqual(e, { baseId: 0, count: 0 });
@@ -152,10 +193,8 @@ const extractExtraData = (
   (extraList || []).forEach((extra) => {
     switch (extra.type) {
       case "Health":
-        out.health = Math.round((extra as ExtraHealth).health * 10) / 10;
-
-        // TESModPlatform::AddItemEx makes all items at least 1.01 health
-        if (out.health === 1) {
+        out.health = healthOf({ baseId: out.baseId, count: 0, health: (extra as ExtraHealth).health });
+        if (out.health === undefined) {
           delete out.health;
         }
         break;
@@ -341,6 +380,123 @@ export const resetInventoryBase = (refr: ObjectReference): boolean => {
   return false;
 };
 
+/*
+  THORNSWOOD PATCH (Thornswood #2146). What the game holds is taken away from
+  where it lies.
+
+  A piece was taken away by TESModPlatform.addItemEx with a negative count,
+  and the native built a NEW extra list out of the entry (its health, its
+  name and the rest) and handed that to RemoveItem. That list is never one
+  the game holds, so which units RemoveItem took was the game's choice, not
+  the diff's, and nothing checked it. A piece tempered at a bench is where
+  that shows: the temper happens in the game, the server keeps the piece
+  plain (recipelessCraft refuses a temper, #1384), and the game must take
+  away a tempered list that also carries ExtraWorn, which the built list
+  never does. When RemoveItem takes anything else, the pass adds the plain
+  piece the server holds, the add announces itself ("looting boots",
+  22 September), the tempered piece stays, and the difference comes back.
+
+  So the units are picked here, out of the game's own lists as
+  getExtraContainerChanges lists them, and removeInventoryItems takes those
+  lists away by the game's own pointers. Units with no list of their own
+  (the base container's, and those the changes count without a list) go
+  last, for an entry that has no extra. Lists that are not worn go first, so
+  of two equal pieces the one on the body stays.
+*/
+interface InventoryLists {
+  lists: Entry[];
+  plain: number;
+}
+
+const getInventoryLists = (refr: ObjectReference, baseId: number): InventoryLists => {
+  const lists = new Array<Entry>();
+  let plain = 0;
+
+  (getExtraContainerChanges(refr.getFormID()) || []).forEach((changesEntry) => {
+    if (changesEntry.baseId !== baseId) {
+      return;
+    }
+    plain += changesEntry.countDelta;
+    // the native's ListsOf skips an empty one, and so does this
+    (changesEntry.extendDataList || []).forEach((extraList) => {
+      if (!extraList) {
+        return;
+      }
+      const e: Entry = { baseId, count: 1 };
+      extractExtraData(refr, extraList, e);
+      lists.push(e);
+      plain -= e.count;
+    });
+  });
+
+  getBaseContainerAsInventory(refr).entries.forEach((e) => {
+    if (e.baseId === baseId) {
+      plain += e.count;
+    }
+  });
+
+  return { lists, plain: Math.max(0, plain) };
+};
+
+const describeEntry = (e: Entry): string =>
+  `${e.baseId.toString(16)} ${JSON.stringify(e)}`;
+
+const takeAway = (refr: ObjectReference, entries: Entry[]): void => {
+  const baseIds = new Set(entries.map((e) => e.baseId));
+  baseIds.forEach((baseId) => {
+    const { lists, plain } = getInventoryLists(refr, baseId);
+    const left = lists.map((l) => l.count);
+    let plainLeft = plain;
+    let plainCount = 0;
+    const picks = new Map<number, number>();
+
+    const order = lists
+      .map((l, i) => i)
+      .sort((a, b) => Number(!!lists[a].worn || !!lists[a].wornLeft) - Number(!!lists[b].worn || !!lists[b].wornLeft));
+
+    entries.filter((e) => e.baseId === baseId).forEach((e) => {
+      let wanted = -e.count;
+      if (!hasExtras(e)) {
+        const n = Math.min(wanted, plainLeft);
+        plainCount += n;
+        plainLeft -= n;
+        wanted -= n;
+      }
+      order.forEach((i) => {
+        if (wanted === 0 || left[i] === 0 || !inventoryEntriesEqual(lists[i], e, true)) {
+          return;
+        }
+        const n = Math.min(wanted, left[i]);
+        picks.set(i, (picks.get(i) || 0) + n);
+        left[i] -= n;
+        wanted -= n;
+      });
+      if (wanted > 0) {
+        printConsole(
+          `[thornswood] inventory: the game holds ${wanted} fewer than the ` +
+          `difference takes away, of ${describeEntry(e)}`
+        );
+      }
+    });
+
+    const indexes = Array.from(picks.keys());
+    const counts = indexes.map((i) => picks.get(i) as number);
+    if (indexes.length === 0 && plainCount === 0) {
+      return;
+    }
+    printConsole(
+      `removeInventoryItems(${refr.getFormID().toString(16)}, ${baseId.toString(16)}, ` +
+      `${lists.length}, ${JSON.stringify(indexes.map((i, k) => [i, counts[k], lists[i]]))}, ${plainCount})`
+    );
+    if (!removeInventoryItems(refr.getFormID(), baseId, lists.length, indexes, counts, plainCount)) {
+      printConsole(
+        `[thornswood] inventory: the game refused to take away ${baseId.toString(16)} ` +
+        `(paused, or its lists changed since they were read)`
+      );
+    }
+  });
+};
+
 export const applyInventory = (
   refr: ObjectReference,
   newInventory: Inventory,
@@ -348,16 +504,69 @@ export const applyInventory = (
   ignoreWorn = false
 ): boolean => {
   resetInventoryBase(refr);
-  const diff = getDiff(newInventory, getInventory(refr), ignoreWorn).entries;
+  const actual = getInventory(refr);
+  let diff = getDiff(newInventory, actual, ignoreWorn).entries;
 
   let res = true;
 
-  diff.sort((a, b) => (a.count < b.count ? -1 : 1));
-  diff.forEach((e, i) => {
-    if (i > 0 && enableCrashProtection) {
-      res = false;
+  /*
+    THORNSWOOD PATCH (Thornswood #1651). A rename is applied as a rename.
+
+    When the server renames a piece (a Thornswood piece carries its condition
+    on its name, so a hit, a repair or a chest's dull clock does), the diff
+    holds the piece under its old name to take away and the same piece under
+    its new name to add. Taking away and adding takes a worn piece off the
+    body, because the server's pack does not say what is worn (the equipment
+    record does, and this applies with ignoreWorn). So each such pair is
+    handed to renameInventoryItems, which renames the units where they lie.
+    When no set of the game's lists holds exactly those units, the pair stays
+    in the diff and is applied below as any other difference. Two entries are
+    a pair only when they match in everything but the name (what is worn
+    too, unless ignoreWorn).
+  */
+  const renamed = new Set<Entry>();
+  diff.forEach((added) => {
+    if (added.count <= 0 || (enableCrashProtection && renamed.size > 0)) {
       return;
     }
+    const removed = diff.find((x) =>
+      x.count === -added.count && !renamed.has(x) && !namesEqual(x, added) &&
+      inventoryEntriesEqualExceptName(x, added, ignoreWorn));
+    if (!removed) {
+      return;
+    }
+    const f = Game.getFormEx(added.baseId);
+    if (!f) {
+      return;
+    }
+    // The old name as the game spells it. When the server still holds some
+    // of the piece, getDiff hands back the server's spelling ("loxsword" for
+    // the game's "loxsword (Legendary)", none for the game's "Iron Sword"),
+    // and the game renames by its own.
+    const held = actual.entries.find((x) => inventoryEntriesEqual(x, removed, true));
+    const from = (held || removed).name || "";
+    const to = added.name ? cropName(added.name) : f.getName();
+    if (renameInventoryItems(refr.getFormID(), added.baseId, from, to, added.count)) {
+      renamed.add(added);
+      renamed.add(removed);
+    }
+  });
+  if (renamed.size > 0) {
+    diff = diff.filter((e) => !renamed.has(e));
+    if (enableCrashProtection) {
+      return diff.length === 0;
+    }
+  }
+
+  diff.sort((a, b) => (a.count < b.count ? -1 : 1));
+  if (enableCrashProtection && diff.length > 1) {
+    res = false;
+    diff = diff.slice(0, 1);
+  }
+
+  takeAway(refr, diff.filter((e) => e.count < 0));
+
+  diff.filter((e) => e.count > 0).forEach((e) => {
     let absCount = Math.abs(e.count);
 
     let queueNiNodeUpdateNeeded = false;
@@ -385,11 +594,6 @@ export const applyInventory = (
       if (absCount > 1000) {
         absCount = 1;
         oneStepCount = 1;
-
-        // Also for arrows with strange count
-        if (worn && e.count < 0) {
-          absCount = 0;
-        }
       }
 
       if (e.count > 1 && Ammo.from(Game.getFormEx(e.baseId))) {
