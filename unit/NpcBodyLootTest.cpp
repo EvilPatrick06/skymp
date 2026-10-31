@@ -187,7 +187,8 @@ TEST_CASE("NPC equipment metadata does not change the inventory wire format",
   }
   SLNet::BitStream expected, actual;
   BitStreamOutputArchive legacy(expected), current(actual);
-  // The complete pre-change Entry layout, including every optional field.
+  // The complete Entry layout without npcEquipment, including every optional
+  // field. made (Thornswood #1649) is on the wire; npcEquipment is not.
   legacy.Serialize("baseId", entry.baseId).Serialize("count", entry.count);
   legacy.Serialize("health", entry.health)
     .Serialize("enchantmentId", entry.enchantmentId)
@@ -196,7 +197,8 @@ TEST_CASE("NPC equipment metadata does not change the inventory wire format",
     .Serialize("chargePercent", entry.chargePercent)
     .Serialize("name", entry.name).Serialize("soul", entry.soul)
     .Serialize("poisonId", entry.poisonId).Serialize("poisonCount", entry.poisonCount)
-    .Serialize("worn", entry.worn_).Serialize("wornLeft", entry.wornLeft);
+    .Serialize("worn", entry.worn_).Serialize("wornLeft", entry.wornLeft)
+    .Serialize("made", entry.made);
   entry.Serialize(current);
   REQUIRE(actual.GetNumberOfBitsUsed() == expected.GetNumberOfBitsUsed());
   REQUIRE(std::memcmp(actual.GetData(), expected.GetData(),
