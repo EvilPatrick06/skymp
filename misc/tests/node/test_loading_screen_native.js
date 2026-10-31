@@ -78,6 +78,14 @@ check('OnLoadingMenu sets Loading() and runs the script',
 const render = read('skyrim-platform/src/tilted/ui/DX11RenderHandler.cpp');
 check('the page is drawn by ShouldDraw(Visible(), Loading())',
   render.includes('if (LoadingScreen::ShouldDraw(Visible(), Loading())) {') && !/\n  if \(Visible\(\)\) \{\n    std::unique_lock/.test(render));
+{
+  const at = render.indexOf('if (LoadingScreen::ShouldCover(Loading())) {');
+  const clear = render.indexOf('ClearRenderTargetView(pRenderTargetView.Get(),', at);
+  const begin = render.indexOf('m_pSpriteBatch->Begin(');
+  check("while loading the game's picture is cleared to kCover, before the page is drawn",
+    at > 0 && clear > at && clear < begin && render.indexOf('LoadingScreen::kCover', clear) > clear &&
+    render.indexOf('LoadingScreen::kCover', clear) < begin && render.indexOf('GetRenderTargetSize();') < at);
+}
 const load = read('skyrim-platform/src/tilted/ui/MyLoadHandler.cpp');
 check('a page that loads during a load is told',
   /if \(DX11RenderHandler::Loading\(\)\) \{\s*frame->ExecuteJavaScript\(LoadingScreen::Script\(true\)/.test(load));
