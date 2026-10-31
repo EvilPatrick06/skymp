@@ -28,12 +28,13 @@
 # installer, the Linux builds, the formatting, Prettier and dependent issue
 # checks) carry `if: github.repository == 'skyrim-multiplayer/skymp'`, so they
 # keep working upstream and are skipped here. That guard is on this branch
-# only. A schedule, an issue event and a push to main run the copies on the
-# fork's main, which is upstream's as it was and has no guard: there
-# "PR Windows Flatrim (AE/SE)" and "PR Windows Skyrim VR" run every night and
-# on every push to main, and "Build & Push skymp-vcpkg-deps" fails on every
-# push to main for want of Docker Hub secrets (Thornswood #3594, #3404).
-# Nothing of Thornswood's reads those runs.
+# only. An issue event and a push to main run the copies on the fork's main,
+# which is upstream's as it was and has no guard: there a push to main runs
+# "PR Windows Flatrim (AE/SE)" and "PR Windows Skyrim VR", and "Build & Push
+# skymp-vcpkg-deps" fails for want of Docker Hub secrets (Thornswood #3594,
+# #3404). Nothing of Thornswood's reads those runs. A schedule runs only on
+# the default branch, which since Thornswood #5154 is this one, so upstream's
+# nightly builds now meet the guard and are skipped.
 #
 # Why GitHub's runner and not the VPS: this repository is public, so its
 # minutes on GitHub's standard runners cost nothing, and a self-hosted runner
@@ -82,6 +83,15 @@
 # is kept until somebody deletes it and is read with no account. Thornswood's
 # engine.yml and Ship machines take it from there.
 #
+# THE BUILD, SIGNED (Thornswood #5153). A push's build also gets a GitHub
+# artifact attestation of its fork-build.json, which names every file of the
+# build by sha256: a Sigstore signature, made with this run's OIDC identity,
+# that this workflow, at this commit, on thornswood/engine-changes, on
+# GitHub's own runner, made that file. Thornswood's engine.yml checks it with
+# gh attestation verify before it records a build, so a pin is proven to be
+# this build and not only a build somebody named by its run id. It is free
+# on a public repository and needs no secret.
+#
 # NOTHING ELSE IS KEPT BUT LOGS (Thornswood #3675, #3691). pr_base's own
 # uploads of the build (dist, the client js, server-dist, the Skyrim Platform
 # and papyrus-vm Nexus files) were about 376 MB a run, kept 90 days, and
@@ -112,12 +122,18 @@ on:
     branches: [ thornswood/engine-changes ]
   push:
     branches: [ thornswood/engine-changes ]
+  # A branch a workflow pushed with its own token, such as the upstream sync's
+  # upstream-sync/next (Thornswood #5154): that push, and a pull request that
+  # token opens, start no run, so the sync starts this. It builds as a pull
+  # request does, in build-pr, with a read-only token.
+  workflow_dispatch:
 
-# A pull request's newer push cancels its older build. A push to the branch
-# never cancels another: each commit of the engine keeps its own build.
+# A pull request's newer push cancels its older build, and a newer start by
+# hand on the same branch its older one. A push to the branch never cancels
+# another: each commit of the engine keeps its own build.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'push' && github.sha || 'pr' }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 env:
   BUILD_TYPE: Release
@@ -176,7 +192,7 @@ jobs:
   # repository would get a write token if the job asked for one. The fork's
   # default token is read only.
   build-pr:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     runs-on: windows-2022
     timeout-minutes: 135
     permissions:
@@ -290,6 +306,8 @@ jobs:
           Write-Host ("{0} files of the build of {1}, {2:N0} bytes" -f $files.Count, $commit, (@($files.Values | ForEach-Object { $_.bytes }) | Measure-Object -Sum).Sum)
           foreach ($k in $files.Keys) { Write-Host ('  {0}  {1}' -f $files[$k].sha256.Substring(0, 12), $k) }
           Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value ('dir=' + $out)
+          $fbSum = (Get-FileHash -LiteralPath (Join-Path $out 'fork-build.json') -Algorithm SHA256).Hash.ToLowerInvariant()
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value ('forkbuild=sha256:' + $fbSum)
           Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value ('days=' + $(if ($env:EVENT -eq 'push') { '90' } else { '14' }))
 
       - name: Keep the build Thornswood records
@@ -316,6 +334,15 @@ jobs:
           & .\misc\thornswood\Push-EnginePackage.ps1 -Folder $env:BUILD_DIR -Commit $env:COMMIT
           exit $LASTEXITCODE
 
+      # The header, THE BUILD, SIGNED. A push's build only: the build job's
+      # token may make an attestation, the pull request's may not.
+      - name: Sign what the build is
+        if: github.event_name == 'push'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: thornswood-engine-${{ github.sha }}/fork-build.json
+          subject-digest: ${{ steps.gather.outputs.forkbuild }}
+
   build:
     if: github.event_name == 'push'
     runs-on: windows-2022
@@ -325,4 +352,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # The header, THE BUILD, SIGNED: GitHub's OIDC token, which only
+      # Sigstore and GitHub's attestation store are shown, for the signature.
+      id-token: write
+      attestations: write
     steps: *build-steps

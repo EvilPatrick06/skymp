@@ -1,0 +1,67 @@
+# Brings upstream SkyMP's main into thornswood/engine-changes once a week, as
+# a pull request (Thornswood #5154, Patrick's A of 31 Oct 2026).
+#
+# WHY. An upstream fix reached Thornswood only when somebody remembered to
+# merge it by hand. The last time was 5 Oct 2026, and it was done on main,
+# which Thornswood does not build. Now this looks every Monday. When upstream
+# has something new, misc/thornswood/Sync-Upstream.ps1 merges it onto
+# thornswood/engine-changes as upstream-sync/next, starts its build and opens
+# the pull request. Once that is merged, the branch's push build builds it
+# and Thornswood's engine-pin.yml moves the pin to it, so an upstream fix
+# reaches a release with one merge by a person.
+#
+# WHEN IT STOPS. A merge conflict, or an upstream change to .github/workflows,
+# ends the run red, naming the files and the commands a person runs to bring
+# it in by hand. A workflow's own token may not push a workflow change, and
+# only a person may change what the workflows run. Nothing is retried.
+#
+# WHAT IT RUNS. This branch's own Sync-Upstream.ps1, and git and gh. Nothing
+# from upstream is built or run in this job: the pull request's build runs it,
+# in thornswood-pr-windows.yml's read-only build-pr job. The token can push
+# branches, open pull requests and start that build. It is passed to git
+# only for the one push, and the checkout does not keep it.
+#
+# A schedule runs only on the default branch, which is why #5154 made
+# thornswood/engine-changes the default. GitHub's own runner, free on a public
+# repository. Never a self-hosted runner, and no secret.
+
+name: Thornswood upstream sync
+run-name: Upstream sync
+
+on:
+  schedule:
+    - cron: '17 9 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: thornswood-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'EvilPatrick06/skymp'
+    runs-on: ubuntu-24.04
+    # A fetch of upstream's history, a merge and four calls. Past this it is
+    # stuck, not slow.
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: thornswood/engine-changes
+          fetch-depth: 0
+          submodules: false
+          persist-credentials: false
+      - name: Merge upstream's main and open its pull request
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          & ./misc/thornswood/Sync-Upstream.ps1
+          exit $LASTEXITCODE
