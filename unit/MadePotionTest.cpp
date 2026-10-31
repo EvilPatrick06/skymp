@@ -322,6 +322,48 @@ TEST_CASE("Drinking a made bottle spends it, raises onEatItem and does what "
   DoDisconnect(p, 0);
 }
 
+TEST_CASE("A made bottle whose craft named it is drunk off its own stack "
+          "(Thornswood #1649, #3026)",
+          "[MadePotion]")
+{
+  PartOne& p = GetPartOne();
+  auto watch = std::make_shared<Watch>();
+  p.AddListener(watch);
+  DoConnect(p, 0);
+  p.CreateActor(0xff000000, { 0, 0, 0 }, 0, 0x3c);
+  p.SetUserActor(0, 0xff000000);
+  auto& ac = p.worldState.GetFormAt<MpActor>(0xff000000);
+
+  Inventory::Made bottle = Healing();
+  Inventory::Round(bottle);
+  const uint32_t id = Inventory::MadeBaseId(bottle);
+  Inventory::ExtraData named;
+  named.made = bottle;
+  named.name = "Healer's Draught";
+  ac.AddItems({ Inventory::Entry(id, 2, named) });
+
+  watch->armed = true;
+  bool drunk = false;
+  REQUIRE_NOTHROW(drunk = ac.OnEquip(id));
+  watch->armed = false;
+
+  CHECK(drunk);
+  CHECK(watch->eats == 1);
+  std::vector<Inventory::Entry> left;
+  for (auto& entry : ac.GetInventory().entries) {
+    if (entry.baseId == id) {
+      left.push_back(entry);
+    }
+  }
+  REQUIRE(left.size() == 1);
+  CHECK(left[0].count == 1);
+  CHECK(left[0].name == named.name);
+  CHECK(left[0].made == bottle);
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
+
 TEST_CASE("A made poison is spent without being drunk, and a made id the "
           "pack does not hold does nothing (Thornswood #1649)",
           "[MadePotion]")
