@@ -3,7 +3,7 @@ import { localIdToRemoteId } from "../../view/worldViewMisc";
 
 import { Actor, ContainerChangedEvent } from "skyrimPlatform";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
-import { Inventory } from "../../sync/inventory";
+import { Inventory, Made, ensureMadePotion, readMadePotion } from "../../sync/inventory";
 import { MsgType } from "../../messages";
 import { logTrace, logError } from "../../logging";
 import { ConnectionMessage } from "../events/connectionMessage";
@@ -112,6 +112,15 @@ export class CraftService extends ClientListener {
         if (!this.sp.Ui.isMenuOpen(CRAFTING_MENU)) {
             return;
         }
+        // Thornswood #1649: a brew is kept by what is in it, under a made id
+        // (Inventory::MadeBaseId on the server) and not the session's bottle
+        // that was hidden, so that bottle is built under the server's id
+        // before it goes in, as applyInventory builds one.
+        const made = content["made"];
+        if (made !== undefined && !ensureMadePotion(baseId, made as Made)) {
+            logError(this, `Could not build the brewed bottle`, baseId.toString(16), `before the menu closes`);
+            return;
+        }
         const form = this.sp.Game.getFormEx(baseId);
         const pc = this.sp.Game.getPlayer();
         if (!form || !pc) {
@@ -201,10 +210,15 @@ export class CraftService extends ClientListener {
 
                 logTrace(this, `Sending craft workbench`, workbench, `resultObjectId`, resultObjectId, `craftInputObjects`, JSON.stringify(craftInputObjects.entries));
 
+                // THORNSWOOD PATCH (Thornswood #1649). A bottle the game
+                // brewed is only good for this session, so what is in it
+                // goes along and the server keeps it by that.
+                const resultPotion = readMadePotion(e.baseObj);
+
                 this.controller.emitter.emit("sendMessage", {
                     message: {
                         t: MsgType.CraftItem,
-                        data: { workbench, craftInputObjects, resultObjectId },
+                        data: { workbench, craftInputObjects, resultObjectId, resultPotion },
                     },
                     reliability: "reliable"
                 });
