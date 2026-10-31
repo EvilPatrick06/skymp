@@ -69,10 +69,15 @@ try {
 // Where it is used. Read, since none of these builds off Windows.
 const read = (p) => fs.readFileSync(path.join(root, p), 'utf8');
 const events = read('skyrim-platform/src/platform_se/skyrim_platform/EventHandler.cpp');
-check('the menu sink tells the browser of the Loading Menu, before the queued menuOpen',
-  /if \(menuName == RE::LoadingMenu::MENU_NAME\) \{\s*BrowserApiTilted::OnLoadingMenu\(opening\);\s*\}/.test(events) &&
-  events.indexOf('BrowserApiTilted::OnLoadingMenu(opening)') < events.indexOf('SendEvent("menuOpen"'));
 const tilted = read('skyrim-platform/src/platform_se/skyrim_platform/BrowserApiTilted.cpp');
+// The browser's own menu sink (fork #134, Thornswood #5140) hears the Loading
+// Menu whether or not a plugin listens for menus. It is added at kDataLoaded,
+// before the first tick runs a plugin, so it is ahead of the plugins' sink, and
+// their menuOpen is queued for the next tick in any case.
+check('the menu sink tells the browser of the Loading Menu, before the queued menuOpen',
+  /if \(event->menuName == RE::LoadingMenu::MENU_NAME\) \{\s*BrowserApiTilted::OnLoadingMenu\(event->opening\);\s*\}/.test(tilted) &&
+  /BrowserApiTilted::WatchMenus\(\);\s*TickHandler::GetSingleton\(\)->Update\(\);/.test(events) &&
+  !events.includes('BrowserApiTilted::OnLoadingMenu('));
 check('OnLoadingMenu sets Loading() and runs the script',
   /void BrowserApiTilted::OnLoadingMenu\(bool opening\)[\s\S]*?DX11RenderHandler::Loading\(\) = opening;[\s\S]*?ExecuteJavaScript\(LoadingScreen::Script\(opening\)\)/.test(tilted));
 const render = read('skyrim-platform/src/tilted/ui/DX11RenderHandler.cpp');
