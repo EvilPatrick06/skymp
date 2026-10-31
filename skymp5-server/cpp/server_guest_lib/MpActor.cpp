@@ -1051,13 +1051,15 @@ bool MpActor::OnEquipMade(uint32_t baseId)
     return false;
   }
 
-  Inventory::ExtraData extra;
-  extra.made = held->made;
-  const Inventory::Entry one(baseId, 1, extra);
+  // One off the very stack it was drunk from, everything on it kept: a brew
+  // whose onCraft named its output (Thornswood #3026) carries that name too,
+  // and an entry of `made` alone would not match it.
+  Inventory::Entry one = *held;
+  one.count = 1;
 
-  if (!held->made->poison) {
+  if (!one.made->poison) {
     std::vector<espm::Effects::Effect> effects;
-    for (const auto& e : held->made->effects) {
+    for (const auto& e : one.made->effects) {
       espm::Effects::Effect effect;
       effect.effectId = e.effectId;
       effect.magnitude = e.magnitude;
