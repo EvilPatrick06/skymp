@@ -74,6 +74,14 @@
 # a fork change can be tried before it merges; engine.yml takes only a push to
 # thornswood/engine-changes, and a push's is kept 90.
 #
+# THE BUILD AS A PACKAGE (Patrick, 30 Oct 2026: once Thornswood is public,
+# use GitHub's Releases, Deployments and Packages). An artifact is kept 90
+# days at most, so a pin older than that could not be shipped. A push's build
+# also goes up as ghcr.io/evilpatrick06/thornswood-engine:<commit>, the same
+# folder as one zip (misc\thornswood\Push-EnginePackage.ps1 says how), which
+# is kept until somebody deletes it and is read with no account. Thornswood's
+# engine.yml and Ship machines take it from there.
+#
 # NOTHING ELSE IS KEPT BUT LOGS (Thornswood #3675, #3691). pr_base's own
 # uploads of the build (dist, the client js, server-dist, the Skyrim Platform
 # and papyrus-vm Nexus files) were about 376 MB a run, kept 90 days, and
@@ -294,6 +302,19 @@ jobs:
           # dot included; engine.yml refuses a build missing one.
           include-hidden-files: true
           retention-days: ${{ steps.gather.outputs.days }}
+
+      # The header, THE BUILD AS A PACKAGE. A push's build only: the build
+      # job's token has packages: write, the pull request's has read.
+      - name: Keep the build as a package
+        if: github.event_name == 'push'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_DIR: ${{ steps.gather.outputs.dir }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          & .\misc\thornswood\Push-EnginePackage.ps1 -Folder $env:BUILD_DIR -Commit $env:COMMIT
+          exit $LASTEXITCODE
 
   build:
     if: github.event_name == 'push'
