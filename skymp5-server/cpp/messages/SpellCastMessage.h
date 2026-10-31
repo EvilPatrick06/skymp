@@ -1,6 +1,7 @@
 #pragma once
 #include "MessageBase.h"
 #include "MsgType.h"
+#include <optional>
 #include <type_traits>
 
 struct ActorAnimationVariables
@@ -31,7 +32,8 @@ struct SpellCastMsgData
       .Serialize("castingSource", castingSource)
       .Serialize("aimAngle", aimAngle)
       .Serialize("aimHeading", aimHeading)
-      .Serialize("actorAnimationVariables", actorAnimationVariables);
+      .Serialize("actorAnimationVariables", actorAnimationVariables)
+      .Serialize("durationMult", durationMult);
   }
 
   uint32_t caster = 0;
@@ -44,6 +46,13 @@ struct SpellCastMsgData
   float aimHeading = 0.f;
 
   ActorAnimationVariables actorAnimationVariables;
+
+  // THORNSWOOD PATCH (Thornswood #2848). How many times its usual time each
+  // effect of this cast holds, on whichever machine runs that effect. 1 is
+  // the game's own. The caster's machine sends what it gave its own
+  // effects; neighbours get the server's answer (SpellCastEvent.h), never
+  // the caster's word. Absent is the game's own.
+  std::optional<float> durationMult;
 };
 
 struct SpellCastMessage : public MessageBase<SpellCastMessage>

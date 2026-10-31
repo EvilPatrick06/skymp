@@ -1,5 +1,7 @@
 #include "ActionListener.h"
 #include "OnEquipMessage.h"
+#include "gamemode_events/EatItemEvent.h"
+#include <algorithm>
 #include "TestUtils.hpp"
 #include <catch2/catch_all.hpp>
 #include <chrono>
@@ -33,6 +35,128 @@ TEST_CASE("Potions restore health", "[Restoration]")
 
   REQUIRE(ac.GetChangeForm().actorValues.healthPercentage == 1.0f);
   REQUIRE(timeDuration.count() < 1.f);
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
+
+namespace {
+// Thornswood #1382: stands in for a gamemode's onEatItem handler setting
+// eatItemScale, which reaches the event the same way (the events stack).
+class ScaleEatListener : public FakeListener
+{
+public:
+  ScaleEatListener(WorldState& worldState_, float scale_)
+    : worldState(worldState_)
+    , scale(scale_)
+  {
+  }
+
+  bool OnMpApiEvent(const GameModeEvent& event) override
+  {
+    if (std::string(event.GetName()) == "onEatItem") {
+      auto& stack = worldState.currentGameModeEventsStack;
+      if (!stack.empty()) {
+        if (auto eat = dynamic_cast<EatItemEvent*>(stack.back())) {
+          eat->SetEffectScale(scale);
+        }
+      }
+    }
+    return true;
+  }
+
+private:
+  WorldState& worldState;
+  float scale = 1.f;
+};
+
+float DrinkAtScale(float scale)
+{
+  using namespace std::chrono_literals;
+  PartOne& p = GetPartOne();
+  auto listener = std::make_shared<ScaleEatListener>(p.worldState, scale);
+  p.AddListener(listener);
+  DoConnect(p, 0);
+  p.CreateActor(0xff000000, { 0, 0, 0 }, 0, 0x3c);
+  p.SetUserActor(0, 0xff000000);
+
+  auto& ac = p.worldState.GetFormAt<MpActor>(0xff000000);
+  ac.SetLastAttributesPercentagesUpdate(std::chrono::steady_clock::now() -
+                                        10s);
+  ac.AddItem(0x3EAE3, 1);
+  ac.SetPercentages({ 0.1f, 0.f, 0.f });
+
+  RawMessageData rawMsgData;
+  rawMsgData.userId = 0;
+  OnEquipMessage msg;
+  msg.baseId = 0x3EAE3;
+  p.GetActionListener().OnEquip(rawMsgData, msg);
+
+  float health = ac.GetChangeForm().actorValues.healthPercentage;
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+  auto& ls = p.worldState.listeners;
+  ls.erase(std::remove(ls.begin(), ls.end(), listener), ls.end());
+  return health;
+}
+}
+
+TEST_CASE("An onEatItem listener scales a potion before it lands",
+          "[Restoration]")
+{
+  // 0x3EAE3 restores 100 hp, which fills an actor at 10%.
+  float full = DrinkAtScale(1.f);
+  float part = DrinkAtScale(0.1f); // 10 hp: above where it started, short of full
+  float none = DrinkAtScale(0.f);
+
+  REQUIRE(full == 1.0f);
+  REQUIRE(part > 0.1f);
+  REQUIRE(part < full);
+  REQUIRE(none == 0.1f);
+}
+
+TEST_CASE("Eating a potion off a stack that differs only in its name takes "
+          "it, plain stack first (Thornswood #3163)",
+          "[Restoration]")
+{
+  using namespace std::chrono_literals;
+  PartOne& p = GetPartOne();
+  DoConnect(p, 0);
+  p.CreateActor(0xff000000, { 0, 0, 0 }, 0, 0x3c);
+  p.SetUserActor(0, 0xff000000);
+
+  auto& ac = p.worldState.GetFormAt<MpActor>(0xff000000);
+  ac.SetLastAttributesPercentagesUpdate(std::chrono::steady_clock::now() -
+                                        10s);
+  Inventory::ExtraData extra;
+  extra.name = "Potion (3 days left)";
+  ac.AddItems({ Inventory::Entry(0x3EAE3, 2, extra) });
+  ac.SetPercentages({ 0.1f, 0.f, 0.f });
+
+  RawMessageData rawMsgData;
+  rawMsgData.userId = 0;
+  OnEquipMessage msg;
+  msg.baseId = 0x3EAE3;
+  p.GetActionListener().OnEquip(rawMsgData, msg);
+
+  // Until this the plain removal threw after the potion had landed, and the
+  // server kept both.
+  REQUIRE(ac.GetChangeForm().actorValues.healthPercentage == 1.0f);
+  REQUIRE(ac.GetInventory().GetItemCount(0x3EAE3) == 1);
+
+  ac.AddItem(0x3EAE3, 1);
+  p.GetActionListener().OnEquip(rawMsgData, msg);
+  // The actor's record gives it an outfit too, so only the potion's own
+  // entries are looked at.
+  std::vector<Inventory::Entry> potions;
+  for (auto& entry : ac.GetInventory().entries) {
+    if (entry.baseId == 0x3EAE3) {
+      potions.push_back(entry);
+    }
+  }
+  REQUIRE(potions.size() == 1);
+  REQUIRE(potions[0] == Inventory::Entry(0x3EAE3, 1, extra));
 
   p.DestroyActor(0xff000000);
   DoDisconnect(p, 0);

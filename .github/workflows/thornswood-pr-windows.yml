@@ -1,35 +1,123 @@
-# Thornswood's pull request build (Thornswood #1774).
+# Thornswood's engine build (Thornswood #1774, #459).
 #
-# Every pull request into thornswood/engine-changes builds the engine the way
-# upstream's "PR Windows Flatrim (AE/SE)" builds a pull request into main: the
-# same pr_base action with the same inputs, on GitHub's windows-2022 image,
-# and the unit tests after it, except that it does not repeat the unit tests
-# under OpenCppCoverage. Nothing else in this fork runs on its own.
+# Every pull request into thornswood/engine-changes, and every push to it,
+# builds the engine the way upstream's "PR Windows Flatrim (AE/SE)" builds a
+# pull request into main: the same pr_base action with the same inputs, on
+# GitHub's windows-2022 image, and the unit tests after it, except that it
+# does not repeat the unit tests under OpenCppCoverage. A small Ubuntu job also
+# tests the POSIX directory helper and the whole-file write (Thornswood #2740)
+# without building the engine or reading any game data.
 #
 # Why no coverage: the first build of this workflow took 96 minutes on 5 Oct,
 # of which test_unit_coverage was 43 and vcpkg building every library for the
 # first time was 30. vcpkg now restores those from GitHub Packages, and the
 # coverage run checked nothing test_unit does not, so a build is the
 # configure, the compile (14 minutes) and the tests (about 3).
-# Upstream's workflows that would start here (the four that dispatch upstream's
+#
+# HOW LONG A JOB MAY RUN (Thornswood #3557). Every job sets timeout-minutes,
+# as every Thornswood workflow does; without it GitHub waits 360 minutes, and
+# a hung vcpkg or CMake step would hold the runner and this workflow's
+# concurrency group that long, since a push never cancels an older push's
+# build. Measured 27 Oct over all 177 runs since 5 Oct: a build with the
+# library cache takes 20 to 45 minutes (median 30); one that builds every
+# library again, as after a vcpkg pin change, took 54 to 67. Twice the
+# slowest is 135, for build-pr and build alike, since a pull request that
+# moves the pin builds every library too. The Ubuntu job never took more
+# than 20 seconds, so it gets 10 minutes.
+# Upstream's workflows on this branch (the four that dispatch upstream's
 # installer, the Linux builds, the formatting, Prettier and dependent issue
 # checks) carry `if: github.repository == 'skyrim-multiplayer/skymp'`, so they
-# keep working upstream and are skipped here.
+# keep working upstream and are skipped here. That guard is on this branch
+# only. A schedule, an issue event and a push to main run the copies on the
+# fork's main, which is upstream's as it was and has no guard: there
+# "PR Windows Flatrim (AE/SE)" and "PR Windows Skyrim VR" run every night and
+# on every push to main, and "Build & Push skymp-vcpkg-deps" fails on every
+# push to main for want of Docker Hub secrets (Thornswood #3594, #3404).
+# Nothing of Thornswood's reads those runs.
 #
 # Why GitHub's runner and not the VPS: this repository is public, so its
 # minutes on GitHub's standard runners cost nothing, and a self-hosted runner
 # on a public repository runs whatever any pull request puts in its workflow
-# files, on the box that hosts the live server.
+# files, on the box that hosts the live server. No job here may ever name a
+# self-hosted runner, and no Thornswood secret is used here: this build needs
+# none.
+#
+# THE BUILD THORNSWOOD RECORDS (Thornswood #459, Patrick's B of 16 Oct). The
+# head of thornswood/engine-changes is Thornswood's one engine, and
+# Thornswood's engine.yml records a build of it into records\server-build.json
+# and records\client-build.json. A push to the branch builds that commit here,
+# free, and keeps what Thornswood records as one artifact,
+# thornswood-engine-<commit>, so engine.yml takes it instead of building the
+# engine again on Thornswood's own runners (it builds there only when this
+# workflow has no build of the commit). The artifact holds, at the paths a
+# build folder has them:
+#   build\dist\server\                  the whole server build (Build-Server.ps1's)
+#   build\dist\client\<the six>         the six client files Thornswood records
+#                                       (New-ClientBuildRecord.ps1, $Files)
+#   build\skymp5-server\launch_server.bat.tmp   the one the configure wrote,
+#                                       which the record holds launch_server.bat to
+#   build\skymp5-scripts\pex\           Papyrus the build compiled, when it did
+#   build\licences\                     the licence text of every vcpkg
+#                                       library whose code is in one of the
+#                                       four native client files, of the
+#                                       fork's own folders under a notice of
+#                                       their own and of the npm packages in
+#                                       skymp5-client.js, and licences.json,
+#                                       which says which is in which
+#                                       (misc\thornswood\Write-ClientLicences.ps1,
+#                                       Thornswood #3099, #3751)
+#   fork-build.json                     the commit, this run, and each file's
+#                                       sha256, size and time
+# A zip keeps a file's time without its zone, so the times go in
+# fork-build.json in UTC and engine.yml puts them back: the record's builtUtc
+# is the binary's time. A pull request's build keeps one too, for 14 days, so
+# a fork change can be tried before it merges; engine.yml takes only a push to
+# thornswood/engine-changes, and a push's is kept 90.
+#
+# THE BUILD AS A PACKAGE (Patrick, 30 Oct 2026: once Thornswood is public,
+# use GitHub's Releases, Deployments and Packages). An artifact is kept 90
+# days at most, so a pin older than that could not be shipped. A push's build
+# also goes up as ghcr.io/evilpatrick06/thornswood-engine:<commit>, the same
+# folder as one zip (misc\thornswood\Push-EnginePackage.ps1 says how), which
+# is kept until somebody deletes it and is read with no account. Thornswood's
+# engine.yml and Ship machines take it from there.
+#
+# NOTHING ELSE IS KEPT BUT LOGS (Thornswood #3675, #3691). pr_base's own
+# uploads of the build (dist, the client js, server-dist, the Skyrim Platform
+# and papyrus-vm Nexus files) were about 376 MB a run, kept 90 days, and
+# nothing read them: thornswood-engine-<commit> holds every file Thornswood
+# takes. So this passes UPLOAD_BUILD "false" and SP_NEXUS_ARTIFACT_NAME
+# "nope", and the logs pr_base keeps (vcpkg logs, CMake profiling, msbuild
+# files) go after 7 days, which is long enough to read a failed build's.
+#
+# LINE ENDS AS ONE BUILDS. The image's git turns every text file to CR LF on
+# checkout (core.autocrlf true in its system config). The machine that builds
+# Thornswood's engine checks the fork out as committed, LF, and the server's
+# package.json, yarn.lock and bundle are those bytes; measured 17 Oct, the
+# pull request build's package.json was 1,561 bytes with CR LF, the recorded
+# one 1,517. So this checks out with core.autocrlf false, the way One does.
+#
+# EVERY ACTION BY COMMIT (Thornswood #2761). A tag on an action can be
+# repointed at any commit by whoever owns it, and this job builds the server
+# and the client Thornswood ships. So every `uses:` in every workflow here and
+# in pr_base names a full length commit SHA with its tag in a comment, and
+# misc\thornswood\Test-ActionPins.ps1, a step of this build, fails on one that
+# does not. Dependabot's github-actions entry (dependabot.yml on main) moves
+# the pins, one grouped pull request a month.
 
 name: Thornswood PR Windows
 
 on:
   pull_request:
     branches: [ thornswood/engine-changes ]
+  push:
+    branches: [ thornswood/engine-changes ]
 
+# A pull request's newer push cancels its older build. A push to the branch
+# never cancels another: each commit of the engine keeps its own build.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'push' && github.sha || 'pr' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   BUILD_TYPE: Release
@@ -37,27 +125,204 @@ env:
   VCPKG_FEATURE_FLAGS: 'manifests'
 
 jobs:
-  build:
-    runs-on: windows-2022
-    # packages: write lets vcpkg keep the libraries it built in GitHub
-    # Packages, so the next pull request does not build them all again. The
-    # fork's default token is read only.
+  # The client's view harnesses (Thornswood #2328, #2382): the real
+  # modelApplyUtils.ts over a stand-in game with latent enable and disable.
+  # Node 22 strips the TypeScript types itself, so nothing is installed.
+  client-view-tests:
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
-      packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+      - name: Disabled and harvested references, trees and flora
+        run: node skymp5-client/test-disabled-stays.js
+  save-directory-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: false
+      - name: Check POSIX directory initialization
+        shell: bash
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror \
+            -I skymp5-server/cpp/server_guest_lib \
+            misc/tests/save_directory_test.cpp -o "$RUNNER_TEMP/save-directory-test"
+          "$RUNNER_TEMP/save-directory-test" "$RUNNER_TEMP/save-directory-fixtures"
+      - name: Check the whole-file write on POSIX (Thornswood #2740)
+        shell: bash
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror \
+            -I skymp5-server/cpp/addon \
+            misc/tests/whole_file_write_test.cpp -o "$RUNNER_TEMP/whole-file-write-test"
+          mkdir -p "$RUNNER_TEMP/whole-file-write-fixtures"
+          "$RUNNER_TEMP/whole-file-write-test" "$RUNNER_TEMP/whole-file-write-fixtures"
+  # THE LIBRARY CACHE (Thornswood #2760). vcpkg keeps the libraries it
+  # built in GitHub Packages, so the next build does not build them all
+  # again, and the push build below, the one Thornswood records and ships,
+  # restores them from there. Only that push build may write the cache. A
+  # pull request builds the same steps with a read-only token and a read-only
+  # vcpkg source, so unreviewed code on a branch can never put a library in
+  # the cache the shipped engine is built from. Pull requests from outside
+  # forks get a read-only token from GitHub anyway; a lane's branch in this
+  # repository would get a write token if the job asked for one. The fork's
+  # default token is read only.
+  build-pr:
+    if: github.event_name == 'pull_request'
+    runs-on: windows-2022
+    timeout-minutes: 135
+    permissions:
+      contents: read
+      packages: read
+    env:
+      VCPKG_BINARY_SOURCES: 'clear;nuget,GitHub,read'
+    steps: &build-steps
+      # The header, LINE ENDS AS ONE BUILDS. Before the checkout, so the fork
+      # and its submodules (vcpkg among them) are checked out as committed.
+      - name: Check out as committed, LF
+        shell: pwsh
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
           submodules: 'true'
+      # The header, EVERY ACTION BY COMMIT. Before the build, so a tag pin
+      # fails in seconds rather than after it.
+      - name: Every action is pinned by commit
+        shell: pwsh
+        run: .\misc\thornswood\Test-ActionPins.ps1
       - uses: ./.github/actions/pr_base
         with:
           DESCRIPTION: 'Flatrim'
           SKYRIM_VR_FLAG: OFF
-          SP_NEXUS_ARTIFACT_NAME: Skyrim Platform %SP_VERSION%
+          SP_NEXUS_ARTIFACT_NAME: nope
           DEPLOY_BRANCH: ""
           DIST_ARTIFACT_NAME: dist
           SERVER_DIST_ARTIFACT_NAME: server-dist
           SKYMP5_PATCHES_PAT: ""
           NUGET_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUGET_FEED_OWNER: ${{ github.repository_owner }}
           COVERAGE: "false"
+          UPLOAD_BUILD: "false"
+          ARTIFACT_RETENTION_DAYS: "7"
+
+      # Read from each native client file's own program database, which only
+      # this build folder has (Thornswood #3099; the script says how).
+      - name: Write the client files' licence texts
+        shell: pwsh
+        run: .\misc\thornswood\Write-ClientLicences.ps1 -Build (Join-Path $env:GITHUB_WORKSPACE 'build')
+
+      # The header, THE BUILD THORNSWOOD RECORDS. After the unit tests, so
+      # only a build whose tests passed is kept.
+      - name: Gather the build Thornswood records
+        id: gather
+        shell: pwsh
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ws = $env:GITHUB_WORKSPACE
+          $commit = "$(git -C $ws rev-parse HEAD)".Trim()
+          if ($commit -ne $env:SHA) { Write-Host "::error::the checkout is at $commit, not $env:SHA"; exit 1 }
+          $out = Join-Path $env:RUNNER_TEMP 'thornswood-engine'
+          if (Test-Path -LiteralPath $out) { Remove-Item -LiteralPath $out -Recurse -Force }
+          $null = New-Item -ItemType Directory -Force -Path $out
+          $b = Join-Path $ws 'build'
+          # Paths under build\, with forward slashes.
+          $rels = New-Object System.Collections.Generic.List[string]
+          $server = Join-Path $b 'dist\server'
+          foreach ($f in @(Get-ChildItem -LiteralPath $server -Recurse -File)) { $rels.Add(('dist/server/' + $f.FullName.Substring($server.Length + 1)).Replace('\', '/')) }
+          # The six New-ClientBuildRecord.ps1 records ($Files there). A
+          # seventh there and not here stops engine.yml's record of this
+          # build, naming the file, so the two lists cannot drift apart unseen.
+          foreach ($c in 'Data/SKSE/Plugins/MpClientPlugin.dll', 'Data/SKSE/Plugins/SkyrimPlatform.dll',
+                         'Data/Platform/Distribution/RuntimeDependencies/SkyrimPlatformImpl.dll',
+                         'Data/Platform/Distribution/RuntimeDependencies/SkyrimPlatformCEF.exe.hidden',
+                         'Data/Platform/Plugins/skymp5-client.js', 'Data/Scripts/TESModPlatform.pex') { $rels.Add('dist/client/' + $c) }
+          $rels.Add('skymp5-server/launch_server.bat.tmp')
+          $lic = Join-Path $b 'licences'
+          if (-not (Test-Path -LiteralPath (Join-Path $lic 'licences.json'))) { Write-Host '::error::the build has no build/licences/licences.json'; exit 1 }
+          foreach ($f in @(Get-ChildItem -LiteralPath $lic -File)) { $rels.Add('licences/' + $f.Name) }
+          $pex = Join-Path $b 'skymp5-scripts\pex'
+          if (Test-Path -LiteralPath $pex) {
+            foreach ($f in @(Get-ChildItem -LiteralPath $pex -File)) { $rels.Add('skymp5-scripts/pex/' + $f.Name) }
+          }
+          $files = [ordered]@{}
+          foreach ($rel in $rels) {
+            $from = Join-Path $b $rel
+            if (-not (Test-Path -LiteralPath $from -PathType Leaf)) { Write-Host "::error::the build has no build/$rel"; exit 1 }
+            $to = Join-Path (Join-Path $out 'build') $rel
+            $null = New-Item -ItemType Directory -Force -Path (Split-Path -Parent $to)
+            Copy-Item -LiteralPath $from -Destination $to
+            $i = Get-Item -LiteralPath $from
+            $files['build/' + $rel] = [ordered]@{
+              sha256 = (Get-FileHash -LiteralPath $from -Algorithm SHA256).Hash.ToLowerInvariant()
+              bytes = $i.Length
+              lastWriteUtc = $i.LastWriteTimeUtc.ToString('yyyy-MM-ddTHH:mm:ss.fffffffZ')
+            }
+          }
+          $manifest = [ordered]@{
+            _note = 'What this build of the fork is, for Thornswood''s engine.yml: the commit, the run that built it, and each file at its path under the build folder with its sha256, size and time (UTC). Written by .github/workflows/thornswood-pr-windows.yml.'
+            repository = $env:REPOSITORY
+            event = $env:EVENT
+            ref = $env:REF
+            commit = $commit
+            runId = [long]$env:RUN_ID
+            runAttempt = [int]$env:RUN_ATTEMPT
+            runUrl = $env:RUN_URL
+            files = $files
+          }
+          [IO.File]::WriteAllText((Join-Path $out 'fork-build.json'), (($manifest | ConvertTo-Json -Depth 5) + "`n"), (New-Object Text.UTF8Encoding($false)))
+          Write-Host ("{0} files of the build of {1}, {2:N0} bytes" -f $files.Count, $commit, (@($files.Values | ForEach-Object { $_.bytes }) | Measure-Object -Sum).Sum)
+          foreach ($k in $files.Keys) { Write-Host ('  {0}  {1}' -f $files[$k].sha256.Substring(0, 12), $k) }
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value ('dir=' + $out)
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value ('days=' + $(if ($env:EVENT -eq 'push') { '90' } else { '14' }))
+
+      - name: Keep the build Thornswood records
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: thornswood-engine-${{ github.sha }}
+          path: ${{ steps.gather.outputs.dir }}
+          if-no-files-found: error
+          # Every file fork-build.json names goes, a name that starts with a
+          # dot included; engine.yml refuses a build missing one.
+          include-hidden-files: true
+          retention-days: ${{ steps.gather.outputs.days }}
+
+      # The header, THE BUILD AS A PACKAGE. A push's build only: the build
+      # job's token has packages: write, the pull request's has read.
+      - name: Keep the build as a package
+        if: github.event_name == 'push'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_DIR: ${{ steps.gather.outputs.dir }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          & .\misc\thornswood\Push-EnginePackage.ps1 -Folder $env:BUILD_DIR -Commit $env:COMMIT
+          exit $LASTEXITCODE
+
+  build:
+    if: github.event_name == 'push'
+    runs-on: windows-2022
+    timeout-minutes: 135
+    # The workflow's own VCPKG_BINARY_SOURCES, readwrite: the header above
+    # build-pr, THE LIBRARY CACHE.
+    permissions:
+      contents: read
+      packages: write
+    steps: *build-steps

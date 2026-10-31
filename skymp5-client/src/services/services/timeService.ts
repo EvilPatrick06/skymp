@@ -1,5 +1,14 @@
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 
+// Thornswood #3156: the world is 4E 252 in 2026 (Thornswood's lore/README.md),
+// fifty years after the civil war, and a real year is a year of the Fourth Era,
+// as a real day is a day of the calendar. Upstream counts 2020 as 4E 199.
+const FOURTH_ERA_YEAR_IN_2026 = 252;
+
+export function gameYearOf(date: Date) {
+    return date.getUTCFullYear() - 2026 + FOURTH_ERA_YEAR_IN_2026;
+}
+
 export class TimeService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
@@ -46,7 +55,7 @@ export class TimeService extends ClientListener {
             gameHour.setValue(newGameHourValue);
             gameDay.setValue(date.getUTCDate());
             gameMonth.setValue(date.getUTCMonth());
-            gameYear.setValue(date.getUTCFullYear() - 2020 + 199);
+            gameYear.setValue(gameYearOf(date));
         }
 
         timeScale.setValue(gameHour.getValue() > newGameHourValue ? 0.6 : 1.2);

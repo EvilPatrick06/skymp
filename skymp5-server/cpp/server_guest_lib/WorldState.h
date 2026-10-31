@@ -81,11 +81,31 @@ public:
                       const FormCallbacks& callbacks);
 
   void Tick();
+  // Call before dispatching gameplay in tick entry points above WorldState.
+  // A storage callback must not recursively process packets or timers.
+  void EnsureTickAllowed() const;
+  // Observed save-pump failure, retained for this world's lifetime. This query
+  // is thread-safe; it does not make world mutation or pumping thread-safe.
+  bool HasSaveStorageFailure() const noexcept;
+
+  struct SaveCompletionResult
+  {
+    enum class Phase { WritesCompleted };
+    Phase phase;
+    bool supportsDurableUpsert;
+  };
+  // Terminal owner-thread drain of accepted saves only. The caller excludes
+  // mutation producers and never resumes gameplay afterward. This does not
+  // certify durable persistence, a stopped process or restoration completeness.
+  SaveCompletionResult CompleteSavesForShutdown(uint32_t timeoutMs);
 
   void RequestReloot(MpObjectReference& ref,
                      std::chrono::system_clock::duration time);
 
   void RequestSave(MpObjectReference& ref);
+  // Stages a complete snapshot before a caller's nonthrowing live commit.
+  // False means saving is suspended or the reference is no longer registered.
+  bool RequestPreparedSave(MpObjectReference& ref, MpChangeForm&& snapshot);
   std::string GetSavedInventoryReceipt(MpObjectReference& ref);
   MerchantTransferController& GetMerchantTransfers();
   bool HasEspmFile(std::string_view filename) const noexcept;
@@ -255,6 +275,11 @@ public:
   // are left on disk as they are and their ids are never generated again
   // (Thornswood #1269).
   const std::map<uint32_t, int32_t>& GetUnreadableChangeForms() const;
+  // The same, for one profile: the form ids of its characters that were kept
+  // aside, in id order. The gamemode reads it when it makes that profile a
+  // new character, to tell the person the old one was kept.
+  std::vector<uint32_t> GetUnreadableChangeFormsOfProfile(
+    int32_t profileId) const;
   void SetRelootTime(const std::string& recordType,
                      std::chrono::system_clock::duration time);
   std::optional<std::chrono::system_clock::duration> GetRelootTime(
@@ -271,9 +296,18 @@ public:
   // itself; an empty clock puts the system clock back (Thornswood #2000).
   void SetTimerClock(Viet::Timer::Clock clock);
 
+  // THORNSWOOD PATCH (Thornswood #3498). Now on the timers' clock: the
+  // system clock, or the one SetTimerClock gave.
+  std::chrono::system_clock::time_point GetTimerNow() const;
+
   void SetNpcSettings(
     std::unordered_map<std::string, NpcSettingsEntry>&& settings);
   void SetForbiddenRelootTypes(const std::set<std::string>& types);
+  void SetForbiddenBaseContainerTypes(const std::set<std::string>& types);
+  // True when a reference whose base is this record type starts with none
+  // of the record's own contents (forbiddenBaseContainer).
+  [[nodiscard]] bool IsBaseContainerForbidden(
+    const std::string& type) const noexcept;
   void SetEnableConsoleCommandsForAllSetting(bool enable);
 
 public:
@@ -341,6 +375,9 @@ public:
   // update and the rest of it is accepted, which is the difference between
   // wearing everything but the axe and wearing nothing at all.
   bool equipmentInventoryCheckEnabled = true;
+  // THORNSWOOD #2262. Ask the gamemode about each item an equipment update
+  // puts on (onEquipItemAttempt). Off by default.
+  bool equipItemAttemptEnabled = false;
 
   // Races the server refuses to take over. The playable ten are deliberately
   // NOT in this default any more. They were, and since every human, elf, orc,
@@ -373,6 +410,8 @@ private:
   bool LoadForm(uint32_t formId,
                 std::stringstream* optionalOutTrace = nullptr);
   void TickSaveStorage(const std::chrono::system_clock::time_point& now);
+  void TickSaveStorageImpl(const std::chrono::system_clock::time_point& now);
+  void CheckSaveCompletionProgress() const;
   void TickTimers(const std::chrono::system_clock::time_point& now);
   [[nodiscard]] bool NpcSourceFilesOverriden() const noexcept;
   [[nodiscard]] bool IsNpcAllowed(uint32_t refrId) const noexcept;

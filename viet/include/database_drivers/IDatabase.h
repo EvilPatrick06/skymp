@@ -13,6 +13,11 @@ public:
 
   virtual ~IDatabase() = default;
 
+  // Static, side-effect-free opt-in: successful whole-batch Upsert follows
+  // checked persistence barriers, and write/barrier failures cannot succeed.
+  // This says nothing about queue health or whether a process has stopped.
+  virtual bool SupportsDurableUpsert() const noexcept { return false; }
+
   // Returns numbers of change forms inserted or updated successfully (Suitable
   // for logging). In practice, it should be equal to `changeForms.size()` when
   // saving succeed.

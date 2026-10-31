@@ -14,6 +14,7 @@ void ServerState::Connect(Networking::UserId userId, const std::string& guid)
                   userId, userInfo[userId]->guid, guid);
   }
 
+  actorsMap.Erase(userId);
   userInfo[userId] = std::make_unique<UserInfo>();
   userInfo[userId]->guid = guid;
 

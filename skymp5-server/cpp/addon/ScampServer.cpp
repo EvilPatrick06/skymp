@@ -34,6 +34,8 @@
 #include <cmath>
 #include <database_drivers/DatabaseFactory.h>
 #include <database_drivers/PrivateEconomyLedger.h>
+// After PrivateEconomyLedger.h, which brings in Windows.h on Windows already.
+#include "WholeFileWrite.h"
 #include <limits>
 #include <memory>
 #include <napi.h>
@@ -41,6 +43,7 @@
 #include <save_storages/SaveStorageFactory.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <sstream>
+#include <stdexcept>
 #include <string_view>
 
 enum class CallType
@@ -90,8 +93,10 @@ Napi::Object ScampServer::Init(Napi::Env env, Napi::Object exports)
     env, "ScampServer",
     { InstanceMethod("_setSelf", &ScampServer::_SetSelf),
       InstanceMethod("attachSaveStorage", &ScampServer::AttachSaveStorage),
+      InstanceMethod("completeSavesForShutdown", &ScampServer::CompleteSavesForShutdown),
       InstanceMethod("validateInventoryTransaction", &ScampServer::ValidateInventoryTransaction),
       InstanceMethod("writePrivateEconomyLedger", &ScampServer::WritePrivateEconomyLedger),
+      InstanceMethod("writeFileWhole", &ScampServer::WriteFileWhole),
       InstanceMethod("tick", &ScampServer::Tick),
       InstanceMethod("on", &ScampServer::On),
       InstanceMethod("createActor", &ScampServer::CreateActor),
@@ -106,6 +111,8 @@ Napi::Object ScampServer::Init(Napi::Env env, Napi::Object exports)
       InstanceMethod("setRaceMenuOpen", &ScampServer::SetRaceMenuOpen),
       InstanceMethod("getActorsByProfileId",
                      &ScampServer::GetActorsByProfileId),
+      InstanceMethod("getUnreadableChangeForms",
+                     &ScampServer::GetUnreadableChangeForms),
       InstanceMethod("setEnabled", &ScampServer::SetEnabled),
       InstanceMethod("createBot", &ScampServer::CreateBot),
       InstanceMethod("getUserByActor", &ScampServer::GetUserByActor),
@@ -123,6 +130,8 @@ Napi::Object ScampServer::Init(Napi::Env env, Napi::Object exports)
                      &ScampServer::CompareAndSetInventory),
       InstanceMethod("compareAndSetInventoryAndProperty",
                      &ScampServer::CompareAndSetInventoryAndProperty),
+      InstanceMethod("compareAndSetActorProperty",
+                     &ScampServer::CompareAndSetActorProperty),
       InstanceMethod("getInventoryReceipt", &ScampServer::GetInventoryReceipt),
       InstanceMethod("getSavedInventoryReceipt",
                      &ScampServer::GetSavedInventoryReceipt),
@@ -141,6 +150,7 @@ Napi::Object ScampServer::Init(Napi::Env env, Napi::Object exports)
       InstanceMethod("stopNpcMovement", &ScampServer::StopNpcMovement),
       InstanceMethod("getNavmeshRecords", &ScampServer::GetNavmeshRecords),
       InstanceMethod("getNpcAIState", &ScampServer::GetNpcAIState),
+      InstanceMethod("getActorRuntimeIdentity", &ScampServer::GetActorRuntimeIdentity),
       InstanceMethod("getFactionReactions", &ScampServer::GetFactionReactions),
       InstanceMethod("serverNpcAttack", &ScampServer::ServerNpcAttack),
       InstanceMethod("getLoadedFormCount", &ScampServer::GetLoadedFormCount),
@@ -301,6 +311,14 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
       partOne->worldState.npcAllowEssential = v;
       spdlog::info("essential, protected and unique NPCs are {}",
                    v ? "allowed" : "skipped");
+    }
+
+    if (serverSettings.find("equipItemAttemptEnabled") !=
+        serverSettings.end()) {
+      bool v = serverSettings.at("equipItemAttemptEnabled").get<bool>();
+      partOne->worldState.equipItemAttemptEnabled = v;
+      spdlog::info("the gamemode's per-item equip check is {}",
+                   v ? "on" : "off");
     }
 
     if (serverSettings.find("equipmentSlotCheckEnabled") !=
@@ -540,6 +558,17 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
         (*it).get<std::set<std::string>>());
     }
 
+    if (auto it = serverSettings.find("forbiddenBaseContainer");
+        it != serverSettings.end() && it->is_array()) {
+      auto types = it->get<std::set<std::string>>();
+      partOne->worldState.SetForbiddenBaseContainerTypes(types);
+      for (auto& type : types) {
+        logger->info("'{}' references start with none of their record's "
+                     "contents",
+                     type);
+      }
+    }
+
     if (auto it = serverSettings.find("serverKey");
         it != serverSettings.end()) {
       auto serverKey = it.value();
@@ -602,6 +631,22 @@ Napi::Value ScampServer::WritePrivateEconomyLedger(const Napi::CallbackInfo& inf
     const auto servedDir = std::filesystem::u8path("data");
     ::WritePrivateEconomyLedger(privateDir, servedDir, name, bytes);
     return Napi::Boolean::New(info.Env(), true);
+  } catch (std::exception& e) {
+    throw Napi::Error::New(info.Env(), e.what());
+  }
+}
+
+// mp.writeFileWhole(path, text) (Thornswood #2740): text, as UTF-8, replaces
+// the file at path whole, for files other programs read while the server
+// runs. WholeFileWrite.h says how and why. Throws, and leaves the file as it
+// was, when it cannot.
+Napi::Value ScampServer::WriteFileWhole(const Napi::CallbackInfo& info)
+{
+  try {
+    const auto path = NapiHelper::ExtractString(info[0], "path");
+    const auto text = NapiHelper::ExtractString(info[1], "text");
+    WholeFileWrite::Write(std::filesystem::u8path(path), text);
+    return info.Env().Undefined();
   } catch (std::exception& e) {
     throw Napi::Error::New(info.Env(), e.what());
   }
@@ -691,11 +736,71 @@ Napi::Value ScampServer::CompareAndSetInventoryAndProperty(
   return CompareAndSetInventoryImpl(info, true);
 }
 
+Napi::Value ScampServer::CompareAndSetActorProperty(const Napi::CallbackInfo& info)
+{
+  try {
+    const auto id = InventoryActorId(info[0]);
+    const auto entryRuntime = partOne->worldState.GetFormAt<MpActor>(id).GetRuntimeIdentity();
+    const auto profile = NapiHelper::ExtractDouble(info[1], "expectedProfileId");
+    if (!std::isfinite(profile) || std::floor(profile) != profile ||
+        profile <= 0 || profile > 2147483647)
+      throw std::runtime_error("Actor profile must be a positive int32 integer");
+    const auto input = NapiHelper::ExtractObject(info[2], "property");
+    const auto runtime = NapiHelper::ExtractString(
+      input.Get("expectedRuntimeIdentity"), "expectedRuntimeIdentity", std::nullopt, {1,20});
+    if (runtime.front() == '0' || !std::all_of(runtime.begin(), runtime.end(),
+        [](char c) {return c >= '0' && c <= '9';}))
+      throw std::runtime_error("Invalid actor runtime identity");
+    const auto runtimeValue = std::stoull(runtime);
+    const auto name = NapiHelper::ExtractString(input.Get("name"), "property.name",
+      GetPropertyAlphabet(), {1,128});
+    const auto life = NapiHelper::ExtractDouble(input.Get("expectedLifeGeneration"), "lifeGeneration");
+    if (!std::isfinite(life) || std::floor(life) != life || life < 0 || life > 9007199254740991.0)
+      throw std::runtime_error("Actor lifeGeneration must be a nonnegative safe integer");
+    const MpObjectReference::InventoryPropertyChange property{
+      name, NapiHelper::Stringify(info.Env(), input.Get("expected")),
+      NapiHelper::Stringify(info.Env(), input.Get("replacement")),
+      static_cast<uint64_t>(life), runtimeValue};
+    // JS getters/serialization may reload the gamemode or replace the actor.
+    static const auto standard = PropertyBindingFactory().CreateStandardPropertyBindings();
+    const auto found = gamemodeApiState.createdProperties.find(name);
+    if (name.front() == '_' || standard.count(name) ||
+        found == gamemodeApiState.createdProperties.end() ||
+        found->second.isVisibleByOwner || found->second.isVisibleByNeighbors)
+      throw std::runtime_error("Actor metadata requires a registered hidden custom property");
+    auto& actor = partOne->worldState.GetFormAt<MpActor>(id);
+    if (!actor.HasRuntimeIdentity(entryRuntime))return Napi::Boolean::New(info.Env(), false);
+    return Napi::Boolean::New(info.Env(), actor.CompareAndSetActorProperty(
+      static_cast<int32_t>(profile), property));
+  } catch (const std::exception& error) {
+    throw Napi::Error::New(info.Env(), error.what());
+  }
+}
+
 Napi::Value ScampServer::CompareAndSetInventoryImpl(
   const Napi::CallbackInfo& info, bool withProperty)
 {
   try {
     const auto id = InventoryActorId(info[0]);
+    const auto entryRuntimeIdentity =
+      partOne->worldState.GetFormAt<MpActor>(id).GetRuntimeIdentity();
+    // Snapshot the optional fence before any other getter or serialization
+    // can change its value or remove it to enter the legacy optional path.
+    std::optional<Napi::Object> propertyInput;
+    std::optional<uint64_t> expectedRuntimeIdentity;
+    if (withProperty) {
+      propertyInput = NapiHelper::ExtractObject(info[6], "property");
+      if (propertyInput->Has("expectedRuntimeIdentity")) {
+        const auto runtime = NapiHelper::ExtractString(
+          propertyInput->Get("expectedRuntimeIdentity"), "expectedRuntimeIdentity",
+          std::nullopt, {1, 20});
+        if (runtime[0] == '0' || !std::all_of(runtime.begin(), runtime.end(),
+            [](char c) { return c >= '0' && c <= '9'; })) {
+          throw std::runtime_error("Invalid inventory runtime identity");
+        }
+        expectedRuntimeIdentity = std::stoull(runtime);
+      }
+    }
     const auto sequence = NapiHelper::ExtractDouble(info[4], "sequence");
     if (!std::isfinite(sequence) || std::floor(sequence) != sequence ||
         sequence <= 0 || sequence > 9007199254740991.0) {
@@ -715,7 +820,7 @@ Napi::Value ScampServer::CompareAndSetInventoryImpl(
     }
     std::optional<MpObjectReference::InventoryPropertyChange> property;
     if (withProperty) {
-      const auto change = NapiHelper::ExtractObject(info[6], "property");
+      const auto& change = *propertyInput;
       const auto name = NapiHelper::ExtractString(
         change.Get("name"), "property.name", GetPropertyAlphabet(), { 1, 128 });
       const auto life = NapiHelper::ExtractDouble(
@@ -727,7 +832,7 @@ Napi::Value ScampServer::CompareAndSetInventoryImpl(
       property = MpObjectReference::InventoryPropertyChange{
         name, NapiHelper::Stringify(info.Env(), change.Get("expected")),
         NapiHelper::Stringify(info.Env(), change.Get("replacement")),
-        static_cast<uint64_t>(life)
+        static_cast<uint64_t>(life), expectedRuntimeIdentity
       };
       // Serialization can invoke JS getters/toJSON, including a gamemode
       // reload. Validate registration only after those callbacks finish.
@@ -760,6 +865,11 @@ Napi::Value ScampServer::CompareAndSetInventoryImpl(
       }
     }
     auto& actor = partOne->worldState.GetFormAt<MpActor>(id);
+    // Even reading fence presence/value can invoke a Proxy trap. Independently
+    // fence the actual actor at API entry, including legacy optional callers.
+    if (!actor.HasRuntimeIdentity(entryRuntimeIdentity)) {
+      return Napi::Boolean::New(info.Env(), false);
+    }
     if (actor.GetProfileId() != static_cast<int32_t>(profile)) {
       throw std::runtime_error(
         "Inventory profile does not match the expected human");
@@ -800,11 +910,46 @@ Napi::Value ScampServer::GetSavedInventoryReceipt(
   }
 }
 
+Napi::Value ScampServer::CompleteSavesForShutdown(const Napi::CallbackInfo& info)
+{
+  try {
+    if (info.Length() != 1 || !info[0].IsNumber()) {
+      throw std::invalid_argument("Expected one numeric timeoutMs");
+    }
+    const double timeoutMs = info[0].As<Napi::Number>().DoubleValue();
+    if (!std::isfinite(timeoutMs) || std::trunc(timeoutMs) != timeoutMs ||
+        timeoutMs < 1 || timeoutMs > 30000) {
+      throw std::invalid_argument("timeoutMs must be an integer from 1 to 30000");
+    }
+
+    const auto completed = partOne->worldState.CompleteSavesForShutdown(
+      static_cast<uint32_t>(timeoutMs));
+    auto result = Napi::Object::New(info.Env());
+    // Defining own data properties avoids inherited JavaScript setters after
+    // native completion. Allocation failure still leaves the world terminal.
+    result.DefineProperties({
+      Napi::PropertyDescriptor::Value(
+        "phase", Napi::String::New(info.Env(), "writes-completed"),
+        napi_enumerable),
+      Napi::PropertyDescriptor::Value(
+        "supportsDurableUpsert",
+        Napi::Boolean::New(info.Env(), completed.supportsDurableUpsert),
+        napi_enumerable),
+    });
+    return result;
+  } catch (const std::exception& error) {
+    throw Napi::Error::New(info.Env(), error.what());
+  } catch (...) {
+    throw Napi::Error::New(info.Env(), "Native save completion failed");
+  }
+}
+
 Napi::Value ScampServer::Tick(const Napi::CallbackInfo& info)
 {
   ANTIGO_CONTEXT_INIT(ctx);
 
   try {
+    partOne->worldState.EnsureTickAllowed();
     tickEnv = info.Env();
 
     bool tickFinished = false;
@@ -985,6 +1130,28 @@ Napi::Value ScampServer::GetActorsByProfileId(const Napi::CallbackInfo& info)
     for (auto& ac : actors) {
       result.Set(counter, ac);
       ++counter;
+    }
+    return result;
+
+  } catch (std::exception& e) {
+    throw Napi::Error::New(info.Env(), (std::string)e.what());
+  }
+}
+
+// The characters of this profile whose saved record could not be read at
+// start, by form id. They are kept on disk as they were (Thornswood #1269), and
+// the gamemode tells the person once when it makes them a new one.
+Napi::Value ScampServer::GetUnreadableChangeForms(
+  const Napi::CallbackInfo& info)
+{
+  auto profileId = info[0].As<Napi::Number>().Int32Value();
+  try {
+    auto formIds =
+      partOne->worldState.GetUnreadableChangeFormsOfProfile(profileId);
+
+    auto result = Napi::Array::New(info.Env(), formIds.size());
+    for (size_t i = 0; i < formIds.size(); ++i) {
+      result.Set(static_cast<uint32_t>(i), formIds[i]);
     }
     return result;
 
@@ -1698,6 +1865,18 @@ Napi::Value ScampServer::GetNavmeshRecords(const Napi::CallbackInfo& info)
   }
 }
 
+Napi::Value ScampServer::GetActorRuntimeIdentity(const Napi::CallbackInfo& info)
+{
+  try {
+    const auto id = NapiHelper::ExtractUInt32(info[0], "formId");
+    const auto identity = partOne->worldState.GetFormAt<MpActor>(id).GetRuntimeIdentity();
+    if (!identity) throw std::runtime_error("Actor runtime identity exhausted");
+    return Napi::String::New(info.Env(), std::to_string(identity));
+  } catch (const std::exception& error) {
+    throw Napi::Error::New(info.Env(), error.what());
+  }
+}
+
 Napi::Value ScampServer::GetNpcAIState(const Napi::CallbackInfo& info)
 {
   try {
@@ -1750,6 +1929,9 @@ Napi::Value ScampServer::GetNpcAIState(const Napi::CallbackInfo& info)
       throw std::runtime_error("Invalid persisted NPC life generation");
     const int64_t generation = savedLife.is_null() ? 0 : savedLife.get<int64_t>();
     result.Set("lifeGeneration", static_cast<double>(generation));
+    const auto runtimeLife = actor.GetRuntimeLifeIdentity();
+    if (!runtimeLife) throw std::runtime_error("Actor runtime identity exhausted");
+    result.Set("runtimeLifeIdentity", std::to_string(runtimeLife));
     result.Set("difficultyTier", actor.GetNpcDifficultyTier());
     result.Set("aggression", profile->second.second[0]);
     result.Set("confidence", profile->second.second[1]);

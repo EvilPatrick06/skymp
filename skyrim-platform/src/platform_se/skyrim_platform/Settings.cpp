@@ -37,6 +37,10 @@ std::unique_ptr<Settings::File> Settings::GetPlatformSettings()
     file->SetString("Browser", "BackendName", "auto",
                     "; Browser backend name: off/tilted/nirnlab/auto");
 
+    file->SetBool("Browser", "ShowAtStart", true,
+                  "; Show and focus the browser as soon as it exists, before "
+                  "any plugin runs");
+
     file->Save();
   }
 
