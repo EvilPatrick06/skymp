@@ -5,7 +5,11 @@
 #include <simdjson.h>
 #include <string>
 #include <tuple>
+#include <type_traits>
 #include <vector>
+
+class BitStreamInputArchive;
+class BitStreamOutputArchive;
 
 class Inventory
 {
@@ -124,6 +128,12 @@ public:
         .Serialize("worn", worn_)
         .Serialize("wornLeft", wornLeft)
         .Serialize("made", made);
+      // Provenance stays on the server and in JSON saves. It is not part of
+      // the client protocol: ordinary entries keep their existing wire layout.
+      if constexpr (!std::is_same_v<Archive, BitStreamInputArchive> &&
+                    !std::is_same_v<Archive, BitStreamOutputArchive>) {
+        archive.Serialize("npcEquipment", npcEquipment);
+      }
     }
 
     std::optional<float> health;
@@ -138,6 +148,9 @@ public:
     std::optional<bool> worn_;
     std::optional<bool> wornLeft;
     std::optional<Made> made; // Thornswood #1649, see Made above
+    // Inherited NPC gear is owned for combat and appearance, never body loot.
+    // Ordinary script assignments have no marker and remain separate stacks.
+    std::optional<bool> npcEquipment;
   };
 
   class Entry : public ExtraData
