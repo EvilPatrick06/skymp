@@ -1,0 +1,63 @@
+# OpenSSF Scorecard for the engine Thornswood ships (Thornswood's redesign,
+# part 20, plan line 27, 1 Nov 2026): the Open Source Security Foundation's
+# checks of how this repository is kept (pinned actions, workflow token
+# permissions, branch rules, code review, dangerous workflow patterns, a
+# security policy, dependency updates). What it finds goes on this
+# repository's Security tab beside CodeQL's (thornswood-codeql.yml), which
+# only people with write access read.
+#
+# WHEN. Weekly, Monday 10:15 UTC, and by hand. Scorecard reads the default
+# branch, which is thornswood/engine-changes, the branch Thornswood builds
+# and ships; so a schedule here reads what ships.
+#
+# WHAT IT HOLDS. The run's own token, read only apart from uploading the
+# results to the Security tab (security-events: write, this job alone). No
+# secret. publish_results is false: nothing is sent to the Scorecard API, so
+# no OIDC token is asked for.
+#
+# GitHub's hosted runner only, never a self-hosted one, and only in this
+# repository by its id (a move keeps the id, Thornswood #5184). The actions
+# are pinned by commit (Thornswood #2761; misc/thornswood/Test-ActionPins.ps1
+# holds one SHA per action), upload-sarif at the SHA thornswood-codeql.yml
+# runs. The Scorecard action runs its own container image at the version its
+# pinned commit names.
+
+name: Thornswood Scorecard
+
+on:
+  schedule:
+    - cron: '15 10 * * 1'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: thornswood-scorecard
+  cancel-in-progress: true
+
+jobs:
+  scorecard:
+    name: OpenSSF Scorecard
+    if: github.repository_id == '1375283516'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: false
+          persist-credentials: false
+      - name: Run Scorecard
+        uses: ossf/scorecard-action@fa7117db83c52d787ae5a89f350999701505d78e # v2.5.0
+        with:
+          results_file: scorecard.sarif
+          results_format: sarif
+          publish_results: false
+      - name: Put the results on the Security tab
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          sarif_file: scorecard.sarif
+          category: scorecard
