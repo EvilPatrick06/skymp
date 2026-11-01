@@ -251,6 +251,7 @@ jobs:
           RUN_ATTEMPT: ${{ github.run_attempt }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           REPOSITORY: ${{ github.repository }}
+          REPOSITORY_ID: ${{ github.repository_id }}
         run: |
           $ErrorActionPreference = 'Stop'
           $ws = $env:GITHUB_WORKSPACE
@@ -296,6 +297,8 @@ jobs:
           $manifest = [ordered]@{
             _note = 'What this build of the fork is, for Thornswood''s engine.yml: the commit, the run that built it, and each file at its path under the build folder with its sha256, size and time (UTC). Written by .github/workflows/thornswood-pr-windows.yml.'
             repository = $env:REPOSITORY
+            # The fork's id, which a move to another owner keeps (Thornswood #5184).
+            repositoryId = [long]$env:REPOSITORY_ID
             event = $env:EVENT
             ref = $env:REF
             commit = $commit
