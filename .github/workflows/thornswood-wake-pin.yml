@@ -1,0 +1,76 @@
+# Wakes Thornswood's engine pin when this branch's push build ends green
+# (Thornswood #5219, plan part 8, Patrick's yes of 31 Oct 2026).
+#
+# WHY. Thornswood's engine-pin.yml moves the pin to the newest head of
+# thornswood/engine-changes this repository built green. Nothing here could
+# start a run in Thornswood, so it looked every ten minutes, and a fork merge
+# waited up to ten minutes after its build for that look. Now the end of the
+# push build starts it.
+#
+# WHAT IT DOES. When "Thornswood PR Windows" ends green for a push to
+# thornswood/engine-changes in this repository, it starts engine-pin.yml on
+# Thornswood's main. That look reads GitHub for itself (it starts engine.yml
+# to record the build, and engine.yml starts the next look when it ends), so
+# nothing is handed across but the start.
+#
+# THE ONE SECRET. THORNSWOOD_PIN_WAKE is a fine-grained personal access
+# token whose only repository is Thornswood and whose only permission is
+# Actions: read and write, the permission GitHub's REST docs name for
+# starting a workflow. It can start or cancel Thornswood's workflows and read
+# their runs; it cannot read or write code, issues, pull requests or
+# secrets. It is the narrowest token GitHub allows for this. Patrick makes it
+# (the report page card for #5219), and it is never printed: it reaches gh
+# through GH_TOKEN alone.
+#
+# WHAT RUNS NEAR IT. Nothing of this repository's: the job checks nothing
+# out and runs only gh, which GitHub's image carries. A workflow_run job
+# runs this file from the default branch, never from a pull request, and the
+# job runs only for a push build of this repository's own branch, so a pull
+# request (whose build also ends with this workflow's name) never reaches
+# the token. GitHub's own runner, free on a public repository; never a
+# self-hosted one.
+#
+# WHEN IT FAILS. With no secret, or one GitHub refuses (expired, or the
+# repository moved to another owner and the token was made for the old
+# one), the run ends red and says which; nothing is retried. The pin then
+# moves at Thornswood's next look, until the token is made again.
+name: Thornswood wake the pin
+run-name: Wake Thornswood's pin for ${{ github.event.workflow_run.head_sha }}
+
+on:
+  workflow_run:
+    workflows: [Thornswood PR Windows]
+    types: [completed]
+    branches: [thornswood/engine-changes]
+
+permissions: {}
+
+jobs:
+  wake:
+    name: Start Thornswood's engine-pin.yml
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'thornswood/engine-changes' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Start engine-pin.yml on Thornswood's main
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.THORNSWOOD_PIN_WAKE }}
+          # The owner, not a name typed here: Thornswood and this fork move
+          # to the Thornswood organization together (Thornswood #5184).
+          THORNSWOOD: ${{ github.repository_owner }}/Thornswood
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::THORNSWOOD_PIN_WAKE is not set in this repository's Actions secrets, so Thornswood was not woken for $HEAD_SHA. Its engine-pin.yml takes it at its next look."
+            exit 1
+          fi
+          if ! gh workflow run engine-pin.yml --repo "$THORNSWOOD" --ref main; then
+            echo "::error::GitHub refused to start engine-pin.yml in $THORNSWOOD (gh says why above): the token may have expired or name another owner. Thornswood's engine-pin.yml takes $HEAD_SHA at its next look."
+            exit 1
+          fi
+          echo "engine-pin.yml started in $THORNSWOOD for $HEAD_SHA"
