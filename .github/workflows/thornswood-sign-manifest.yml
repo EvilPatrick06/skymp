@@ -101,7 +101,8 @@ concurrency:
 jobs:
   launcher:
     name: Check the launcher the release names
-    if: github.repository == 'EvilPatrick06/skymp' && github.ref == 'refs/heads/main'
+    # The fork by its id, which a move to another owner keeps (Thornswood #5184).
+    if: github.repository_id == '1375283516' && github.ref == 'refs/heads/main'
     runs-on: windows-latest
     permissions:
       contents: read
@@ -167,7 +168,8 @@ jobs:
   sign:
     name: Sign the release manifest's catalog
     needs: launcher
-    if: github.repository == 'EvilPatrick06/skymp' && github.ref == 'refs/heads/main'
+    # The fork by its id, which a move to another owner keeps (Thornswood #5184).
+    if: github.repository_id == '1375283516' && github.ref == 'refs/heads/main'
     runs-on: windows-latest
     environment: thornswood-signing
     permissions:
