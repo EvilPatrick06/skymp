@@ -38,7 +38,8 @@ permissions:
 jobs:
   analyze:
     name: CodeQL (${{ matrix.language }})
-    if: github.repository == 'EvilPatrick06/skymp'
+    # The fork by its id, which a move to another owner keeps (Thornswood #5184).
+    if: github.repository_id == '1375283516'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     permissions:

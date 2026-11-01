@@ -43,7 +43,7 @@
 param(
     [string]$Upstream = 'https://github.com/skyrim-multiplayer/skymp',
     [string]$UpstreamBranch = 'main',
-    [string]$Repo = 'EvilPatrick06/skymp',
+    [string]$Repo = $(if ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { 'EvilPatrick06/skymp' }),
     [string]$Base = 'thornswood/engine-changes',
     [string]$Branch = 'upstream-sync/next',
     # Where the branch is pushed; a harness gives a folder.
