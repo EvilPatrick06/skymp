@@ -106,7 +106,18 @@ if(NOT "${SKIP_SKYRIM_PLATFORM_BUILDING}")
 
     # suppress missing pdb warning for cef and frida
     target_link_options(skyrim_platform PRIVATE "LINKER:-ignore:4099")
-    target_precompile_headers(skyrim_platform	PRIVATE	skyrim_platform/PCH.h)
+    # Thornswood #5216: with the compiler cache on, the header is included
+    # into every source (/FI, as the precompiled header was) but not
+    # precompiled, because ccache caches no MSVC compile that uses a
+    # precompiled header. Warm push run 41355217106 hit 536 of 536 cacheable
+    # compiles; the 58 of this target and skyrim_platform_entry did not, and
+    # skyrim_platform took 106 s of the 155 s build, with the server
+    # projects waiting on it.
+    if(SKYMP_COMPILER_CACHE_ON)
+      target_compile_options(skyrim_platform PRIVATE "/FI${CMAKE_CURRENT_SOURCE_DIR}/skyrim_platform/PCH.h")
+    else()
+      target_precompile_headers(skyrim_platform	PRIVATE	skyrim_platform/PCH.h)
+    endif()
     apply_default_settings(TARGETS skyrim_platform)
 
     file(GLOB_RECURSE platform_entry_src "skyrim_platform_entry/*")
@@ -134,7 +145,12 @@ if(NOT "${SKIP_SKYRIM_PLATFORM_BUILDING}")
       AUTHOR "SkyMP Team and Contributors"
     )
 
-    target_precompile_headers(skyrim_platform_entry	PRIVATE	skyrim_platform_entry/PCH.h)
+    # Thornswood #5216: as skyrim_platform above.
+    if(SKYMP_COMPILER_CACHE_ON)
+      target_compile_options(skyrim_platform_entry PRIVATE "/FI${CMAKE_CURRENT_SOURCE_DIR}/skyrim_platform_entry/PCH.h")
+    else()
+      target_precompile_headers(skyrim_platform_entry	PRIVATE	skyrim_platform_entry/PCH.h)
+    endif()
     apply_default_settings(TARGETS skyrim_platform_entry)
 
     set_target_properties(skyrim_platform SkyrimPlatformCEF skyrim_platform_entry PROPERTIES
