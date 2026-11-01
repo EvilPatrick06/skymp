@@ -72,6 +72,9 @@ else()
 endif()
 
 cmake_minimum_required(VERSION 3.19)
+# THORNSWOOD (Thornswood #5191): compile through ccache when asked; before
+# project(), as the file says.
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/thornswood_compiler_cache.cmake NO_POLICY_SCOPE)
 project(skymp)
 enable_testing()
 
