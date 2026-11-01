@@ -6,7 +6,9 @@
 # which Thornswood does not build. Now this looks every Monday. When upstream
 # has something new, misc/thornswood/Sync-Upstream.ps1 merges it onto
 # thornswood/engine-changes as upstream-sync/next, starts its build and opens
-# the pull request. Once that is merged, the branch's push build builds it
+# the pull request, then starts that pull request's release note check
+# (thornswood-pr-body.yml), which says none until the person who merges it
+# writes a note. Once that is merged, the branch's push build builds it
 # and Thornswood's engine-pin.yml moves the pin to it, so an upstream fix
 # reaches a release with one merge by a person.
 #
