@@ -34,11 +34,20 @@ mp.onThornswoodLogin = (e) => {
   return e.proof.pass === PASS && e.proof.mac === mac(e.nonce) ? e.profileId : 0;
 };
 
+// Everything each bot has read and not yet looked at, so an event that came
+// in the same tick as the one awaited is still there for the next wait.
+const backlog = new Map();
 const until = async (bot, test, ms, what) => {
   const end = Date.now() + ms;
   const seen = [];
+  if (!backlog.has(bot)) {
+    backlog.set(bot, []);
+  }
+  const queue = backlog.get(bot);
   for (;;) {
-    for (const e of bot.tick()) {
+    queue.push(...bot.tick());
+    while (queue.length) {
+      const e = queue.shift();
       seen.push(e);
       const v = test(e);
       if (v) {
@@ -111,9 +120,13 @@ const main = async () => {
   assert.equal(c.transform.worldOrCell, 0x3c);
   assert.deepEqual(c.transform.pos.map(Math.round), POS);
   assert.deepEqual(c.props.inventory, INVENTORY);
-  // No appearance yet, so spawn.ts reopens the race menu, and the first
-  // packet says so.
-  assert.equal(c.props.isRaceMenuOpen, true);
+  // No appearance yet, so spawn.ts reopens the race menu. For a character
+  // that already exists it does that after setUserActor, so the owner is
+  // told in a setRaceMenuOpen of its own, not in the createActor (only a
+  // new character's createActor says so).
+  assert.equal(c.props.isRaceMenuOpen, undefined);
+  const menu = await until(bot, (e) => e.type === "message" && e.message && e.message.t === 29 && e.message, 15000, "race menu");
+  assert.equal(menu.value.open, true);
 
   bot.destroy();
   assert.deepEqual(bot.tick(), []);
