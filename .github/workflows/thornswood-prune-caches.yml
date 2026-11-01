@@ -1,0 +1,78 @@
+# Keeps the newest Actions cache of each kind and deletes the ones a newer
+# one replaced (Thornswood #5315).
+#
+# WHY. GitHub keeps 10 GB of caches a repository and then evicts the entries
+# used longest ago, whatever they are. Three kinds here are saved under keys
+# that change at every push, and nothing deleted the one before, though a
+# build or scan restores only the newest:
+#   - CodeQL's overlay-base database, one per language, keyed by commit and
+#     run (175 MB a push on 1 Nov 2026, run 41340857513);
+#   - the compiler cache's store, keyed by commit (CCACHE_MAXSIZE 4G,
+#     thornswood-pr-windows.yml, THE COMPILER CACHE);
+#   - the installed libraries, keyed by their Abis (THE INSTALLED LIBRARIES
+#     there).
+# Thornswood itself sat at 10.39 GB of 10 on 1 Nov from the first kind
+# alone. Left to fill, these push out the ones the engine build reads.
+#
+# WHAT IT DOES. When "Thornswood PR Windows" or "Thornswood CodeQL" ends
+# green for a push to thornswood/engine-changes, each kind keeps its newest
+# entry on that branch and the rest are deleted
+# (misc/thornswood/Remove-ReplacedCaches.ps1 says how, and names any key of a
+# shape it does not know instead of deleting it). The test masters' cache
+# has one fixed key and is not touched.
+#
+# WHY A WORKFLOW OF ITS OWN. A workflow_run job runs this file from the
+# default branch, never from a pull request, after the build's run has ended,
+# so the build's result, which Thornswood's pin wakes on, never hangs on a
+# delete. It alone holds actions: write, which deleting a cache needs; it
+# reads no secret and runs on GitHub's runner, never a self-hosted one.
+name: Thornswood prune caches
+run-name: Prune caches after ${{ github.event.workflow_run.name }} of ${{ github.event.workflow_run.head_sha }}
+
+on:
+  workflow_run:
+    workflows: [Thornswood PR Windows, Thornswood CodeQL]
+    types: [completed]
+    branches: [thornswood/engine-changes]
+
+permissions: {}
+
+# One prune at a time; a second waits rather than deleting beside the first.
+concurrency:
+  group: thornswood-prune-caches
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    name: Delete the caches a newer one replaced
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'thornswood/engine-changes' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: false
+          persist-credentials: false
+      - name: Keep the newest of each kind
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ref = 'refs/heads/thornswood/engine-changes'
+          # codeql-overlay-base-database-<version>-<hash>-<languages>-<CodeQL version>-<commit>-<run>-<attempt>
+          $kinds = @(
+            @{ Prefix = 'codeql-overlay-base-database-'; Shape = '^codeql-overlay-base-database-\d+-[0-9a-f]+-(?<kind>.+)-\d+\.\d+\.\d+-[0-9a-f]{40}-\d+-\d+$' },
+            @{ Prefix = 'ccache-windows-2022-'; Shape = '^(?<kind>ccache-windows-2022-)[0-9a-f]{40}$' },
+            @{ Prefix = 'vcpkg-installed-windows-2022-abis-'; Shape = '^(?<kind>vcpkg-installed-windows-2022-abis-)[0-9a-f]{64}$' }
+          )
+          foreach ($k in $kinds) {
+            ./misc/thornswood/Remove-ReplacedCaches.ps1 -Prefix $k.Prefix -Shape $k.Shape -Ref $ref
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }

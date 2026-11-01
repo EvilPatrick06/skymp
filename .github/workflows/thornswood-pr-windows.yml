@@ -132,6 +132,14 @@
 # deleting the image's copy and copying the submodule across drives (34 s in
 # the same run). The inputs in pr_base say more.
 #
+# THE NEWEST OF EACH CACHE (Thornswood #5315). The compiler cache's store is
+# saved under a key that names the commit, and the installed libraries under
+# one that names their Abis, so each push can add one, and nothing deletes
+# the one before though a build restores only the newest. GitHub keeps 10 GB
+# a repository and evicts what was used longest ago. When a push's build
+# ends green, thornswood-prune-caches.yml deletes each of these a newer one
+# replaced, in a run of its own, so this build's result never hangs on it.
+#
 # NOTHING ELSE IS KEPT BUT LOGS (Thornswood #3675, #3691). pr_base's own
 # uploads of the build (dist, the client js, server-dist, the Skyrim Platform
 # and papyrus-vm Nexus files) were about 376 MB a run, kept 90 days, and
