@@ -22,7 +22,11 @@
        own token, and only a person may change what the workflows run;
     4. force-push upstream-sync/next, start thornswood-pr-windows.yml on it
        (a push made with this token starts no build by itself), and open or
-       update the pull request.
+       update the pull request, with "Release note: none" for the person who
+       merges it to change when people would notice upstream's changes; then
+       start thornswood-pr-body.yml on the branch, the pull request's release
+       note check, which this token's pull request also does not start by
+       itself (Thornswood #5219).
 
   It runs nothing from upstream: git merges the files, and nothing in them is
   built or run here. They are built by thornswood-pr-windows.yml's read-only
@@ -125,6 +129,23 @@ $body.Add('')
 $body.Add('**Merge with a merge commit, never a squash.** A squash drops upstream''s commits from the branch, so the next sync would merge them again and conflict.')
 $body.Add('')
 $body.Add("Once merged, the push build of $Base builds it and Thornswood's engine-pin.yml moves the pin to it (Thornswood #5148).")
+$body.Add('')
+# The line Thornswood's engine pin joins into the release's note (Thornswood
+# #5219). Upstream's changes are written for upstream's own servers, so the
+# sync says none, and the person who merges it changes that to a note when
+# any of them is something people in the game would notice.
+$body.Add('## Release note')
+$body.Add('')
+$body.Add('Before merging, change this to a note if people in the game would notice any of these changes.')
+$body.Add('')
+$body.Add('Release note: none')
+# The workflow token's pull request, and its edit, start no pull_request run,
+# so the release note check is started by name on the branch, as the build is
+# above. It reads the body of the open pull request whose head is the branch.
+function Start-BodyCheck {
+    & gh workflow run thornswood-pr-body.yml -R $Repo --ref $Branch
+    if ($LASTEXITCODE -ne 0) { Stop-Here "the pull request is up, but its release note check could not be started" }
+}
 $file = Join-Path ([IO.Path]::GetTempPath()) ('upstream-sync-' + [Guid]::NewGuid().ToString('N') + '.json')
 try {
     $open = @(& gh api "repos/$Repo/pulls?state=open&head=$($Repo.Split('/')[0]):$Branch" --jq '.[].number' | Where-Object { $_ -match '^\d+$' })
@@ -134,6 +155,7 @@ try {
         $r = @(& gh api -X PATCH "repos/$Repo/pulls/$($open[0])" --input $file --jq .html_url 2>&1)
         if ($LASTEXITCODE -ne 0) { Stop-Here ("pull request #$($open[0]) could not be updated: " + ($r -join ' ')) }
         Write-Host "pull request $($r -join '') is at $merge"
+        Start-BodyCheck
         exit 0
     }
     [IO.File]::WriteAllText($file, ([ordered]@{ title = $title; body = ($body -join "`n"); head = $Branch; base = $Base; maintainer_can_modify = $true } | ConvertTo-Json -Compress))
@@ -145,6 +167,7 @@ try {
         Stop-Here ("GitHub refused the pull request: " + ($r -join ' '))
     }
     Write-Host "opened pull request $($r -join '') at $merge"
+    Start-BodyCheck
     exit 0
 } finally {
     Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue

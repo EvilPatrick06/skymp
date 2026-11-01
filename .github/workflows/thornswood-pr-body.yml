@@ -1,0 +1,77 @@
+# A fork pull request's release note is checked while it is open
+# (Thornswood #5219, plan part 8).
+#
+# WHY. A change here reaches people only through Thornswood's engine pin, and
+# a release's note is joined from the "Release note:" lines of the pull
+# requests it carries (Thornswood's Collect-ReleaseNotes.ps1). The pin's own
+# pull request joins this fork's lines (Thornswood's Get-EnginePinNotes), and
+# names any fork pull request that has none so a person writes it there. This
+# check makes each fork pull request carry its line while its author still
+# knows what it changes, held to the same rules a release is held to.
+#
+# WHAT IT RUNS. Thornswood main's scripts/dev/Check-PrBody.ps1 with its
+# scripts/release/Note-Rules.ps1, the one copy of the rules, read from
+# Thornswood as it is now and never from the pull request, so a pull request
+# cannot change the check it is held to. Nothing of this repository is
+# checked out. The body reaches the script through the environment and a
+# file, never pasted into it. Read-only token, no secret, GitHub's own runner.
+#
+# WHEN. A pull request into thornswood/engine-changes is opened, pushed to,
+# reopened, or its body is edited: fixing the body turns it green with no new
+# push. A pull request the workflow token opened or updated (the weekly
+# upstream sync, misc/thornswood/Sync-Upstream.ps1) starts no pull_request
+# run, so that script starts this one by name on its branch, and the run
+# reads the body of the open pull request whose head is that branch.
+name: Thornswood pull request body
+on:
+  pull_request:
+    branches: [thornswood/engine-changes]
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pull-requests: read
+concurrency:
+  group: thornswood-pr-body-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  release-note:
+    name: Release note
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The owner, not a name typed here: Thornswood and this fork move to
+          # the Thornswood organization together (Thornswood #5184).
+          repository: ${{ github.repository_owner }}/Thornswood
+          ref: main
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/dev/Check-PrBody.ps1
+            scripts/release/Note-Rules.ps1
+          sparse-checkout-cone-mode: false
+      - name: Check the release note line
+        shell: pwsh
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          GH_TOKEN: ${{ github.token }}
+          HEAD_REF: ${{ github.ref_name }}
+        run: |
+          $f = Join-Path $env:RUNNER_TEMP 'pr-body.md'
+          $body = [string]$env:PR_BODY
+          $author = [string]$env:PR_AUTHOR
+          if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') {
+            # The open pull request whose head is this branch, in this repository.
+            $owner = $env:GITHUB_REPOSITORY.Split('/')[0]
+            $q = [uri]::EscapeDataString("${owner}:$env:HEAD_REF")
+            $prs = @(gh api "repos/$env:GITHUB_REPOSITORY/pulls?state=open&head=$q" | ConvertFrom-Json)
+            if ($LASTEXITCODE -ne 0) { Write-Host "STOP  the open pull request of $env:HEAD_REF could not be read"; exit 1 }
+            if ($prs.Count -ne 1) { Write-Host "STOP  $env:HEAD_REF heads $($prs.Count) open pull requests, not one, so there is no one body to check"; exit 1 }
+            $body = [string]$prs[0].body
+            $author = [string]$prs[0].user.login
+            Write-Host "pull request #$($prs[0].number), opened by $author"
+          }
+          [IO.File]::WriteAllText($f, $body)
+          ./scripts/dev/Check-PrBody.ps1 -BodyFile $f -Author $author
