@@ -108,6 +108,30 @@
 # replaces. The store's numbers are printed after every build ("What the
 # compiler cache did").
 #
+# THE INSTALLED LIBRARIES (the plan's part 7, builds). Restoring vcpkg's 60
+# libraries from GitHub Packages took 57 s of the 122 s configure on 1 Nov
+# 2026 (push run 41267902567, "Restored 60 package(s) from NuGet in 57 s"),
+# one NuGet download after another. Now the folder vcpkg installs them into,
+# build\vcpkg_installed, is kept in the Actions cache as well, under a key
+# made from the Abi lines of its status file, which name every library by
+# the hash of everything it was built from. A build restores the newest one
+# before the configure, and vcpkg keeps each library whose Abi is still the
+# one its plan asks for and fetches only the others, from GitHub Packages as
+# before. Who may write it is the rule THE LIBRARY CACHE keeps: only a push
+# to thornswood/engine-changes saves, and only when its set of Abis is one
+# the cache does not hold yet.
+#
+# SIDE BY SIDE (the plan's part 7, builds). MSBuild built one project at a
+# time and ctest ran one test at a time, so a link or a single-file project
+# held the other three processors idle; the push build of 1 Nov 2026 shows
+# MSBuild's node 1 alone for all 24.5 minutes of its compile. pr_base's
+# PARALLEL input builds the projects and runs the tests side by side, and
+# the compiler cache's EnforceProcessCountAcrossBuilds keeps every project's
+# compilers together at the runner's processor count. pr_base's VCPKG_LINK
+# input makes C:\vcpkg a junction to the checked-out submodule instead of
+# deleting the image's copy and copying the submodule across drives (34 s in
+# the same run). The inputs in pr_base say more.
+#
 # NOTHING ELSE IS KEPT BUT LOGS (Thornswood #3675, #3691). pr_base's own
 # uploads of the build (dist, the client js, server-dist, the Skyrim Platform
 # and papyrus-vm Nexus files) were about 376 MB a run, kept 90 days, and
@@ -285,6 +309,15 @@ jobs:
         run: |
           & $env:SKYMP_COMPILER_CACHE --zero-stats
           & $env:SKYMP_COMPILER_CACHE --show-stats
+      # The header, THE INSTALLED LIBRARIES. The key names no Abis, so it is
+      # never an exact hit and the newest saved folder is taken.
+      - name: Restore the installed libraries
+        id: vcpkg-installed
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ github.workspace }}/build/vcpkg_installed
+          key: vcpkg-installed-windows-2022-abis-none
+          restore-keys: vcpkg-installed-windows-2022-abis-
       - uses: ./.github/actions/pr_base
         with:
           DESCRIPTION: 'Flatrim'
@@ -299,6 +332,8 @@ jobs:
           COVERAGE: "false"
           UPLOAD_BUILD: "false"
           ARTIFACT_RETENTION_DAYS: "7"
+          PARALLEL: "true"
+          VCPKG_LINK: "true"
 
       # How many compiles the store answered, read after every build so a
       # cache that stopped working shows in the log (the header, THE
@@ -315,6 +350,34 @@ jobs:
         with:
           path: ${{ runner.temp }}/ccache
           key: ccache-windows-2022-${{ github.sha }}
+
+      # The header, THE INSTALLED LIBRARIES. A push's build only, and only
+      # when this build's libraries are a set the cache does not hold: the
+      # key is the sha256 of the status file's Abi lines, sorted.
+      - name: Name the installed libraries
+        id: vcpkg-abis
+        if: github.event_name == 'push'
+        shell: pwsh
+        env:
+          RESTORED_KEY: ${{ steps.vcpkg-installed.outputs.cache-matched-key }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $status = Join-Path $env:GITHUB_WORKSPACE 'build\vcpkg_installed\vcpkg\status'
+          if (-not (Test-Path -LiteralPath $status -PathType Leaf)) { Write-Host "::error::the build has no $status, so vcpkg installed nothing this workflow can keep"; exit 1 }
+          $abis = @(Get-Content -LiteralPath $status | Where-Object { $_ -match '^Abi: [0-9a-f]{64}$' } | ForEach-Object { $_.Substring(5) } | Sort-Object -Unique)
+          if ($abis.Count -eq 0) { Write-Host "::error::$status names no Abi, so nothing says which libraries these are"; exit 1 }
+          $bytes = [Text.Encoding]::UTF8.GetBytes(($abis -join "`n") + "`n")
+          $sum = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($bytes)).Replace('-', '').ToLowerInvariant()
+          $key = "vcpkg-installed-windows-2022-abis-$sum"
+          Write-Host "$($abis.Count) libraries installed, key $key"
+          if ($env:RESTORED_KEY -eq $key) { Write-Host 'the cache holds this set already (it is the one restored), so nothing is saved' }
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value @("key=$key", "save=$(if ($env:RESTORED_KEY -eq $key) { 'false' } else { 'true' })")
+      - name: Keep the installed libraries
+        if: github.event_name == 'push' && steps.vcpkg-abis.outputs.save == 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ github.workspace }}/build/vcpkg_installed
+          key: ${{ steps.vcpkg-abis.outputs.key }}
 
       # Read from each native client file's own program database, which only
       # this build folder has (Thornswood #3099; the script says how).
