@@ -92,6 +92,22 @@
 # this build and not only a build somebody named by its run id. It is free
 # on a public repository and needs no secret.
 #
+# THE COMPILER CACHE (Thornswood #5191, the plan's part 7). Measured 31 Oct
+# 2026 on pull request run 41254727003: 32 minutes, of which `cmake --build`
+# was 25.6, every file compiled again on a fresh runner (server_guest_lib
+# 489 s, unit 522 s). Now every compile goes through ccache
+# (cmake/thornswood_compiler_cache.cmake says how), and its store of
+# objects is kept in the Actions cache, so a build compiles only the files a
+# change touched. Who may write it is the rule THE LIBRARY CACHE keeps for
+# vcpkg's libraries: only a push to thornswood/engine-changes saves the
+# store. A pull request restores the newest one a push saved and saves
+# nothing; GitHub also keeps a pull request's own caches out of reach of the
+# branch's builds, so unreviewed code can never put an object into the
+# build Thornswood ships. ccache reuses an object only for the same
+# compiler bytes, flags and preprocessed source, so a hit is the compile it
+# replaces. The store's numbers are printed after every build ("What the
+# compiler cache did").
+#
 # NOTHING ELSE IS KEPT BUT LOGS (Thornswood #3675, #3691). pr_base's own
 # uploads of the build (dist, the client js, server-dist, the Skyrim Platform
 # and papyrus-vm Nexus files) were about 376 MB a run, kept 90 days, and
@@ -217,6 +233,58 @@ jobs:
       - name: Every action is pinned by commit
         shell: pwsh
         run: .\misc\thornswood\Test-ActionPins.ps1
+
+      # The header, THE COMPILER CACHE. ccache from its own release, held to
+      # the sha256 written here, so a changed download stops the build
+      # instead of compiling the engine. To move it, download the new zip
+      # from https://github.com/ccache/ccache/releases, take its sha256 and
+      # replace the version and the sum together.
+      - name: Get ccache
+        shell: pwsh
+        env:
+          CCACHE_VERSION: '4.14.2'
+          CCACHE_SHA256: '6993ce645e53192cec592ee23186200b574ac4c59097ecde8d9cfd681b47ae84'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $name = "ccache-$($env:CCACHE_VERSION)-windows-x86_64"
+          $zip = Join-Path $env:RUNNER_TEMP "$name.zip"
+          Invoke-WebRequest -Uri "https://github.com/ccache/ccache/releases/download/v$($env:CCACHE_VERSION)/$name.zip" -OutFile $zip
+          $sum = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($sum -ne $env:CCACHE_SHA256) { Write-Host "::error::$name.zip is sha256 $sum, not the $($env:CCACHE_SHA256) this workflow names. Nothing was built."; exit 1 }
+          Expand-Archive -LiteralPath $zip -DestinationPath $env:RUNNER_TEMP -Force
+          $exe = Join-Path (Join-Path $env:RUNNER_TEMP $name) 'ccache.exe'
+          if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { Write-Host "::error::$name.zip has no ccache.exe"; exit 1 }
+          $store = Join-Path $env:RUNNER_TEMP 'ccache'
+          # Every later step, pr_base's configure among them, reads these.
+          # cmake/thornswood_compiler_cache.cmake takes SKYMP_COMPILER_CACHE.
+          # COMPILERCHECK content: an object is reused only from the same
+          # cl.exe, byte for byte, so a new image's compiler starts afresh.
+          # MAXSIZE: the store a build keeps, oldest objects out first.
+          # No BASEDIR. It has ccache hand cl.exe the paths under the checkout
+          # as relative ones, which changes __FILE__ in what is compiled, and
+          # unit\DistContentsTest.cpp finds DistContentsExpected.json by its
+          # __FILE__: on PR #139's first run it read an empty file from the
+          # test's own folder and failed (job 124716607043). The checkout is
+          # D:\a\skymp\skymp on every hosted run, so the absolute paths match
+          # from one build to the next without it.
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value @(
+            "SKYMP_COMPILER_CACHE=$exe",
+            "CCACHE_DIR=$store",
+            'CCACHE_COMPILERCHECK=content',
+            'CCACHE_MAXSIZE=4G'
+          )
+          Write-Host "ccache $($env:CCACHE_VERSION) at $exe, sha256 $sum, store $store"
+      - name: Restore the compiled objects
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-windows-2022-${{ github.sha }}
+          restore-keys: ccache-windows-2022-
+      - name: Count from zero
+        shell: pwsh
+        run: |
+          & $env:SKYMP_COMPILER_CACHE --zero-stats
+          & $env:SKYMP_COMPILER_CACHE --show-stats
       - uses: ./.github/actions/pr_base
         with:
           DESCRIPTION: 'Flatrim'
@@ -231,6 +299,22 @@ jobs:
           COVERAGE: "false"
           UPLOAD_BUILD: "false"
           ARTIFACT_RETENTION_DAYS: "7"
+
+      # How many compiles the store answered, read after every build so a
+      # cache that stopped working shows in the log (the header, THE
+      # COMPILER CACHE).
+      - name: What the compiler cache did
+        if: ${{ always() }}
+        shell: pwsh
+        run: |
+          if ($env:SKYMP_COMPILER_CACHE) { & $env:SKYMP_COMPILER_CACHE --show-stats --verbose }
+      # A push's build only: the store the shipped engine's next build reads.
+      - name: Keep the compiled objects
+        if: github.event_name == 'push'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-windows-2022-${{ github.sha }}
 
       # Read from each native client file's own program database, which only
       # this build folder has (Thornswood #3099; the script says how).
