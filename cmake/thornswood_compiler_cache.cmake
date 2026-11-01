@@ -22,6 +22,11 @@
 #   - UseMultiToolTask runs one cl.exe per file, files side by side, because
 #     ccache cannot cache a compile that names several files, which is what
 #     /MP does (apply_default_settings.cmake leaves /MP out while this is on);
+#   - EnforceProcessCountAcrossBuilds holds the compilers of every project
+#     MSBuild builds at once to one count, the processors the machine has, so
+#     the fork's build can build its projects side by side (MSBuild /m, the
+#     PARALLEL input of .github/actions/pr_base) without each project
+#     starting that many compilers of its own;
 #   - debug information goes into each object (/Z7) instead of a shared
 #     program database (/Zi), which ccache cannot cache. The linker still
 #     writes every binary's .pdb (/DEBUG:FULL), so Write-ClientLicences.ps1
@@ -54,6 +59,7 @@ if(NOT "${SKYMP_COMPILER_CACHE}" STREQUAL "")
     "CLToolExe=cl.exe"
     "CLToolPath=${CMAKE_BINARY_DIR}"
     "UseMultiToolTask=true"
+    "EnforceProcessCountAcrossBuilds=true"
   )
   message(STATUS "Compiling through ccache: ${SKYMP_COMPILER_CACHE}, as ${CMAKE_BINARY_DIR}/cl.exe")
 endif()

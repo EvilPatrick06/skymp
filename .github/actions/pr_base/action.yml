@@ -72,6 +72,36 @@ inputs:
     description: "Days to keep this action's artifacts; empty keeps the repository's default"
     required: false
     default: ""
+  # THORNSWOOD PATCH (the redesign plan's part 7, builds). MSBuild built one
+  # project at a time and ctest ran one test at a time: `cmake --build` had
+  # no --parallel, so the push build of 1 Nov 2026 (run 41267902567) shows
+  # MSBuild's node 1 alone for its 24.5 minutes, every link waiting on the
+  # one before, and ctest took 122 s for 41 tests whose locks and fixture
+  # (RESOURCE_LOCK server_directory, unit_passed) already say which may run
+  # together. "true" builds the projects side by side (MSBuild /m) and runs
+  # the tests side by side, both as wide as the runner has processors. The
+  # fork's build passes "true" with its compiler cache on, where
+  # UseMultiToolTask and EnforceProcessCountAcrossBuilds keep the compilers
+  # of every project together at that count
+  # (cmake/thornswood_compiler_cache.cmake). Upstream's keep the default.
+  PARALLEL:
+    description: "Set to true to build the projects and run the tests side by side"
+    required: false
+    default: "false"
+  # THORNSWOOD PATCH (the redesign plan's part 7, builds). The move below
+  # deleted the image's own C:/vcpkg (11 s on 1 Nov 2026, run 41267902567)
+  # and then copied the submodule from D: to C: file by file (23 s), for a
+  # larger drive; D: is the larger one on windows-2022 now (146 GB free
+  # against C:'s 81 in the same run). "true" puts the image's C:/vcpkg aside
+  # by renaming it, which is one change on the same drive, and makes C:/vcpkg
+  # a junction to the checked-out submodule, so every path that names
+  # C:/vcpkg (the configure's VCPKG_ROOT, the root CMakeLists.txt's
+  # toolchain, the log step below) reads the same files with nothing copied.
+  # The fork's build passes "true"; upstream's keep the default.
+  VCPKG_LINK:
+    description: "Set to true to make C:/vcpkg a junction to the checked-out submodule instead of moving it there"
+    required: false
+    default: "false"
 runs:
   using: composite
   steps:  
@@ -148,8 +178,26 @@ runs:
             }
           }
 
+    # THORNSWOOD PATCH: the input VCPKG_LINK says why.
+    - name: Link C:/vcpkg to the vcpkg submodule
+      if: ${{ runner.os == 'Windows' && inputs.VCPKG_LINK == 'true' }}
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $source = Join-Path $env:GITHUB_WORKSPACE 'vcpkg'
+        if (-not (Test-Path -LiteralPath (Join-Path $source '.vcpkg-root') -PathType Leaf)) { Write-Host "::error::$source has no .vcpkg-root, so the vcpkg submodule is not checked out"; exit 1 }
+        if (Test-Path -LiteralPath 'C:\vcpkg') {
+          $aside = 'C:\vcpkg-image-' + $env:GITHUB_RUN_ID
+          Rename-Item -LiteralPath 'C:\vcpkg' -NewName (Split-Path -Leaf $aside)
+          Write-Host "The image's C:\vcpkg is now $aside"
+        }
+        $null = New-Item -ItemType Junction -Path 'C:\vcpkg' -Target $source
+        $target = (Get-Item -LiteralPath 'C:\vcpkg').Target
+        Write-Host "C:\vcpkg is a junction to $target"
+        if (-not (Test-Path -LiteralPath 'C:\vcpkg\.vcpkg-root' -PathType Leaf)) { Write-Host '::error::C:\vcpkg does not reach the submodule'; exit 1 }
+
     - name: Move vcpkg submodule to a larger drive using github-script
-      if: runner.os == 'Windows'
+      if: ${{ runner.os == 'Windows' && inputs.VCPKG_LINK != 'true' }}
       uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6.4.1
       with:
         script: |
@@ -381,7 +429,11 @@ runs:
           console.log("!!! BEFORE BUILD !!!")
     - name: Build
       # Build your program with the given configuration
-      run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}}
+      # THORNSWOOD PATCH: --parallel when PARALLEL is "true" (the input says why).
+      run: |
+        $parallel = if ('${{ inputs.PARALLEL }}' -eq 'true') { @('--parallel', $env:NUMBER_OF_PROCESSORS) } else { @() }
+        cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} @parallel
+        exit $LASTEXITCODE
       shell: powershell
     - name: AFTER BUILD
       uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6.4.1
@@ -420,7 +472,12 @@ runs:
       working-directory: ${{github.workspace}}/build
       # Execute tests defined by the CMake configuration.  
       # See https://cmake.org/cmake/help/latest/manual/ctest.1.html for more detail
-      run: ctest -C ${{env.BUILD_TYPE}} --verbose # --output-on-failure
+      # THORNSWOOD PATCH: --parallel when PARALLEL is "true" (the input says
+      # why). Each line of a test's output keeps its "<number>: " in front.
+      run: |
+        $parallel = if ('${{ inputs.PARALLEL }}' -eq 'true') { @('--parallel', $env:NUMBER_OF_PROCESSORS) } else { @() }
+        ctest -C ${{env.BUILD_TYPE}} --verbose @parallel # --output-on-failure
+        exit $LASTEXITCODE
       shell: powershell
 
     - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
