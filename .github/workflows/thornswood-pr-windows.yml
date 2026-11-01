@@ -34,7 +34,8 @@
 # skymp-vcpkg-deps" fails for want of Docker Hub secrets (Thornswood #3594,
 # #3404). Nothing of Thornswood's reads those runs. A schedule runs only on
 # the default branch, which since Thornswood #5154 is this one, so upstream's
-# nightly builds now meet the guard and are skipped.
+# nightly builds now meet the guard and are skipped. Thornswood's own Linux
+# build of this branch is thornswood-pr-linux.yml (Thornswood #1774).
 #
 # Why GitHub's runner and not the VPS: this repository is public, so its
 # minutes on GitHub's standard runners cost nothing, and a self-hosted runner

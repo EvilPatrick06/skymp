@@ -1,0 +1,51 @@
+# Thornswood's engine built and tested on Linux (Thornswood #1774, the plan's
+# "Linux build of the server" line).
+#
+# WHY IT WAS OFF. Nothing had ever built thornswood/engine-changes on Linux,
+# and no Linux failure was ever the reason:
+#   1. 5 Oct (aa20484, #1774): upstream's "PR Linux" got the repository guard
+#      on this branch with upstream's deploy workflows, because it starts on
+#      every pull request. Patrick's answer had named only the deploy four.
+#   2. linux-build-base.yml checked out skyrim-multiplayer/skymp by name, so
+#      in the fork it built upstream's default branch, never the change (fixed
+#      on the fork's main in a2fa4de, 20 Oct; here in this change).
+#   3. 26 Oct (q-3594-upstream-workflows A): "PR Linux" was turned off in the
+#      Actions tab with upstream's other builds, since the fork's main runs its
+#      unguarded copy on every push. It stays off; this workflow is Thornswood's
+#      own, on this branch only.
+#
+# MEASURED 1 Nov (fork #146, run 41351954559, this branch at 0e7c3ef):
+# ubuntu-vcpkg-deps built and passed all 41 tests (562 test cases) in 23
+# minutes, Ubuntu 24.04 in 34 and Ubuntu 25.10 in 36, each with the server in
+# dist. Arch stopped in vcpkg: mongo-c-driver 2.2.3, at this branch's vcpkg
+# pin, fails to configure under Arch's CMake 4.4.5. That is a library and
+# CMake matter, not Thornswood's code, and Arch is not a system a Thornswood
+# server would run on, so it is not built here.
+#
+# WHAT IT RUNS. Upstream's linux-build-base.yml on ubuntu-vcpkg-deps, the
+# image upstream builds its own Linux server in (misc/github_env_linux), with
+# the unit and integration tests. Its artifacts (the server in
+# ubuntu-vcpkg-deps_dist.tar.gz, the vcpkg logs, compile_commands.json) are
+# kept 7 days, as the Windows build's logs are (#3675): nothing of
+# Thornswood's reads them yet. Public repository, GitHub's runner, no secret.
+#
+# HOW LONG (#3557). 70 minutes: twice the slowest Linux build measured (34 to
+# 36 minutes when vcpkg builds every library, as after a pin change).
+name: Thornswood PR Linux
+on:
+  pull_request:
+    branches: [thornswood/engine-changes]
+  push:
+    branches: [thornswood/engine-changes]
+permissions:
+  contents: read
+concurrency:
+  group: thornswood-pr-linux-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  linux:
+    uses: ./.github/workflows/linux-build-base.yml
+    with:
+      base_system: ubuntu-vcpkg-deps
+      timeout_minutes: 70
+      retention_days: '7'
