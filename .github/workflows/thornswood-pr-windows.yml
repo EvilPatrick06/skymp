@@ -259,13 +259,18 @@ jobs:
           # cmake/thornswood_compiler_cache.cmake takes SKYMP_COMPILER_CACHE.
           # COMPILERCHECK content: an object is reused only from the same
           # cl.exe, byte for byte, so a new image's compiler starts afresh.
-          # BASEDIR: paths under the checkout are hashed as relative ones.
           # MAXSIZE: the store a build keeps, oldest objects out first.
+          # No BASEDIR. It has ccache hand cl.exe the paths under the checkout
+          # as relative ones, which changes __FILE__ in what is compiled, and
+          # unit\DistContentsTest.cpp finds DistContentsExpected.json by its
+          # __FILE__: on PR #139's first run it read an empty file from the
+          # test's own folder and failed (job 124716607043). The checkout is
+          # D:\a\skymp\skymp on every hosted run, so the absolute paths match
+          # from one build to the next without it.
           Add-Content -LiteralPath $env:GITHUB_ENV -Value @(
             "SKYMP_COMPILER_CACHE=$exe",
             "CCACHE_DIR=$store",
             'CCACHE_COMPILERCHECK=content',
-            "CCACHE_BASEDIR=$($env:GITHUB_WORKSPACE)",
             'CCACHE_MAXSIZE=4G'
           )
           Write-Host "ccache $($env:CCACHE_VERSION) at $exe, sha256 $sum, store $store"
