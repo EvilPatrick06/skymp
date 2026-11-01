@@ -42,7 +42,8 @@ concurrency:
 
 jobs:
   sync:
-    if: github.repository == 'EvilPatrick06/skymp'
+    # The fork by its id, which a move to another owner keeps (Thornswood #5184).
+    if: github.repository_id == '1375283516'
     runs-on: ubuntu-24.04
     # A fetch of upstream's history, a merge and four calls. Past this it is
     # stuck, not slow.
