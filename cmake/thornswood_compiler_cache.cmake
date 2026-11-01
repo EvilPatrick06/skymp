@@ -30,7 +30,11 @@
 #   - debug information goes into each object (/Z7) instead of a shared
 #     program database (/Zi), which ccache cannot cache. The linker still
 #     writes every binary's .pdb (/DEBUG:FULL), so Write-ClientLicences.ps1
-#     reads the same thing it read before.
+#     reads the same thing it read before;
+#   - skyrim_platform and skyrim_platform_entry, which precompile a header,
+#     include it in each source instead (/FI), because ccache caches no MSVC
+#     compile that uses a precompiled header (skyrim-platform/src/platform_se,
+#     Thornswood #5216).
 # Off, which is every build that does not set it (upstream's and a person's
 # own), nothing here changes the build.
 #
